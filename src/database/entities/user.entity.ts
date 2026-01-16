@@ -1,6 +1,7 @@
-import { Entity, PrimaryKey, Property, OneToMany, Collection, Cascade } from '@mikro-orm/core';
+import { Entity, PrimaryKey, Property, OneToMany, ManyToMany, Collection, Cascade } from '@mikro-orm/core';
 import { Post } from './post.entity';
 import { Comment } from './comment.entity';
+import { Role } from './role.entity';
 
 @Entity()
 export class User {
@@ -13,6 +14,13 @@ export class User {
   @Property({ unique: true })
   email!: string;
 
+  /**
+   * Hashed password for authentication
+   * Should be hashed using bcrypt or similar before storage
+   */
+  @Property({ hidden: true }) // Hidden from serialization by default
+  password!: string;
+
   @Property({ onCreate: () => new Date() })
   createdAt = new Date();
 
@@ -24,4 +32,11 @@ export class User {
 
   @OneToMany(() => Comment, comment => comment.author)
   comments = new Collection<Comment>(this);
+
+  /**
+   * Roles assigned to this user (many-to-many)
+   * Managed via users_roles join table
+   */
+  @ManyToMany(() => Role, (role) => role.users, { owner: true })
+  roles = new Collection<Role>(this);
 }
