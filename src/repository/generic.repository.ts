@@ -14,7 +14,6 @@ export class GenericRepository {
     return this.orm.em.getRepository(entityName);
   }
 
-  // READ - Uses generic options (from QueryEngine)
   async find(collection: string, options: { 
       where: any, 
       orderBy?: QueryOrderMap<any>, 
@@ -24,6 +23,28 @@ export class GenericRepository {
   }) {
     const repo = this.getRepo(collection);
     return repo.find(options.where, {
+      orderBy: options.orderBy,
+      limit: options.limit,
+      offset: options.offset,
+      populate: options.populate as any,
+    });
+  }
+
+  /**
+   * Optimized method for queries with meta requirements.
+   * Uses MikroORM's findAndCount to get data + count in a single query.
+   * 
+   * @returns [data[], count] tuple
+   */
+  async findAndCount(collection: string, options: { 
+      where: any, 
+      orderBy?: QueryOrderMap<any>, 
+      limit?: number, 
+      offset?: number, 
+      populate?: string[] 
+  }): Promise<[any[], number]> {
+    const repo = this.getRepo(collection);
+    return repo.findAndCount(options.where, {
       orderBy: options.orderBy,
       limit: options.limit,
       offset: options.offset,

@@ -13,7 +13,7 @@ import { Permission } from './permission.entity';
  * Roles group permissions and are assigned to users.
  * Examples: 'admin', 'editor', 'viewer', 'custom_role'
  */
-@Entity()
+@Entity({ tableName: 'roles' })
 export class Role {
   @PrimaryKey()
   id!: number;

@@ -31,6 +31,13 @@ export interface DeepNode {
   };
 }
 
+export type MetaField = 'filter_count' | 'total_count';
+
+export interface MetaNode {
+  filter_count?: boolean;
+  total_count?: boolean;
+}
+
 export interface QueryContext {
   collection: string;
   query: Record<string, any>; // Raw query params
@@ -42,6 +49,7 @@ export interface ParsedQuery {
   pagination: PaginationNode;
   fields: string[]; // List of fields to select/populate
   deep: DeepNode;
+  meta: MetaNode;
   // TODO: Aggregation
   aggregate?: {
     count?: string[]; // Fields to count, or ['*']

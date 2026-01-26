@@ -16,7 +16,7 @@ import { User } from './user.entity';
  * 
  * Security: Never query by secret_hash. Always lookup by token_id first.
  */
-@Entity()
+@Entity({ tableName: 'refresh_tokens' })
 export class RefreshToken {
   @PrimaryKey()
   id!: number;

@@ -4,9 +4,12 @@ import { Post } from './src/database/entities/post.entity';
 import { Comment } from './src/database/entities/comment.entity';
 import { Role } from './src/database/entities/role.entity';
 import { Permission } from './src/database/entities/permission.entity';
+import { RefreshToken } from './src/database/entities/refresh-token.entity';
+import { ResetPasswordToken } from './src/database/entities/reset-password-token.entity';
+import { File } from './src/database/entities/file.entity';
 
 export default defineConfig({
-  entities: [User, Post, Comment, Role, Permission],
+  entities: [User, Post, Comment, Role, Permission, RefreshToken, ResetPasswordToken, File],
   dbName: 'postgres',
   host: 'localhost',
   port: 5432,

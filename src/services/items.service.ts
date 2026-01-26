@@ -22,17 +22,42 @@ export class ItemsService {
   async findMany(collection: string, query: any) {
     this.validateCollection(collection);
     
-    // 1. Permission Check (Read) happens inside QueryEngine via PermissionService hook 
-    // or we can call it here explicitly.
-    // The QueryOption compilation needs permissions to generate the right WhereClause.
-    // My architecture says QueryEngine orchestrates query compilation + permissions.
-    
     const options = await this.queryEngine.parseAndCompile({
       collection,
       query,
     });
-
-    return this.repository.find(collection, options);
+    // Check if meta is requested
+    const hasMeta = options.meta && (options.meta.filter_count || options.meta.total_count);
+    if (!hasMeta) {
+      // No meta requested - return data directly (backward compatible)
+      const data = await this.repository.find(collection, options);
+      return data;
+    }
+    // Optimize: Use findAndCount when filter_count is needed
+    // This gets both data and filter_count in a single query
+    let data: any[];
+    let filterCount: number | undefined;
+    if (options.meta.filter_count) {
+      // Single optimized query for data + filter_count
+      [data, filterCount] = await this.repository.findAndCount(collection, options);
+    } else {
+      // Only total_count needed, use regular find
+      data = await this.repository.find(collection, options);
+    }
+    // Build meta object with only requested fields
+    const meta: any = {};
+    if (options.meta.filter_count) {
+      meta.filter_count = filterCount;
+    }
+    if (options.meta.total_count) {
+      // Separate query for total count (no filters)
+      meta.total_count = await this.repository.count(collection, {});
+    }
+    // Return structured response
+    return {
+      data,
+      meta,
+    };
   }
 
   async findOne(collection: string, id: string | number, query: any) {

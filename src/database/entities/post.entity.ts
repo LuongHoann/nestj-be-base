@@ -2,7 +2,7 @@ import { Entity, PrimaryKey, Property, ManyToOne, OneToMany, Collection, Enum } 
 import { User } from './user.entity';
 import { Comment } from './comment.entity';
 
-@Entity()
+@Entity({ tableName: 'posts' })
 export class Post {
   @PrimaryKey()
   id!: number;

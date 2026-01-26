@@ -3,7 +3,7 @@ import { Post } from './post.entity';
 import { Comment } from './comment.entity';
 import { Role } from './role.entity';
 
-@Entity()
+@Entity({ tableName: 'users' })
 export class User {
   @PrimaryKey()
   id!: number;

@@ -4,6 +4,7 @@ import { SortParser } from './parser/sort.parser';
 import { PaginationParser } from './parser/pagination.parser';
 import { FieldsParser } from './parser/fields.parser';
 import { DeepParser } from './parser/deep.parser';
+import { MetaParser } from './parser/meta.parser';
 import { WhereCompiler } from './compiler/where.compiler';
 import { OrderCompiler } from './compiler/order.compiler';
 import { FieldsCompiler } from './compiler/fields.compiler';
@@ -18,6 +19,7 @@ export class QueryEngineService {
     private readonly paginationParser: PaginationParser,
     private readonly fieldsParser: FieldsParser,
     private readonly deepParser: DeepParser,
+    private readonly metaParser: MetaParser,
     private readonly whereCompiler: WhereCompiler,
     private readonly orderCompiler: OrderCompiler,
     private readonly fieldsCompiler: FieldsCompiler,
@@ -38,6 +40,7 @@ export class QueryEngineService {
       pagination: this.paginationParser.parse(query),
       fields: this.fieldsParser.parse(query.fields),
       deep: this.deepParser.parse(query.deep),
+      meta: this.metaParser.parse(query.meta),
     };
 
     // 3. Compile
@@ -68,6 +71,7 @@ export class QueryEngineService {
       limit: parsed.pagination.limit,
       offset: parsed.pagination.offset,
       populate, // Basic population based on fields
+      meta: parsed.meta, // Pass meta requirements to service layer
     };
   }
 }

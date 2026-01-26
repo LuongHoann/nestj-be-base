@@ -33,7 +33,7 @@ import { Role } from './role.entity';
  * - ('user', 'delete') - Can delete users
  * - ('reports', 'export') - Can export reports (virtual collection)
  */
-@Entity()
+@Entity({ tableName: 'permissions' })
 @Index({ properties: ['collection', 'action'] }) // Composite index for efficient permission lookups
 export class Permission {
   @PrimaryKey()

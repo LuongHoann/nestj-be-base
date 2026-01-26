@@ -16,7 +16,7 @@ import { User } from './user.entity';
  * 
  * Security: One-time use only. Old tokens invalidated when new one is created.
  */
-@Entity()
+@Entity({ tableName: 'reset_password_tokens' })
 export class ResetPasswordToken {
   @PrimaryKey()
   id!: number;

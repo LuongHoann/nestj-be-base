@@ -45,6 +45,7 @@ export class EntityRegistryService implements OnModuleInit {
   }
 
   hasCollection(collection: string): boolean {
+    console.log("collectionMap",this.collectionMap);
     return this.collectionMap.has(collection);
   }
 }

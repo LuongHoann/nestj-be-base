@@ -10,6 +10,7 @@ import { ServicesModule } from './services/services.module';
 import { ReportsController } from './controllers/reports.controller';
 import { ReportsService } from './services/reports.service';
 import { AuthModule } from './auth/auth.module';
+import { FilesModule } from './files/files.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { AuthModule } from './auth/auth.module';
     RepositoryModule,
     ServicesModule,
     AuthModule,
+    FilesModule,
     // Note: Reports is part of the app, usually would be in its own module
   ],
   controllers: [ReportsController],
