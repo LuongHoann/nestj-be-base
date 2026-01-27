@@ -12,6 +12,18 @@ export interface StorageResult {
  */
 export interface IStorageAdapter {
   /**
+   * Save file to storage (Generic Upload)
+   * This is the preferred method for general upload usage.
+   */
+  upload?(file: Express.Multer.File, path: string): Promise<StorageResult>;
+
+  /**
+   * Get a signed URL for public or temporary access.
+   * For local storage, this might return a relative publicly accessible path.
+   */
+  getSignedUrl?(path: string, expiresIn?: number): Promise<string>;
+
+  /**
    * Save file to temporary storage
    * @param file Multer file object
    * @param id ULID identifier for the file

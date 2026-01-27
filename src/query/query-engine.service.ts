@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { FilterParser } from './parser/filter.parser';
 import { SortParser } from './parser/sort.parser';
 import { PaginationParser } from './parser/pagination.parser';
@@ -24,10 +25,35 @@ export class QueryEngineService {
     private readonly orderCompiler: OrderCompiler,
     private readonly fieldsCompiler: FieldsCompiler,
     private readonly permissionService: PermissionService,
+    private readonly configService: ConfigService,
   ) {}
 
   async parseAndCompile(context: QueryContext): Promise<any> {
     const { collection, query } = context;
+
+    // 0. Safety Checks (Hardening)
+    const maxDepth = this.configService.get<number>('query.maxDepth', 3);
+    const maxConditions = this.configService.get<number>('query.maxConditions', 20);
+    const maxSortFields = this.configService.get<number>('query.maxSortFields', 3);
+    const allowRegex = this.configService.get<boolean>('query.allowRegex', false);
+
+    // Check Sort Fields Limit
+    if (query.sort) {
+        const sortKeys = Object.keys(query.sort);
+        if (sortKeys.length > maxSortFields) {
+            throw new BadRequestException(`Exceeded maximum sort fields limit of ${maxSortFields}`);
+        }
+    }
+
+    // Check Regex Safety
+    if (!allowRegex) {
+        // Simple recursive check or check stringified query for regex operators if feasible 
+        // For now, checks will happen in parsers/compilers ideally, but here is a high level guard
+        const queryStr = JSON.stringify(query.filter);
+        if (queryStr.includes('"$regex"') || queryStr.includes('"$iregex"')) {
+             throw new BadRequestException('Regex queries are disabled by configuration');
+        }
+    }
 
     // 1. Permissions (Pre-flight check)
     // Get mandatory filters from permission service
@@ -58,6 +84,14 @@ export class QueryEngineService {
     }
 
     const where = this.whereCompiler.compile(finalFilter);
+
+    // Validate Condition Count (Heuristic based on keys in compiled where)
+    // This is rough approximation. For accurate count, we'd need to walk the 'where' object.
+    const conditionCount = this.countConditions(where);
+    if (conditionCount > maxConditions) {
+        throw new BadRequestException(`Exceeded maximum query conditions limit of ${maxConditions}`);
+    }
+
     const orderBy = this.orderCompiler.compile(parsed.sort);
     const populate = this.fieldsCompiler.compile(parsed.fields);
 
@@ -73,5 +107,19 @@ export class QueryEngineService {
       populate, // Basic population based on fields
       meta: parsed.meta, // Pass meta requirements to service layer
     };
+  }
+
+  private countConditions(where: any): number {
+      if (!where || typeof where !== 'object') return 0;
+      if (Array.isArray(where)) return where.reduce((acc, curr) => acc + this.countConditions(curr), 0);
+      
+      let count = 0;
+      for (const key in where) {
+          if (key.startsWith('$')) { // Operator
+              count++;
+          }
+           count += this.countConditions(where[key]);
+      }
+      return count + (Object.keys(where).length > 0 ? 1 : 0); // Count specific field matches too
   }
 }

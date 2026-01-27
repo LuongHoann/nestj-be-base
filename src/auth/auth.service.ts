@@ -1,4 +1,5 @@
-import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { EntityManager } from '@mikro-orm/core';
 import * as argon2 from 'argon2';
@@ -21,10 +22,16 @@ import { ResetPasswordToken } from '../database/entities/reset-password-token.en
  */
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+  private readonly logLevel: string;
+
   constructor(
     private readonly jwtService: JwtService,
     private readonly em: EntityManager,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+      this.logLevel = this.configService.get<string>('auth.logLevel', 'basic');
+  }
 
   /**
    * Issue both access and refresh tokens for a user.
@@ -74,38 +81,42 @@ export class AuthService {
   }> {
     // 1. Parse token into components
     const [tokenId, tokenSecret] = fullToken.split('.');
-
-    if (!tokenId || !tokenSecret) {
-      throw new UnauthorizedException('Invalid token format');
-    }
-
-    // 2. O(1) lookup by token_id (SINGLE ROW QUERY)
-    const storedToken = await this.em.findOne(RefreshToken, {
-      tokenId,
-      revokedAt: null,
-      expiresAt: { $gt: new Date() },
-    });
-
-    if (!storedToken) {
-      throw new UnauthorizedException('Invalid or expired refresh token');
-    }
-
-    // 3. Verify secret using constant-time comparison
-    const isValid = await argon2.verify(storedToken.secretHash, tokenSecret);
-
-    if (!isValid) {
-      throw new UnauthorizedException('Invalid refresh token');
-    }
-
-    // 4. Revoke old token immediately
-    storedToken.revokedAt = new Date();
-
-    // 5. Issue new tokens
-    const newTokens = await this.issueTokens(storedToken.user.id);
-
-    await this.em.flush();
-
-    return newTokens;
+    
+        if (!tokenId || !tokenSecret) {
+          this.logAuthEvent('Refresh Failed', 'Invalid token format');
+          throw new UnauthorizedException('Invalid token format');
+        }
+    
+        // 2. O(1) lookup by token_id (SINGLE ROW QUERY)
+        const storedToken = await this.em.findOne(RefreshToken, {
+          tokenId,
+          revokedAt: null,
+          expiresAt: { $gt: new Date() },
+        });
+    
+        if (!storedToken) {
+           this.logAuthEvent('Refresh Failed', `Token not found or expired: ${tokenId}`);
+          throw new UnauthorizedException('Invalid or expired refresh token');
+        }
+    
+        // 3. Verify secret using constant-time comparison
+        const isValid = await argon2.verify(storedToken.secretHash, tokenSecret);
+    
+        if (!isValid) {
+          this.logAuthEvent('Refresh Failed', `Invalid secret for token: ${tokenId}`);
+          throw new UnauthorizedException('Invalid refresh token');
+        }
+    
+        // 4. Revoke old token immediately
+        storedToken.revokedAt = new Date();
+        this.logAuthEvent('Token Rotated', `User: ${storedToken.user.id}, Old Token: ${tokenId}`);
+    
+        // 5. Issue new tokens
+        const newTokens = await this.issueTokens(storedToken.user.id);
+    
+        await this.em.flush();
+    
+        return newTokens;
   }
 
   /**
@@ -236,15 +247,18 @@ export class AuthService {
     const user = await this.em.findOne(User, { email });
 
     if (!user || !user.password) {
+      this.logAuthEvent('Login Failed', `Invalid credentials for email: ${email}`);
       throw new UnauthorizedException('Invalid credentials');
     }
 
     const isValid = await argon2.verify(user.password, password);
 
     if (!isValid) {
+      this.logAuthEvent('Login Failed', `Invalid password for email: ${email}`);
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    this.logAuthEvent('Login Success', `User: ${user.id}`);
     return this.issueTokens(user.id);
   }
 
@@ -262,5 +276,11 @@ export class AuthService {
     }
 
     return user;
+  }
+
+  private logAuthEvent(event: string, details: string) {
+      if (this.logLevel === 'verbose' || event.includes('Failed') || event.includes('Reset')) {
+          this.logger.log(`[${event}] ${details}`);
+      }
   }
 }

@@ -21,6 +21,24 @@ export class LocalStorageAdapter implements IStorageAdapter {
       this.configService.get<string>('FILE_STORAGE_PATH') || './storage';
   }
 
+  async upload(file: Express.Multer.File, path: string): Promise<StorageResult> {
+    const fullPath = join(this.storagePath, path);
+    await this.ensureDir(dirname(fullPath));
+    await fs.writeFile(fullPath, file.buffer);
+    return {
+        storedName: path.split('/').pop() || path,
+        storagePath: path,
+        size: file.size,
+    };
+  }
+
+  async getSignedUrl(path: string): Promise<string> {
+      // For local storage, we just return the relative path. 
+      // In a real app, this might need to be prefixed with the API host URL 
+      // or mapped to a static file serve route.
+      return path;
+  }
+
   /**
    * Save uploaded file to temporary storage
    */
