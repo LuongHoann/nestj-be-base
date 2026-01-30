@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { GenericRepository } from '../repository/generic.repository';
 import { QueryEngineService } from '../query/query-engine.service';
 import { PermissionService } from '../common/permissions/permission.service';
@@ -20,7 +20,7 @@ export class ItemsService {
   }
 
   async findMany(collection: string, query: any) {
-    this.validateCollection(collection);
+     this.validateCollection(collection);
     
     const options = await this.queryEngine.parseAndCompile({
       collection,
@@ -63,45 +63,42 @@ export class ItemsService {
   async findOne(collection: string, id: string | number, query: any) {
     this.validateCollection(collection);
     
-    // We treat findOne as a findMany with a specific ID filter + read permissions
+    // The query engine is responsible for applying 'read' permission filters (row-level security)
+    // into the compiled 'where' clause.
     const options = await this.queryEngine.parseAndCompile({
         collection,
         query,
     });
     
-    // We explicitly use findOne from repo but we use the populate options from the query engine.
-    // Security note: We should also apply the WHERE clause from permissions!
-    // But repo.findOne usually just takes ID.
-    // If we want to strictly enforce row-level permissions on single item fetch,
-    // we should validte the item matches the permission filters.
-    // Or just use findMany with ID filter and limit 1.
-    // For now, let's use check permissions explicitly or trust the generic Find.
-    
-    // Simple verification check:
-    const permissionFilter = this.permissionService.can(collection, 'read');
-    if (Object.keys(permissionFilter).length > 0) {
-        // If there are row-level constraints, we MUST query with them.
-        options.where = { ...options.where, id };
-        // Use findMany to respect the where clause
-        const results = await this.repository.find(collection, { ...options, limit: 1 });
-        if (results.length === 0) {
-            throw new BadRequestException('Not found or forbidden');
-        }
-        return results[0];
+    // Combine the query engine's WHERE clause (which includes permission filters) 
+    // with the ID filter for this specific item.
+    options.where = {
+      $and: [options.where, { id }]
+    };
+
+    // Use find() with limit: 1 to ensure all filters (including permissions) are respected.
+    const results = await this.repository.find(collection, { ...options, limit: 1 });
+
+    if (results.length === 0) {
+      // Using NotFoundException is standard. It prevents leaking information about
+      // whether the resource exists but is forbidden, or truly does not exist.
+      throw new NotFoundException(
+        `Item ${id} in ${collection} not found or permission denied`,
+      );
     }
 
-    return this.repository.findOne(collection, id, { populate: options.populate });
+    return results[0];
   }
 
   async create(collection: string, data: any) {
-    this.validateCollection(collection);
-    this.permissionService.assert(collection, 'create');
+     this.validateCollection(collection);
+    await this.permissionService.assert(collection, 'create');
     return this.repository.create(collection, data);
   }
 
   async update(collection: string, id: string | number, data: any) {
-    this.validateCollection(collection);
-    this.permissionService.assert(collection, 'update');
+     this.validateCollection(collection);
+    await this.permissionService.assert(collection, 'update');
     // TODO: Row-level update permissions check?
     // Usually requires fetching the item first and checking if it meets criteria.
     return this.repository.update(collection, id, data);
@@ -109,7 +106,7 @@ export class ItemsService {
 
   async delete(collection: string, id: string | number) {
     this.validateCollection(collection);
-    this.permissionService.assert(collection, 'delete');
+    await this.permissionService.assert(collection, 'delete');
     return this.repository.delete(collection, id);
   }
 }

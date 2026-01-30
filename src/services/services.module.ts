@@ -5,10 +5,12 @@ import { QueryModule } from '../query/query.module';
 import { RepositoryModule } from '../repository/repository.module';
 import { MetaModule } from '../meta/meta.module';
 import { ItemsController } from '../controllers/items.controller';
+import { PostsController } from '../controllers/post.controller';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [CommonModule, QueryModule, RepositoryModule, MetaModule],
-  controllers: [ItemsController],
+  imports: [CommonModule, QueryModule, RepositoryModule, MetaModule, AuthModule],
+  controllers: [PostsController,ItemsController],
   providers: [ItemsService],
   exports: [ItemsService],
 })

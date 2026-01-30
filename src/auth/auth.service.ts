@@ -84,7 +84,7 @@ export class AuthService {
     
         if (!tokenId || !tokenSecret) {
           this.logAuthEvent('Refresh Failed', 'Invalid token format');
-          throw new UnauthorizedException('Invalid token format');
+          throw new UnauthorizedException('Token không hợp lệ !');
         }
     
         // 2. O(1) lookup by token_id (SINGLE ROW QUERY)
@@ -96,7 +96,7 @@ export class AuthService {
     
         if (!storedToken) {
            this.logAuthEvent('Refresh Failed', `Token not found or expired: ${tokenId}`);
-          throw new UnauthorizedException('Invalid or expired refresh token');
+          throw new UnauthorizedException('Token không hợp lệ !');
         }
     
         // 3. Verify secret using constant-time comparison
@@ -104,7 +104,7 @@ export class AuthService {
     
         if (!isValid) {
           this.logAuthEvent('Refresh Failed', `Invalid secret for token: ${tokenId}`);
-          throw new UnauthorizedException('Invalid refresh token');
+          throw new UnauthorizedException('Token không hợp lệ !');
         }
     
         // 4. Revoke old token immediately
@@ -198,7 +198,7 @@ export class AuthService {
     const [tokenId, tokenSecret] = fullToken.split('.');
 
     if (!tokenId || !tokenSecret) {
-      throw new BadRequestException('Invalid token format');
+      throw new BadRequestException('Token không hợp lệ !');
     }
 
     // 2. O(1) lookup
@@ -209,14 +209,14 @@ export class AuthService {
     });
 
     if (!storedToken) {
-      throw new BadRequestException('Invalid or expired reset token');
+      throw new BadRequestException('Token không hợp lệ !');
     }
 
     // 3. Verify secret
     const isValid = await argon2.verify(storedToken.secretHash, tokenSecret);
 
     if (!isValid) {
-      throw new BadRequestException('Invalid reset token');
+      throw new BadRequestException('Token không hợp lệ !');
     }
 
     // 4. Mark as used (one-time use)
@@ -248,14 +248,14 @@ export class AuthService {
 
     if (!user || !user.password) {
       this.logAuthEvent('Login Failed', `Invalid credentials for email: ${email}`);
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('Sai tài khoản hoặc mật khẩu !');
     }
 
     const isValid = await argon2.verify(user.password, password);
 
     if (!isValid) {
       this.logAuthEvent('Login Failed', `Invalid password for email: ${email}`);
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('Sai tài khoản hoặc mật khẩu !');
     }
 
     this.logAuthEvent('Login Success', `User: ${user.id}`);
@@ -272,7 +272,7 @@ export class AuthService {
     const user = await this.em.findOne(User, { id: userId });
 
     if (!user) {
-      throw new UnauthorizedException('User not found');
+      throw new UnauthorizedException('Người dùng không tồn tại !');
     }
 
     return user;

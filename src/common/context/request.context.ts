@@ -3,6 +3,7 @@ import { Injectable, Scope } from '@nestjs/common';
 export interface UserContext {
   id: string | number;
   role: string;
+  email?: string;
   permissions?: any[];
 }
 
@@ -19,6 +20,7 @@ export class RequestContext {
     this._user = user;
   }
 
+  
   get tenantId(): string | null {
     return this._tenantId;
   }

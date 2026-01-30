@@ -49,7 +49,7 @@ export class QueryEngineService {
     if (!allowRegex) {
         // Simple recursive check or check stringified query for regex operators if feasible 
         // For now, checks will happen in parsers/compilers ideally, but here is a high level guard
-        const queryStr = JSON.stringify(query.filter);
+        const queryStr = JSON.stringify(query.filter ?? {});
         if (queryStr.includes('"$regex"') || queryStr.includes('"$iregex"')) {
              throw new BadRequestException('Regex queries are disabled by configuration');
         }

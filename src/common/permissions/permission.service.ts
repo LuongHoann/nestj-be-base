@@ -3,6 +3,7 @@ import { EntityManager } from '@mikro-orm/core';
 import { RequestContext } from '../context/request.context';
 import { User } from '../../database/entities/user.entity';
 import { Permission } from '../../database/entities/permission.entity';
+import { actionTranslations, collectionTranslations } from '../localization/vi';
 
 @Injectable()
 export class PermissionService {
@@ -14,23 +15,26 @@ export class PermissionService {
   /**
    * Assert that the user has permission to perform action(s) on collection.
    * Throws ForbiddenException if denied.
-   * 
+   *
    * @param collection - Collection or virtual scope name
    * @param action - Single action or array of actions (ALL must pass)
    */
   async assert(collection: string, action: string | string[]): Promise<void> {
     const actions = Array.isArray(action) ? action : [action];
-    
+
     for (const act of actions) {
       const result = await this.can(collection, act);
-      
+
       // If can() returns false or throws, deny
       if (result === false) {
+        const translatedCollection =
+          collectionTranslations[collection] || collection;
+        const translatedAction = actionTranslations[act] || act;
         throw new ForbiddenException(
-          `Permission denied: ${act} on ${collection}`
+          `Bạn không có quyền ${translatedAction} trên ${translatedCollection}`,
         );
       }
-      
+
       // If can() returns a filter object with constraints, we can't enforce it here
       // (assert is for boolean checks, not filter-based row-level security)
       // For now, we allow it if it returns an object (truthy)

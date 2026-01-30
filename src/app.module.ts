@@ -22,6 +22,7 @@ import { Permission } from './database/entities/permission.entity';
 import { RefreshToken } from './database/entities/refresh-token.entity';
 import { ResetPasswordToken } from './database/entities/reset-password-token.entity';
 import { File } from './database/entities/file.entity';
+import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { File } from './database/entities/file.entity';
     MikroOrmModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
+        driver: PostgreSqlDriver,
         entities: [User, Post, Comment, Role, Permission, RefreshToken, ResetPasswordToken, File],
         dbName: configService.get<string>('database.name'),
         host: configService.get<string>('database.host'),

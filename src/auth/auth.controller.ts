@@ -34,28 +34,30 @@ export class AuthController {
   }
 
   @Post('refresh')
+  @UseGuards(JwtAuthGuard)
   async refresh(@Body('refreshToken') refreshToken: string) {
     const tokens = await this.authService.rotateRefreshToken(refreshToken);
     return tokens;
   }
 
   @Post('logout')
+  @UseGuards(JwtAuthGuard)
   async logout(@Body('refreshToken') refreshToken: string) {
     await this.authService.revokeRefreshToken(refreshToken);
-    return { message: 'Logged out successfully' };
+    return { message: 'Đăng xuất thành công !' };
   }
 
   @Post('reset-password-request')
   async requestPasswordReset(@Body('email') email: string) {
     // TODO: Find user by email and create reset token
     // For now, this is a placeholder
-    return { message: 'Password reset email sent' };
+    return { message: 'Yêu cầu thay đổi mật khẩu đã được gửi !' };
   }
 
   @Post('reset-password')
   async resetPassword(@Body() dto: ResetPasswordDto) {
     await this.authService.resetPassword(dto.token, dto.newPassword);
-    return { message: 'Password reset successfully' };
+    return { message: 'Mật khẩu đã được thay đổi !' };
   }
 
   @Get('me')
