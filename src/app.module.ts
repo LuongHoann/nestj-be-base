@@ -25,6 +25,7 @@ import { File } from './database/entities/file.entity';
 import { AuditLog } from './database/entities/audit-log.entity';
 import { AuditLogModule } from './audit/audit.module';
 import { CacheModule } from './common/cache/cache.module';
+import { ExchangeModule } from './exchange/exchange.module';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 
 @Module({
@@ -61,6 +62,7 @@ import { PostgreSqlDriver } from '@mikro-orm/postgresql';
     FilesModule,
     AuditLogModule,
     CacheModule,
+    ExchangeModule,
   ],
   controllers: [ReportsController],
   providers: [ReportsService],
