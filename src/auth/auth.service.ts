@@ -8,6 +8,7 @@ import { ulid } from 'ulid';
 import { User } from '../database/entities/user.entity';
 import { RefreshToken } from '../database/entities/refresh-token.entity';
 import { ResetPasswordToken } from '../database/entities/reset-password-token.entity';
+import { AuditLogService } from '../audit/audit.service';
 
 /**
  * AuthService - Handles authentication with split-token refresh mechanism.
@@ -29,6 +30,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly em: EntityManager,
     private readonly configService: ConfigService,
+    private readonly auditLogService: AuditLogService,
   ) {
       this.logLevel = this.configService.get<string>('auth.logLevel', 'basic');
   }
@@ -248,6 +250,8 @@ export class AuthService {
 
     if (!user || !user.password) {
       this.logAuthEvent('Login Failed', `Invalid credentials for email: ${email}`);
+      // User Log: Login failed (no user found - don't log email for privacy)
+      await this.auditLogService.logAuth(null, 'login_failed', { reason: 'invalid_credentials' });
       throw new UnauthorizedException('Sai tài khoản hoặc mật khẩu !');
     }
 
@@ -255,10 +259,14 @@ export class AuthService {
 
     if (!isValid) {
       this.logAuthEvent('Login Failed', `Invalid password for email: ${email}`);
+      // User Log: Login failed (wrong password)
+      await this.auditLogService.logAuth(user.id, 'login_failed', { reason: 'invalid_password' });
       throw new UnauthorizedException('Sai tài khoản hoặc mật khẩu !');
     }
 
     this.logAuthEvent('Login Success', `User: ${user.id}`);
+    // User Log: Login success
+    await this.auditLogService.logAuth(user.id, 'login', { email: user.email });
     return this.issueTokens(user.id);
   }
 

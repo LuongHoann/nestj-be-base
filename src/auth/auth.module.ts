@@ -11,10 +11,12 @@ import { RefreshToken } from '../database/entities/refresh-token.entity';
 import { ResetPasswordToken } from '../database/entities/reset-password-token.entity';
 import { CommonModule } from '../common/common.module';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { AuditLogModule } from '../audit/audit.module';
 
 @Module({
   imports: [
     CommonModule,
+    AuditLogModule,
     PassportModule.register({defaultStrategy: 'jwt'}),
     JwtModule.registerAsync({
       inject: [ConfigService],

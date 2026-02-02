@@ -4,12 +4,14 @@ import { RequestContext } from '../context/request.context';
 import { User } from '../../database/entities/user.entity';
 import { Permission } from '../../database/entities/permission.entity';
 import { actionTranslations, collectionTranslations } from '../localization/vi';
+import { DragonflyService } from '../cache/dragonfly.service';
 
 @Injectable()
 export class PermissionService {
   constructor(
     private readonly context: RequestContext,
     private readonly em: EntityManager,
+    private readonly cache: DragonflyService,
   ) {}
 
   /**
@@ -58,20 +60,14 @@ export class PermissionService {
    * @param collection - Collection or virtual scope name (e.g., 'post', 'user', 'reports')
    * @param action - Arbitrary action string (e.g., 'read', 'create', 'export', 'publish')
    * 
-   * NOTE: Actions are extensible strings, not limited to CRUD operations.
    * This allows domain-specific permissions like 'publish', 'approve', 'export', etc.
    */
   async can(collection: string, action: string): Promise<any> {
     const user = this.context.user;
     
-    // TODO: Add caching layer here to avoid repeated database queries
-    // Extension point: Implement Redis/in-memory cache for user permissions
-    // Cache key: `user:${userId}:permissions` with TTL
-    
     // Public/anonymous access - no user in context
     if (!user || !user.id) {
       // For demo: allow read on certain collections for public users
-      // In production, check for a "public" or "anonymous" role in the database
       if (action === 'read' && ['post', 'comment'].includes(collection)) {
         if (collection === 'post') return { status: 'published' };
         return {};
@@ -79,8 +75,27 @@ export class PermissionService {
       return false; // Deny by default
     }
 
+    // -------------------------------------------------------------
+    // CACHE LAYER: Try to get permissions from cache first
+    // -------------------------------------------------------------
+    const cacheKey = `user:${user.id}:permissions`;
+    // Cache structure: { "collection_name": ["action1", "action2"], ... }
+    const cachedPermissions = await this.cache.get<Record<string, string[]>>(cacheKey);
+
+    if (cachedPermissions) {
+      // CACHE HIT: O(1) lookup for collection
+      const collectionActions = cachedPermissions[collection];
+      if (collectionActions && collectionActions.includes(action)) {
+        return {}; // Allowed
+      }
+      return false; 
+    }
+
+    // -------------------------------------------------------------
+    // DB FALLBACK: Load from database
+    // -------------------------------------------------------------
+
     // Load user with roles and permissions from database
-    // This performs the RBAC resolution: user → roles → permissions
     const userWithRoles = await this.em.findOne(
       User,
       { id: Number(user.id) },
@@ -93,21 +108,28 @@ export class PermissionService {
       return false; // User not found
     }
 
-    // Check if user has a role with the required permission
-    // Iterate through all roles assigned to the user
+    // Build optimized Map: Collection -> Actions[]
+    const permissionMap: Record<string, string[]> = {};
+    
     for (const role of userWithRoles.roles) {
-      // Check if this role has a permission matching (collection, action)
-      const hasPermission = role.permissions.getItems().some(
-        (permission: Permission) =>
-          permission.collection === collection && permission.action === action
-      );
-
-      if (hasPermission) {
-        // Permission granted - return empty object (no row-level filters)
-        // TODO: Future enhancement - return filter constraints for row-level security
-        // Example: return { authorId: user.id } to limit to user's own records
-        return {};
+      for (const permission of role.permissions) {
+        if (!permissionMap[permission.collection]) {
+          permissionMap[permission.collection] = [];
+        }
+        // Avoid duplicate actions
+        if (!permissionMap[permission.collection].includes(permission.action)) {
+          permissionMap[permission.collection].push(permission.action);
+        }
       }
+    }
+
+    // Save to cache (DragonflyDB)
+    await this.cache.set(cacheKey, permissionMap);
+
+    // Check current request: O(1) lookup
+    const actions = permissionMap[collection];
+    if (actions && actions.includes(action)) {
+      return {};
     }
 
     // No matching permission found - deny access

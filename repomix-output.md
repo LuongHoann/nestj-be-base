@@ -46,6 +46,9 @@ docs/query-dsl.md
 docs/RBAC_ACTIONS.md
 docs/RBAC.md
 eslint.config.mjs
+first_ai_commad.md
+generate-resource.sh
+guide_line.md
 mikro-orm.config.ts
 nest-cli.json
 package.json
@@ -64,12 +67,15 @@ src/auth/strategies/jwt.strategy.ts
 src/common/common.module.ts
 src/common/context/request.context.ts
 src/common/exceptions/invalid-query.exception.ts
+src/common/interceptors/request-context.interceptor.ts
+src/common/localization/vi.ts
 src/common/permissions/permission.service.ts
 src/config/auth.config.ts
 src/config/database.config.ts
 src/config/query.config.ts
 src/config/storage.config.ts
 src/controllers/items.controller.ts
+src/controllers/post.controller.ts
 src/controllers/reports.controller.ts
 src/database/entities/comment.entity.ts
 src/database/entities/file.entity.ts
@@ -84,6 +90,8 @@ src/database/migrations/Migration20260116000000_InitialSchema.ts
 src/database/migrations/Migration20260116012800.ts
 src/database/migrations/Migration20260116094900_TokenTables.ts
 src/database/migrations/Migration20260124030806.ts
+src/dto/post/create-post.dto.ts
+src/dto/post/update-post.dto.ts
 src/files/dto/commit-file.dto.ts
 src/files/dto/temp-upload-response.dto.ts
 src/files/files.controller.ts
@@ -126,263 +134,6 @@ tsconfig.json
 ```
 
 # Files
-
-## File: docs/huong_dan.md
-````markdown
-Tài liệu Kiến trúc Backend
-
-  Tài liệu này mô tả kiến trúc của hệ thống backend, được thiết kế với mục tiêu linh hoạt, an toàn và có khả năng mở rộng cao.
-
-  1. Tổng quan Kiến trúc
-
-  Hệ thống được xây dựng dựa trên NestJS và đi theo một kiến trúc hướng module, tách biệt rõ ràng các mối quan tâm (separation of concerns). Nền tảng này 
-  không chỉ là một boilerplate thông thường mà là một Headless CMS linh hoạt với các thành phần cốt lõi được thiết kế để trừu tượng hóa các tác vụ lặp lại  và tăng cường bảo mật.
-
-  Các thành phần chính bao gồm:
-
-   1. Query Engine: Trái tim của hệ thống, chịu trách nhiệm phân tích và thực thi các truy vấn động từ client.
-   2. Generic Items API: Lớp giao tiếp chính, cung cấp các endpoint CRUD tự động cho mọi thực thể dữ liệu (entity).
-   3. Authentication & Authorization (RBAC): Module bảo mật, quản lý danh tính người dùng và kiểm soát quyền truy cập chi tiết.
-   4. Storage Service: Cung cấp lớp trừu tượng cho việc lưu trữ và quản lý file.
-   5. Custom Endpoints Framework: Cung cấp cấu trúc để xây dựng các endpoint với logic nghiệp vụ riêng.
-   6. Configuration Module: Quản lý cấu hình ứng dụng một cách an toàn và linh hoạt.
-
-  ---
-
-  2. Module: Query Engine
-
-  2.1. Mục đích
-
-  Query Engine là bộ não xử lý dữ liệu của hệ thống. Nó được tạo ra để cung cấp một cơ chế truy vấn dữ liệu mạnh mẽ, linh hoạt và an toàn, cho phép client  yêu cầu dữ liệu phức tạp (lọc, sắp xếp, lồng ghép) thông qua các tham số URL đơn giản mà không cần backend phải định nghĩa trước từng endpoint cụ thể.  
-
-  2.2. Trách nhiệm
-
-   * Phân tích (Parse) các tham số truy vấn từ URL (filter, sort, fields, limit, offset, page, deep, meta) thành một cấu trúc dữ liệu trung gian là AST
-     (Abstract Syntax Tree).
-   * Biên dịch (Compile) AST thành câu lệnh truy vấn phù hợp với ORM (MikroORM).
-   * Tự động áp dụng các bộ lọc quyền (permission filters) từ module RBAC để đảm bảo người dùng chỉ thấy dữ liệu họ được phép.
-   * Áp đặt các giới hạn an toàn (query limits) để ngăn chặn các truy vấn có khả năng gây quá tải hệ thống (DoS).
-
-  2.3. Luồng chính
-
-   1. Input: Một object chứa các tham số query từ HTTP request (req.query).
-   2. Parsing: Mỗi tham số (filter, sort...) được xử lý bởi một Parser riêng biệt (FilterParser, SortParser...) để chuyển đổi thành các node trong cây 
-      AST.
-   3. Permission Integration: QueryEngine gọi PermissionService để lấy các điều kiện lọc (row-level security) tương ứng với vai trò của người dùng. Các
-      điều kiện này được tích hợp vào cây AST.
-   4. Compiling: Các Compiler (WhereCompiler, OrderCompiler...) duyệt cây AST và xây dựng thành một object FindOptions mà MikroORM có thể hiểu được.   
-   5. Execution: GenericRepository nhận FindOptions và thực thi truy vấn lên cơ sở dữ liệu.
-   6. Output: Dữ liệu trả về cho client.
-
-  2.4. Điểm mở rộng
-
-   * Thêm toán tử lọc mới:
-       1. Định nghĩa toán tử trong query.ast.ts (ví dụ: _between).       
-       2. Bổ sung logic xử lý cho toán tử mới trong where.compiler.ts.   
-   * Thêm tham số truy vấn mới:
-       1. Tạo một Parser mới (ví dụ: search.parser.ts).
-       2. Tích hợp Parser này vào luồng xử lý của QueryEngineService.    
-       3. Thêm logic để áp dụng kết quả parse vào câu truy vấn cuối cùng.
-
-  2.5. Rủi ro / Lưu ý
-
-   * Tấn công ReDoS: Nếu cho phép sử dụng Regex ($regex) trong filter mà không có kiểm soát, kẻ tấn công có thể đưa vào các biểu thức Regex phức tạp gây
-     treo hệ thống. Mặc định, tính năng này đã bị vô hiệu hóa (QUERY_ALLOW_REGEX=false).
-   * Truy vấn quá sâu: Các truy vấn lồng nhau quá nhiều cấp có thể gây ra vấn đề N+1 và làm chậm hệ thống. QueryEngine đã có cơ chế giới hạn độ sâu truy
-     vấn (QUERY_MAX_DEPTH, mặc định là 3).
-   * Độ phức tạp của truy vấn: Cần theo dõi và tối ưu hiệu suất cho các truy vấn phức tạp. Luôn đảm bảo các cột dữ liệu được filter thường xuyên đã được
-     đánh index.
-
-  ---
-
-  3. Module: Generic Items API
-
-  3.1. Mục đích
-
-  Cung cấp một bộ API RESTful chung cho tất cả các thực thể dữ liệu đã đăng ký trong hệ thống, giúp giảm thiểu việc phải viết code lặp lại cho các thao
-  tác CRUD cơ bản.
-
-  3.2. Trách nhiệm
-
-   * Định nghĩa các route chung:
-       * GET /items/:collection
-       * GET /items/:collection/:id
-       * POST /items/:collection
-       * PATCH /items/:collection/:id
-       * DELETE /items/:collection/:id
-   * Tiếp nhận HTTP request, xác định :collection và chuyển tiếp toàn bộ tham số truy vấn đến Query Engine.
-   * Ánh xạ các phương thức HTTP tới các hành động RBAC tương ứng (GET -> read, POST -> create, ...).      
-
-  3.3. Luồng chính
-
-   1. Một request đến GET /items/post?filter={"status":"published"}.
-   2. ItemsController tiếp nhận, xác định collection là post.
-   3. ItemsController gọi ItemsService.find('post', req.query).
-   4. ItemsService gọi QueryEngine để phân tích và biên dịch req.query.      
-   5. QueryEngine trả về FindOptions đã được xử lý (bao gồm cả filter quyền).
-   6. ItemsService sử dụng GenericRepository để thực thi truy vấn.
-   7. Kết quả được trả về cho client.
-
-  3.4. Điểm mở rộng
-
-   * Bản thân module này được thiết kế để không cần mở rộng. Thay vào đó, khi cần logic phức tạp hơn, bạn nên tạo một Custom Endpoint mới.
-   * Để đăng ký một collection mới, chỉ cần tạo Entity và thêm vào mikro-orm.config.ts. API sẽ tự động được tạo ra.
-
-  3.5. Rủi ro / Lưu ý
-
-   * Field-level security: Module này không hỗ trợ kiểm soát quyền ở cấp độ trường dữ liệu. Nếu một vai trò có quyền read trên một collection, họ có thể
-     yêu cầu bất kỳ trường nào (trừ các trường đã được ẩn ở mức entity như password).
-   * Tên collection: Tên collection trong URL là tên bảng trong CSDL (thường là dạng số ít, viết thường), không phải tên class của Entity.
-
-  ---
-
-  4. Module: Authentication & Authorization (RBAC)
-
-  4.1. Mục đích
-
-  Đảm bảo chỉ những người dùng hợp lệ mới có thể truy cập hệ thống, và họ chỉ có thể thực hiện các hành động mà họ được cấp phép.
-
-  4.2. Trách nhiệm
-
-   * Authentication: Xác thực người dùng (login, JWT, refresh token).
-   * Authorization: Kiểm tra quyền hạn của người dùng đối với một hành động trên một tài nguyên cụ thể.
-   * Quản lý vai trò (Role) và quyền (Permission) trong cơ sở dữ liệu.
-   * Cung cấp PermissionService cho các module khác sử dụng để kiểm tra quyền.
-
-  4.3. Luồng chính
-
-  Luồng xác thực (Authentication)
-
-   1. User gửi email + password đến /auth/login.
-   2. AuthService xác thực thông tin. Nếu thành công, tạo ra một cặp Access Token (JWT) và Refresh Token.
-   3. Access Token chứa thông tin user (payload) và có thời gian sống ngắn.
-   4. Refresh Token có thời gian sống dài hơn, được lưu vào CSDL và dùng để cấp lại Access Token mới.
-   5. Split-Token Strategy: Refresh Token được lưu một cách an toàn. tokenId và tokenSecret được băm (hashed) riêng, giảm thiểu rủi ro nếu CSDL bị lộ.
-
-  Luồng kiểm tra quyền (Authorization)
-
-   1. PermissionService.assert('post', 'publish') được gọi trong một service.
-   2. Service lấy thông tin người dùng hiện tại từ RequestContext.
-   3. Tải danh sách các vai trò (roles) của người dùng.
-   4. Tải tất cả các quyền (permissions) tương ứng với các vai trò đó.
-   5. Kiểm tra xem có quyền nào khớp với cặp collection='post' và action='publish' không.
-   6. Nếu không tìm thấy -> ném lỗi ForbiddenException. Nếu tìm thấy -> cho phép thực hiện tiếp.
-
-  4.4. Điểm mở rộng
-
-   * Thêm hành động (Action) mới:
-       1. Chỉ cần sử dụng một chuỗi action mới trong PermissionService.assert('reports', 'export_pdf').
-       2. Sau đó, trong CSDL (bảng permission), tạo một bản ghi mới với collection='reports' và action='export_pdf'.
-       3. Gán quyền này cho một vai trò.
-       * Mô hình này không yêu cầu thay đổi code của PermissionService để thêm action mới.
-
-  4.5. Rủi ro / Lưu ý
-
-   * Quản lý vai trò: Việc quản lý vai trò và quyền hạn hiện cần được thực hiện trực tiếp trong CSDL hoặc thông qua các script. Hệ thống chưa có giao diện     admin cho việc này.
-   * Caching: PermissionService có thể được tối ưu bằng cách cache lại thông tin quyền của người dùng (ví dụ: qua Redis) để giảm số lượng truy vấn CSDL   
-     trong mỗi request.
-
-  ---
-
-  5. Module: Storage Service
-
-  5.1. Mục đích
-
-  Cung cấp một lớp trừu tượng (abstraction layer) cho việc quản lý file, giúp ứng dụng không bị phụ thuộc vào một nhà cung cấp lưu trữ cụ thể (local, S3,
-  Google Cloud Storage...).
-
-  5.2. Trách nhiệm
-
-   * Định nghĩa một interface chung (IStorageAdapter) cho các thao tác với file: upload, delete, getSignedUrl...    
-   * Cung cấp một StorageService để các module khác sử dụng, service này sẽ gọi đến adapter tương ứng được cấu hình.
-
-  5.3. Luồng chính
-
-   1. Trong file cấu hình, STORAGE_DRIVER được thiết lập (ví dụ: local hoặc s3).
-   2. StorageService khởi tạo adapter tương ứng (ví dụ LocalStorageAdapter).
-   3. Khi FilesService cần upload một file, nó sẽ gọi storageService.upload(file).
-   4. StorageService chỉ đơn giản là gọi this.adapter.upload(file), toàn bộ logic xử lý cụ thể nằm trong adapter.
-
-  5.4. Điểm mở rộng
-
-   * Thêm nhà cung cấp lưu trữ mới (ví dụ: S3):
-       1. Tạo một class S3StorageAdapter implement IStorageAdapter.
-       2. Triển khai các phương thức upload, delete... bằng cách sử dụng AWS SDK.
-       3. Cập nhật logic trong StorageService để khởi tạo S3StorageAdapter khi STORAGE_DRIVER=s3.
-
-  5.5. Rủi ro / Lưu ý
-
-   * Xử lý file lớn: Adapter cần được implement để xử lý file lớn một cách hiệu quả, ví dụ sử dụng stream để tránh tiêu thụ quá nhiều bộ nhớ.
-     LocalStorageAdapter hiện tại đã làm tốt điều này.
-   * Bảo mật: Khi tạo các URL có chữ ký (signed URL), cần đảm bảo chúng có thời gian hết hạn ngắn và chỉ cấp quyền tối thiểu cần thiết.      
-
-  ---
-
-  6. Module: Custom Endpoints & Mở rộng
-
-  6.1. Mục đích
-
-  Cung cấp một cấu trúc chuẩn hóa để xây dựng các API có logic nghiệp vụ phức tạp mà Generic Items API không thể đáp ứng.
-
-  6.2. Trách nhiệm
-
-   * Định nghĩa một quy trình rõ ràng để tạo controller, service cho các tính năng mới.
-   * Khuyến khích việc tái sử dụng các module cốt lõi như QueryEngineService và PermissionService.
-
-  6.3. Luồng chính (Ví dụ: API Report)
-
-   1. Controller (`ReportsController`):
-       * Định nghĩa route (ví dụ: @Get('active-users')).
-       * Chỉ có trách nhiệm nhận request và gọi service tương ứng, không chứa logic nghiệp vụ.
-   2. Service (`ReportsService`):
-       * Inject QueryEngineService, PermissionService, GenericRepository.
-       * Kiểm tra quyền: Gọi this.permissionService.assert('reports', 'generate') để đảm bảo người dùng có quyền thực hiện hành động này.       
-       * Tái sử dụng Query Engine: Gọi this.queryEngine.parseAndCompile() để xử lý các tham số filter, sort... từ client.
-       * Thêm logic nghiệp vụ: Thêm các điều kiện lọc tùy chỉnh vào kết quả từ Query Engine (ví dụ: chỉ lấy user active trong 30 ngày gần nhất).
-       * Thực thi truy vấn: Gọi this.repository.find() với các options đã được xử lý.
-       * Tính toán/Tổng hợp: Xử lý kết quả trả về (tính tổng, trung bình...).
-
-  6.4. Điểm mở rộng
-
-  Đây chính là module dùng để mở rộng hệ thống. Bất kỳ tính năng mới nào cũng nên được xây dựng theo mô hình này.
-
-  6.5. Rủi ro / Lưu ý
-
-   * KHÔNG BAO GIỜ bỏ qua PermissionService. Mọi custom endpoint phải có bước kiểm tra quyền.
-   * KHÔNG BAO GIỜ truy cập trực tiếp vào ORM (EntityManager) từ controller hoặc service. Luôn sử dụng GenericRepository.
-   * Tận dụng tối đa QueryEngine để client có thể lọc/sắp xếp trên kết quả của custom API, giúp API của bạn trở nên linh hoạt hơn.
-
-  ---
-
-  7. Module: Configuration
-
-  7.1. Mục đích
-
-  Quản lý toàn bộ cấu hình ứng dụng một cách an toàn, linh hoạt và nhất quán, đặc biệt là các thông tin nhạy cảm như mật khẩu CSDL, secret key...
-
-  7.2. Trách nhiệm
-
-   * Đọc cấu hình từ các biến môi trường (.env).
-   * Cung cấp một ConfigService để các module khác có thể truy cập cấu hình một cách an toàn.        
-   * Cung cấp các giá trị mặc định (fallback) an toàn cho các cấu hình quan trọng.
-   * Xác thực và chuyển đổi kiểu dữ liệu cho các biến môi trường (ví dụ: PORT từ string sang number).
-
-  7.3. Luồng chính
-
-   1. Khi ứng dụng khởi động, ConfigModule (của NestJS) sẽ tải file .env.
-   2. Các file cấu hình riêng (ví dụ: database.config.ts, auth.config.ts) đăng ký với ConfigModule và định nghĩa các biến mà chúng cần.
-   3. Trong một service, ví dụ DatabaseService, thay vì đọc process.env.DB_HOST trực tiếp, nó sẽ inject ConfigService và gọi
-      this.configService.get('database.host').
-
-  7.4. Điểm mở rộng
-
-   * Khi thêm một module mới cần cấu hình, tạo một file my-module.config.ts và đăng ký nó.
-
-  7.5. Rủi ro / Lưu ý
-
-   * Không bao giờ hardcode các giá trị nhạy cảm (secrets, passwords, keys) trong code. Luôn luôn sử dụng biến môi trường.
-   * Cần có một file .env.example để ghi lại tất cả các biến môi trường cần thiết cho dự án, giúp người mới dễ dàng cài đặt.
-````
 
 ## File: .gitignore
 ````
@@ -1346,6 +1097,263 @@ private async applyHooks(hook: string, collection: string, data: any) {
 5. **Framework code** stays generic → collection-specific logic in services
 
 Follow these patterns and the system scales from 3 entities to 300.
+````
+
+## File: docs/huong_dan.md
+````markdown
+Tài liệu Kiến trúc Backend
+
+  Tài liệu này mô tả kiến trúc của hệ thống backend, được thiết kế với mục tiêu linh hoạt, an toàn và có khả năng mở rộng cao.
+
+  1. Tổng quan Kiến trúc
+
+  Hệ thống được xây dựng dựa trên NestJS và đi theo một kiến trúc hướng module, tách biệt rõ ràng các mối quan tâm (separation of concerns). Nền tảng này 
+  không chỉ là một boilerplate thông thường mà là một Headless CMS linh hoạt với các thành phần cốt lõi được thiết kế để trừu tượng hóa các tác vụ lặp lại  và tăng cường bảo mật.
+
+  Các thành phần chính bao gồm:
+
+   1. Query Engine: Trái tim của hệ thống, chịu trách nhiệm phân tích và thực thi các truy vấn động từ client.
+   2. Generic Items API: Lớp giao tiếp chính, cung cấp các endpoint CRUD tự động cho mọi thực thể dữ liệu (entity).
+   3. Authentication & Authorization (RBAC): Module bảo mật, quản lý danh tính người dùng và kiểm soát quyền truy cập chi tiết.
+   4. Storage Service: Cung cấp lớp trừu tượng cho việc lưu trữ và quản lý file.
+   5. Custom Endpoints Framework: Cung cấp cấu trúc để xây dựng các endpoint với logic nghiệp vụ riêng.
+   6. Configuration Module: Quản lý cấu hình ứng dụng một cách an toàn và linh hoạt.
+
+  ---
+
+  2. Module: Query Engine
+
+  2.1. Mục đích
+
+  Query Engine là bộ não xử lý dữ liệu của hệ thống. Nó được tạo ra để cung cấp một cơ chế truy vấn dữ liệu mạnh mẽ, linh hoạt và an toàn, cho phép client  yêu cầu dữ liệu phức tạp (lọc, sắp xếp, lồng ghép) thông qua các tham số URL đơn giản mà không cần backend phải định nghĩa trước từng endpoint cụ thể.  
+
+  2.2. Trách nhiệm
+
+   * Phân tích (Parse) các tham số truy vấn từ URL (filter, sort, fields, limit, offset, page, deep, meta) thành một cấu trúc dữ liệu trung gian là AST
+     (Abstract Syntax Tree).
+   * Biên dịch (Compile) AST thành câu lệnh truy vấn phù hợp với ORM (MikroORM).
+   * Tự động áp dụng các bộ lọc quyền (permission filters) từ module RBAC để đảm bảo người dùng chỉ thấy dữ liệu họ được phép.
+   * Áp đặt các giới hạn an toàn (query limits) để ngăn chặn các truy vấn có khả năng gây quá tải hệ thống (DoS).
+
+  2.3. Luồng chính
+
+   1. Input: Một object chứa các tham số query từ HTTP request (req.query).
+   2. Parsing: Mỗi tham số (filter, sort...) được xử lý bởi một Parser riêng biệt (FilterParser, SortParser...) để chuyển đổi thành các node trong cây 
+      AST.
+   3. Permission Integration: QueryEngine gọi PermissionService để lấy các điều kiện lọc (row-level security) tương ứng với vai trò của người dùng. Các
+      điều kiện này được tích hợp vào cây AST.
+   4. Compiling: Các Compiler (WhereCompiler, OrderCompiler...) duyệt cây AST và xây dựng thành một object FindOptions mà MikroORM có thể hiểu được.   
+   5. Execution: GenericRepository nhận FindOptions và thực thi truy vấn lên cơ sở dữ liệu.
+   6. Output: Dữ liệu trả về cho client.
+
+  2.4. Điểm mở rộng
+
+   * Thêm toán tử lọc mới:
+       1. Định nghĩa toán tử trong query.ast.ts (ví dụ: _between).       
+       2. Bổ sung logic xử lý cho toán tử mới trong where.compiler.ts.   
+   * Thêm tham số truy vấn mới:
+       1. Tạo một Parser mới (ví dụ: search.parser.ts).
+       2. Tích hợp Parser này vào luồng xử lý của QueryEngineService.    
+       3. Thêm logic để áp dụng kết quả parse vào câu truy vấn cuối cùng.
+
+  2.5. Rủi ro / Lưu ý
+
+   * Tấn công ReDoS: Nếu cho phép sử dụng Regex ($regex) trong filter mà không có kiểm soát, kẻ tấn công có thể đưa vào các biểu thức Regex phức tạp gây
+     treo hệ thống. Mặc định, tính năng này đã bị vô hiệu hóa (QUERY_ALLOW_REGEX=false).
+   * Truy vấn quá sâu: Các truy vấn lồng nhau quá nhiều cấp có thể gây ra vấn đề N+1 và làm chậm hệ thống. QueryEngine đã có cơ chế giới hạn độ sâu truy
+     vấn (QUERY_MAX_DEPTH, mặc định là 3).
+   * Độ phức tạp của truy vấn: Cần theo dõi và tối ưu hiệu suất cho các truy vấn phức tạp. Luôn đảm bảo các cột dữ liệu được filter thường xuyên đã được
+     đánh index.
+
+  ---
+
+  3. Module: Generic Items API
+
+  3.1. Mục đích
+
+  Cung cấp một bộ API RESTful chung cho tất cả các thực thể dữ liệu đã đăng ký trong hệ thống, giúp giảm thiểu việc phải viết code lặp lại cho các thao
+  tác CRUD cơ bản.
+
+  3.2. Trách nhiệm
+
+   * Định nghĩa các route chung:
+       * GET /items/:collection
+       * GET /items/:collection/:id
+       * POST /items/:collection
+       * PATCH /items/:collection/:id
+       * DELETE /items/:collection/:id
+   * Tiếp nhận HTTP request, xác định :collection và chuyển tiếp toàn bộ tham số truy vấn đến Query Engine.
+   * Ánh xạ các phương thức HTTP tới các hành động RBAC tương ứng (GET -> read, POST -> create, ...).      
+
+  3.3. Luồng chính
+
+   1. Một request đến GET /items/post?filter={"status":"published"}.
+   2. ItemsController tiếp nhận, xác định collection là post.
+   3. ItemsController gọi ItemsService.find('post', req.query).
+   4. ItemsService gọi QueryEngine để phân tích và biên dịch req.query.      
+   5. QueryEngine trả về FindOptions đã được xử lý (bao gồm cả filter quyền).
+   6. ItemsService sử dụng GenericRepository để thực thi truy vấn.
+   7. Kết quả được trả về cho client.
+
+  3.4. Điểm mở rộng
+
+   * Bản thân module này được thiết kế để không cần mở rộng. Thay vào đó, khi cần logic phức tạp hơn, bạn nên tạo một Custom Endpoint mới.
+   * Để đăng ký một collection mới, chỉ cần tạo Entity và thêm vào mikro-orm.config.ts. API sẽ tự động được tạo ra.
+
+  3.5. Rủi ro / Lưu ý
+
+   * Field-level security: Module này không hỗ trợ kiểm soát quyền ở cấp độ trường dữ liệu. Nếu một vai trò có quyền read trên một collection, họ có thể
+     yêu cầu bất kỳ trường nào (trừ các trường đã được ẩn ở mức entity như password).
+   * Tên collection: Tên collection trong URL là tên bảng trong CSDL (thường là dạng số ít, viết thường), không phải tên class của Entity.
+
+  ---
+
+  4. Module: Authentication & Authorization (RBAC)
+
+  4.1. Mục đích
+
+  Đảm bảo chỉ những người dùng hợp lệ mới có thể truy cập hệ thống, và họ chỉ có thể thực hiện các hành động mà họ được cấp phép.
+
+  4.2. Trách nhiệm
+
+   * Authentication: Xác thực người dùng (login, JWT, refresh token).
+   * Authorization: Kiểm tra quyền hạn của người dùng đối với một hành động trên một tài nguyên cụ thể.
+   * Quản lý vai trò (Role) và quyền (Permission) trong cơ sở dữ liệu.
+   * Cung cấp PermissionService cho các module khác sử dụng để kiểm tra quyền.
+
+  4.3. Luồng chính
+
+  Luồng xác thực (Authentication)
+
+   1. User gửi email + password đến /auth/login.
+   2. AuthService xác thực thông tin. Nếu thành công, tạo ra một cặp Access Token (JWT) và Refresh Token.
+   3. Access Token chứa thông tin user (payload) và có thời gian sống ngắn.
+   4. Refresh Token có thời gian sống dài hơn, được lưu vào CSDL và dùng để cấp lại Access Token mới.
+   5. Split-Token Strategy: Refresh Token được lưu một cách an toàn. tokenId và tokenSecret được băm (hashed) riêng, giảm thiểu rủi ro nếu CSDL bị lộ.
+
+  Luồng kiểm tra quyền (Authorization)
+
+   1. PermissionService.assert('post', 'publish') được gọi trong một service.
+   2. Service lấy thông tin người dùng hiện tại từ RequestContext.
+   3. Tải danh sách các vai trò (roles) của người dùng.
+   4. Tải tất cả các quyền (permissions) tương ứng với các vai trò đó.
+   5. Kiểm tra xem có quyền nào khớp với cặp collection='post' và action='publish' không.
+   6. Nếu không tìm thấy -> ném lỗi ForbiddenException. Nếu tìm thấy -> cho phép thực hiện tiếp.
+
+  4.4. Điểm mở rộng
+
+   * Thêm hành động (Action) mới:
+       1. Chỉ cần sử dụng một chuỗi action mới trong PermissionService.assert('reports', 'export_pdf').
+       2. Sau đó, trong CSDL (bảng permission), tạo một bản ghi mới với collection='reports' và action='export_pdf'.
+       3. Gán quyền này cho một vai trò.
+       * Mô hình này không yêu cầu thay đổi code của PermissionService để thêm action mới.
+
+  4.5. Rủi ro / Lưu ý
+
+   * Quản lý vai trò: Việc quản lý vai trò và quyền hạn hiện cần được thực hiện trực tiếp trong CSDL hoặc thông qua các script. Hệ thống chưa có giao diện     admin cho việc này.
+   * Caching: PermissionService có thể được tối ưu bằng cách cache lại thông tin quyền của người dùng (ví dụ: qua Redis) để giảm số lượng truy vấn CSDL   
+     trong mỗi request.
+
+  ---
+
+  5. Module: Storage Service
+
+  5.1. Mục đích
+
+  Cung cấp một lớp trừu tượng (abstraction layer) cho việc quản lý file, giúp ứng dụng không bị phụ thuộc vào một nhà cung cấp lưu trữ cụ thể (local, S3,
+  Google Cloud Storage...).
+
+  5.2. Trách nhiệm
+
+   * Định nghĩa một interface chung (IStorageAdapter) cho các thao tác với file: upload, delete, getSignedUrl...    
+   * Cung cấp một StorageService để các module khác sử dụng, service này sẽ gọi đến adapter tương ứng được cấu hình.
+
+  5.3. Luồng chính
+
+   1. Trong file cấu hình, STORAGE_DRIVER được thiết lập (ví dụ: local hoặc s3).
+   2. StorageService khởi tạo adapter tương ứng (ví dụ LocalStorageAdapter).
+   3. Khi FilesService cần upload một file, nó sẽ gọi storageService.upload(file).
+   4. StorageService chỉ đơn giản là gọi this.adapter.upload(file), toàn bộ logic xử lý cụ thể nằm trong adapter.
+
+  5.4. Điểm mở rộng
+
+   * Thêm nhà cung cấp lưu trữ mới (ví dụ: S3):
+       1. Tạo một class S3StorageAdapter implement IStorageAdapter.
+       2. Triển khai các phương thức upload, delete... bằng cách sử dụng AWS SDK.
+       3. Cập nhật logic trong StorageService để khởi tạo S3StorageAdapter khi STORAGE_DRIVER=s3.
+
+  5.5. Rủi ro / Lưu ý
+
+   * Xử lý file lớn: Adapter cần được implement để xử lý file lớn một cách hiệu quả, ví dụ sử dụng stream để tránh tiêu thụ quá nhiều bộ nhớ.
+     LocalStorageAdapter hiện tại đã làm tốt điều này.
+   * Bảo mật: Khi tạo các URL có chữ ký (signed URL), cần đảm bảo chúng có thời gian hết hạn ngắn và chỉ cấp quyền tối thiểu cần thiết.      
+
+  ---
+
+  6. Module: Custom Endpoints & Mở rộng
+
+  6.1. Mục đích
+
+  Cung cấp một cấu trúc chuẩn hóa để xây dựng các API có logic nghiệp vụ phức tạp mà Generic Items API không thể đáp ứng.
+
+  6.2. Trách nhiệm
+
+   * Định nghĩa một quy trình rõ ràng để tạo controller, service cho các tính năng mới.
+   * Khuyến khích việc tái sử dụng các module cốt lõi như QueryEngineService và PermissionService.
+
+  6.3. Luồng chính (Ví dụ: API Report)
+
+   1. Controller (`ReportsController`):
+       * Định nghĩa route (ví dụ: @Get('active-users')).
+       * Chỉ có trách nhiệm nhận request và gọi service tương ứng, không chứa logic nghiệp vụ.
+   2. Service (`ReportsService`):
+       * Inject QueryEngineService, PermissionService, GenericRepository.
+       * Kiểm tra quyền: Gọi this.permissionService.assert('reports', 'generate') để đảm bảo người dùng có quyền thực hiện hành động này.       
+       * Tái sử dụng Query Engine: Gọi this.queryEngine.parseAndCompile() để xử lý các tham số filter, sort... từ client.
+       * Thêm logic nghiệp vụ: Thêm các điều kiện lọc tùy chỉnh vào kết quả từ Query Engine (ví dụ: chỉ lấy user active trong 30 ngày gần nhất).
+       * Thực thi truy vấn: Gọi this.repository.find() với các options đã được xử lý.
+       * Tính toán/Tổng hợp: Xử lý kết quả trả về (tính tổng, trung bình...).
+
+  6.4. Điểm mở rộng
+
+  Đây chính là module dùng để mở rộng hệ thống. Bất kỳ tính năng mới nào cũng nên được xây dựng theo mô hình này.
+
+  6.5. Rủi ro / Lưu ý
+
+   * KHÔNG BAO GIỜ bỏ qua PermissionService. Mọi custom endpoint phải có bước kiểm tra quyền.
+   * KHÔNG BAO GIỜ truy cập trực tiếp vào ORM (EntityManager) từ controller hoặc service. Luôn sử dụng GenericRepository.
+   * Tận dụng tối đa QueryEngine để client có thể lọc/sắp xếp trên kết quả của custom API, giúp API của bạn trở nên linh hoạt hơn.
+
+  ---
+
+  7. Module: Configuration
+
+  7.1. Mục đích
+
+  Quản lý toàn bộ cấu hình ứng dụng một cách an toàn, linh hoạt và nhất quán, đặc biệt là các thông tin nhạy cảm như mật khẩu CSDL, secret key...
+
+  7.2. Trách nhiệm
+
+   * Đọc cấu hình từ các biến môi trường (.env).
+   * Cung cấp một ConfigService để các module khác có thể truy cập cấu hình một cách an toàn.        
+   * Cung cấp các giá trị mặc định (fallback) an toàn cho các cấu hình quan trọng.
+   * Xác thực và chuyển đổi kiểu dữ liệu cho các biến môi trường (ví dụ: PORT từ string sang number).
+
+  7.3. Luồng chính
+
+   1. Khi ứng dụng khởi động, ConfigModule (của NestJS) sẽ tải file .env.
+   2. Các file cấu hình riêng (ví dụ: database.config.ts, auth.config.ts) đăng ký với ConfigModule và định nghĩa các biến mà chúng cần.
+   3. Trong một service, ví dụ DatabaseService, thay vì đọc process.env.DB_HOST trực tiếp, nó sẽ inject ConfigService và gọi
+      this.configService.get('database.host').
+
+  7.4. Điểm mở rộng
+
+   * Khi thêm một module mới cần cấu hình, tạo một file my-module.config.ts và đăng ký nó.
+
+  7.5. Rủi ro / Lưu ý
+
+   * Không bao giờ hardcode các giá trị nhạy cảm (secrets, passwords, keys) trong code. Luôn luôn sử dụng biến môi trường.
+   * Cần có một file .env.example để ghi lại tất cả các biến môi trường cần thiết cho dự án, giúp người mới dễ dàng cài đặt.
 ````
 
 ## File: docs/meta-queries.md
@@ -2541,6 +2549,255 @@ export default tseslint.config(
 );
 ````
 
+## File: first_ai_commad.md
+````markdown
+Vị trí làm việc : 
+ - Bạn là 1 senior backend sử dụng tốt đa dạng ngôn ngữ và nắm vững kiến trúc và quy tắc phát triển phần mềm 
+Quy ước làm việc:
+
+- File `repomix-output.md` là TOÀN BỘ source of truth cho dự án này.
+- Chỉ sử dụng thông tin có trong file. Không suy đoán, không bổ sung từ kiến thức chung.
+- Nếu một module / hành vi không xuất hiện trong file, coi như KHÔNG TỒN TẠI.
+- Ưu tiên logic hiện tại; bỏ qua legacy, commented code, TODO.
+- Khi thông tin mâu thuẫn, hãy hỏi ý kiến của tôi để quyết định đâu là phần được cập nhật.
+
+Hãy trả lời "OK, đã hiểu" trước khi tôi giao nhiệm vụ tiếp theo.
+````
+
+## File: generate-resource.sh
+````bash
+#!/bin/bash
+
+# generate-resource.sh
+# Script này dùng để tự động tạo Controller và DTO cho một resource mới bằng cách đọc file entity.
+
+# Kiểm tra xem có tham số được truyền vào không
+if [ -z "$1" ]; then
+    echo "Lỗi: Vui lòng cung cấp tên resource."
+    echo "Ví dụ: ./generate-resource.sh Product"
+    exit 1
+fi
+
+# --- Tên Biến ---
+# Ví dụ: $1 = "Product"
+NAME=$1
+PascalCaseName=$NAME
+lowerCaseName=$(echo "$NAME" | tr '[:upper:]' '[:lower:]')
+# Lưu ý: Việc tạo số nhiều chỉ đơn giản là thêm 's'.
+
+# --- Đường dẫn ---
+controllerPath="src/controllers"
+dtoPath="src/dto/$lowerCaseName"
+entityFilePath="src/database/entities/$lowerCaseName.entity.ts"
+controllerFilePath="$controllerPath/$lowerCaseName.controller.ts"
+createDtoFilePath="$dtoPath/create-$lowerCaseName.dto.ts"
+updateDtoFilePath="$dtoPath/update-$lowerCaseName.dto.ts"
+
+# --- Tạo thư mục nếu chưa tồn tại ---
+if [ ! -d "$dtoPath" ]; then
+    mkdir -p "$dtoPath"
+    echo "Đã tạo thư mục: $dtoPath"
+fi
+
+# --- Nội dung file DTO (Create) ---
+# Tạo nội dung DTO cơ bản, người dùng sẽ tự điền chi tiết.
+createDtoContent=$(cat <<EOF
+// import { IsString, IsNotEmpty, IsOptional } from 'class-validator';
+
+export class Create${PascalCaseName}Dto {
+  // Đây là nơi bạn sẽ định nghĩa các thuộc tính cho DTO.
+  // Ví dụ:
+  //
+  // @IsString()
+  // @IsNotEmpty()
+  // name: string;
+  //
+  // @IsString()
+  // @IsOptional()
+  // description?: string;
+}
+EOF
+)
+
+# --- Nội dung file DTO (Update) ---
+updateDtoContent=$(cat <<EOF
+import { PartialType } from '@nestjs/mapped-types';
+import { Create${PascalCaseName}Dto } from './create-${lowerCaseName}.dto';
+
+export class Update${PascalCaseName}Dto extends PartialType(Create${PascalCaseName}Dto) {}
+EOF
+)
+
+# --- Nội dung file Controller ---
+controllerContent=$(cat <<EOF
+import { Controller, Post, Body, Patch, Param } from '@nestjs/common';
+import { ItemsService } from '../services/items.service';
+import { Create${PascalCaseName}Dto } from '../dto/${lowerCaseName}/create-${lowerCaseName}.dto';
+import { Update${PascalCaseName}Dto } from '../dto/${lowerCaseName}/update-${lowerCaseName}.dto';
+
+@Controller('items/${lowerCaseName}')
+export class ${PascalCaseName}sController {
+  constructor(private readonly itemsService: ItemsService) {}
+
+  @Post()
+  create(@Body() createDto: Create${PascalCaseName}Dto) {
+    // ValidationPipe sẽ tự động chạy trên createDto.
+    return this.itemsService.create('${lowerCaseName}', createDto);
+  }
+
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() updateDto: Update${PascalCaseName}Dto) {
+    return this.itemsService.update('${lowerCaseName}', id, updateDto);
+  }
+
+  // Ghi chú: Các phương thức GET và DELETE vẫn được ItemsController chung xử lý.
+  // Bạn chỉ định nghĩa lại ở đây khi cần logic đặc biệt cho việc đọc hoặc xóa.
+}
+EOF
+)
+
+# --- Ghi file ---
+echo "$createDtoContent" > "$createDtoFilePath"
+echo "Đã tạo file DTO (Create): $createDtoFilePath"
+
+echo "$updateDtoContent" > "$updateDtoFilePath"
+echo "Đã tạo file DTO (Update): $updateDtoFilePath"
+
+echo "$controllerContent" > "$controllerFilePath"
+echo "Đã tạo file Controller: $controllerFilePath"
+
+echo -e "\n\033[0;32mHoàn thành! Script đã ánh xạ các thuộc tính từ entity. Hãy kiểm tra lại file DTO và đăng ký Controller mới trong module của bạn.\033[0m"
+
+exit 0
+````
+
+## File: guide_line.md
+````markdown
+---
+
+  Hướng dẫn Hội nhập dành cho Lập trình viên mới
+
+  Chào mừng bạn đến với dự án!
+
+  Bạn đang tham gia vào một dự án có kiến trúc được thiết kế rất cẩn thận để đạt được tốc độ, sự linh hoạt và bảo mật. Việc tuân thủ kiến trúc này không  
+  phải là sự gò bó, mà là cách để chúng ta cùng nhau xây dựng các tính năng một cách nhanh chóng và bền vững.
+
+  Hãy đọc kỹ hướng dẫn này, nó sẽ là bản đồ giúp bạn di chuyển một cách tự tin trong codebase.
+
+  Mục tiêu chính của kiến trúc này là gì?
+
+  "Tập trung vào logic nghiệp vụ, không phải code lặp lại."
+
+  Hệ thống đã tự động hóa việc tạo API, truy vấn dữ liệu và kiểm tra quyền. Nhiệm-vụ-của-bạn là xây dựng các tính năng độc đáo mang lại giá trị, không
+  phải là viết đi viết lại các endpoint CRUD.
+
+  ---
+
+  Bước 0: Ba Nguyên tắc Vàng (The 3 Golden Rules)
+
+  Trước khi đọc bất kỳ dòng code nào, hãy ghi nhớ BA NGUYÊN TẮC BẤT DI BẤT DỊCH. Vi phạm những nguyên tắc này là cách nhanh nhất để phá hỏng kiến trúc.   
+
+   1. KHÔNG BAO GIỜ TRUY CẬP TRỰC TIẾP DATABASE: Mọi tương tác với dữ liệu PHẢI thông qua GenericRepository hoặc QueryEngine. Không được inject
+      EntityManager hay tự viết câu lệnh SQL/ORM trong service của bạn.
+   2. KHÔNG BAO GIỜ BỎ QUA KIỂM TRA QUYỀN: Mọi endpoint, mọi service xử lý dữ liệu PHẢI được bảo vệ bởi PermissionService. Không có ngoại lệ, kể cả "chỉ
+      là làm tạm".
+   3. CONTROLLER CHỈ DÀNH CHO HTTP: Controller là lớp mỏng nhất có thể. Nó chỉ nhận request, gọi một phương thức của service, và trả về kết quả. KHÔNG  
+      chứa bất kỳ logic nghiệp vụ, tính toán, hay biến đổi dữ liệu nào.
+
+  Nếu bạn thấy mình sắp vi phạm một trong ba nguyên tắc trên, hãy dừng lại và hỏi một developer senior.
+
+  ---
+
+  Bước 1: Đọc hiểu luồng đi của một Request (Read-Only Path)
+
+  Để hiểu hệ thống, hãy theo dõi hành trình của một request đơn giản. Đây là cách tốt nhất để xây dựng một "mental model" về dự án.
+
+  Nhiệm vụ của bạn: Tìm hiểu xem điều gì xảy ra khi client gọi GET /items/post?sort=-createdAt&limit=10.
+
+   1. Đọc tài liệu kiến trúc: Mở file repomix-output.md (hoặc tài liệu kiến trúc chính thức) và đọc các phần về Query Engine và Generic Items API.        
+   2. Theo dõi trong code:
+       * Bắt đầu từ src/controllers/items.controller.ts. Bạn sẽ thấy nó nhận request và gọi ItemsService.
+       * Đi tới src/services/items.service.ts. Bạn sẽ thấy nó gọi queryEngine.parseAndCompile(req.query). Đây là "phép thuật" xảy ra.
+       * Nhìn vào src/query/query-engine.service.ts. Bạn không cần hiểu chi tiết, chỉ cần biết rằng nó nhận req.query và "dịch" nó thành một object       
+         FindOptions mà ORM có thể hiểu.
+       * Quay lại items.service.ts, bạn sẽ thấy nó gọi repository.find('post', options).
+       * Cuối cùng, src/repository/generic.repository.ts là nơi thực sự tương tác với ORM/database.
+
+  Sau khi đi hết luồng này, bạn sẽ hiểu tại sao chúng ta không cần viết controller và service cho mỗi loại dữ liệu.
+
+  ---
+
+  Bước 2: Nhiệm vụ đầu tiên - Thêm một Module CRUD
+
+  Nhiệm vụ đầu tiên của bạn không phải là sửa bug hay làm một tính năng phức tạp. Nhiệm vụ của bạn là thêm một module quản lý mới để thấy được sức mạnh
+  của kiến trúc này.
+
+  Yêu cầu: Thêm chức năng quản lý Product (Sản phẩm).
+
+   1. Tạo Entity (`product.entity.ts`):
+       * Trong thư mục src/database/entities, tạo một file product.entity.ts.
+       * Định nghĩa class Product với các trường như id, name, price, stock. Sử dụng các decorator @Entity(), @Property() của MikroORM.
+   2. Đăng ký Entity:
+       * Mở file mikro-orm.config.ts.
+       * Import Product và thêm nó vào mảng entities.
+   3. Tạo Migration:
+       * Chạy lệnh npm run migration:create để tạo file migration mới.
+       * Chạy lệnh npm run migration:up để cập nhật schema của database.
+   4. Kiểm tra "phép thuật":
+       * Khởi động server (npm run start:dev).
+       * Sử dụng Postman (hoặc curl), gọi GET http://localhost:3000/items/product.
+       * Chúc mừng! Bạn vừa có một bộ API CRUD đầy đủ cho Product với khả năng lọc, sắp xếp, phân trang... mà không cần viết một dòng logic nào trong     
+         controller hay service.
+   5. Thêm Quyền:
+       * Vào database, thêm các bản ghi vào bảng permission cho collection product với các action create, read, update, delete.
+       * Gán các quyền này cho một vai trò (role) nào đó. Bây giờ, API của bạn đã được bảo vệ.
+
+  Hoàn thành nhiệm vụ này giúp bạn hiểu được 90% "tại sao" dự án được thiết kế như vậy.
+
+  ---
+
+  Bước 3: Xây dựng một Tính năng Tùy chỉnh
+
+  Bây giờ bạn đã sẵn sàng để tạo một tính năng có logic nghiệp vụ riêng.
+
+  Yêu cầu: Tạo một endpoint GET /reports/low-stock để lấy danh sách các sản phẩm sắp hết hàng (tồn kho < 10).
+
+   1. Tạo Controller & Service: Nếu chưa có, tạo reports.controller.ts và reports.service.ts.
+   2. Trong `ReportsController`:
+       * Thêm một phương thức getLowStockProducts().
+       * Gắn decorator @Get('low-stock').
+       * Trong thân hàm, chỉ có một dòng: return this.reportsService.getLowStockProducts(req.query);. req.query cho phép người dùng vẫn có thể sort,
+         paginate trên kết quả của bạn.
+   3. Trong `ReportsService`:
+       * Nguyên tắc Vàng #2: Dòng đầu tiên là await this.permissionService.assert('reports', 'read_low_stock');.
+       * Tái sử dụng Query Engine:
+   1         const options = await this.queryEngine.parseAndCompile({
+   2           collection: 'product',
+   3           query: query, // query từ controller
+   4         });
+       * Thêm logic nghiệp vụ:
+
+   1         const lowStockCondition = { stock: { '$lt': 10 } };
+   2         options.where = {
+   3           $and: [options.where, lowStockCondition],
+   4         };
+       * Nguyên tắc Vàng #1: Gọi repository: return this.repository.find('product', options);.    
+
+  Bằng cách này, bạn vừa tạo ra một tính năng mới mà vẫn tuân thủ kiến trúc, an toàn và linh hoạt.
+
+  ---
+
+  Tóm tắt: Những điều TUYỆT ĐỐI KHÔNG LÀM
+
+   * KHÔNG inject EntityManager hay MikroORM vào service nghiệp vụ.
+   * KHÔNG đặt logic xử lý if/else, tính toán, biến đổi dữ liệu trong Controller.
+   * KHÔNG comment out permissionService.assert() để "test cho nhanh".
+   * KHÔNG tự viết các câu query phức tạp trong service. Hãy hỏi xem QueryEngine có thể làm điều đó cho bạn không.
+
+  Nếu có bất kỳ nghi ngờ nào, đừng ngần ngại hỏi một thành viên senior trong đội. Thà hỏi một câu còn hơn là đi sai đường và tốn thời gian sửa chữa sau   vậy
+  này. Chúc bạn thành công
+````
+
 ## File: nest-cli.json
 ````json
 {
@@ -2607,107 +2864,6 @@ export class AppService {
 }
 ````
 
-## File: src/auth/auth.controller.ts
-````typescript
-import { Controller, Post, Get, Body, UseGuards } from '@nestjs/common';
-import { AuthService } from './auth.service';
-import { LoginDto } from './dto/login.dto';
-import { ResetPasswordDto } from './dto/reset-password.dto';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import { CurrentUser } from './decorators/current-user.decorator';
-
-/**
- * AuthController - Handles authentication endpoints.
- * 
- * Endpoints:
- * - POST /auth/login - Login with email/password
- * - POST /auth/refresh - Rotate refresh token
- * - POST /auth/logout - Revoke refresh token
- * - POST /auth/reset-password-request - Request password reset token
- * - POST /auth/reset-password - Reset password with token
- * - GET /auth/me - Get current user info (requires JWT)
- */
-@Controller('auth')
-export class AuthController {
-  constructor(private readonly authService: AuthService) {}
-
-  @Post('login')
-  async login(@Body() dto: LoginDto) {
-    const { accessToken, refreshToken } = await this.authService.login(
-      dto.email,
-      dto.password
-    );
-
-    return {
-      accessToken,
-      refreshToken,
-    };
-  }
-
-  @Post('refresh')
-  async refresh(@Body('refreshToken') refreshToken: string) {
-    const tokens = await this.authService.rotateRefreshToken(refreshToken);
-    return tokens;
-  }
-
-  @Post('logout')
-  async logout(@Body('refreshToken') refreshToken: string) {
-    await this.authService.revokeRefreshToken(refreshToken);
-    return { message: 'Logged out successfully' };
-  }
-
-  @Post('reset-password-request')
-  async requestPasswordReset(@Body('email') email: string) {
-    // TODO: Find user by email and create reset token
-    // For now, this is a placeholder
-    return { message: 'Password reset email sent' };
-  }
-
-  @Post('reset-password')
-  async resetPassword(@Body() dto: ResetPasswordDto) {
-    await this.authService.resetPassword(dto.token, dto.newPassword);
-    return { message: 'Password reset successfully' };
-  }
-
-  @Get('me')
-  @UseGuards(JwtAuthGuard)
-  async getMe(@CurrentUser() user: { id: number; email: string }) {
-    return this.authService.getMe(user.id);
-  }
-}
-````
-
-## File: src/auth/auth.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { JwtModule } from '@nestjs/jwt';
-import { PassportModule } from '@nestjs/passport';
-import { MikroOrmModule } from '@mikro-orm/nestjs';
-import { AuthService } from './auth.service';
-import { AuthController } from './auth.controller';
-import { JwtStrategy } from './strategies/jwt.strategy';
-import { User } from '../database/entities/user.entity';
-import { RefreshToken } from '../database/entities/refresh-token.entity';
-import { ResetPasswordToken } from '../database/entities/reset-password-token.entity';
-
-@Module({
-  imports: [
-    PassportModule,
-    JwtModule.register({
-      secret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
-      signOptions: {
-        expiresIn: '15m', // Short-lived access token
-      },
-    }),
-    MikroOrmModule.forFeature([User, RefreshToken, ResetPasswordToken]),
-  ],
-  providers: [AuthService, JwtStrategy],
-  controllers: [AuthController],
-  exports: [AuthService, JwtStrategy],
-})
-export class AuthModule {}
-````
-
 ## File: src/auth/decorators/current-user.decorator.ts
 ````typescript
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
@@ -2748,84 +2904,6 @@ export class ResetPasswordDto {
 }
 ````
 
-## File: src/auth/guards/jwt-auth.guard.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
-
-@Injectable()
-export class JwtAuthGuard extends AuthGuard('jwt') {}
-````
-
-## File: src/auth/strategies/jwt.strategy.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { PassportStrategy } from '@nestjs/passport';
-import { ExtractJwt, Strategy } from 'passport-jwt';
-
-@Injectable()
-export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor() {
-    super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-      ignoreExpiration: false,
-      secretOrKey: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
-    });
-  }
-
-  async validate(payload: any) {
-    return { id: payload.sub, email: payload.email };
-  }
-}
-````
-
-## File: src/common/common.module.ts
-````typescript
-import { Module, Global } from '@nestjs/common';
-import { RequestContext } from './context/request.context';
-import { PermissionService } from './permissions/permission.service';
-
-@Global()
-@Module({
-  providers: [RequestContext, PermissionService],
-  exports: [RequestContext, PermissionService],
-})
-export class CommonModule {}
-````
-
-## File: src/common/context/request.context.ts
-````typescript
-import { Injectable, Scope } from '@nestjs/common';
-
-export interface UserContext {
-  id: string | number;
-  role: string;
-  permissions?: any[];
-}
-
-@Injectable({ scope: Scope.REQUEST })
-export class RequestContext {
-  private _user: UserContext | null = null;
-  private _tenantId: string | null = null;
-
-  get user(): UserContext | null {
-    return this._user;
-  }
-
-  set user(user: UserContext | null) {
-    this._user = user;
-  }
-
-  get tenantId(): string | null {
-    return this._tenantId;
-  }
-
-  set tenantId(id: string | null) {
-    this._tenantId = id;
-  }
-}
-````
-
 ## File: src/common/exceptions/invalid-query.exception.ts
 ````typescript
 import { BadRequestException } from '@nestjs/common';
@@ -2837,31 +2915,62 @@ export class InvalidQueryException extends BadRequestException {
 }
 ````
 
-## File: src/config/auth.config.ts
+## File: src/common/interceptors/request-context.interceptor.ts
 ````typescript
-import { registerAs } from '@nestjs/config';
+import {
+  Injectable,
+  NestInterceptor,
+  ExecutionContext,
+  CallHandler,
+  Scope,
+  Inject,
+} from '@nestjs/common';
+import { Observable } from 'rxjs';
+import { RequestContext } from '../context/request.context';
 
-export default registerAs('auth', () => ({
-  jwtSecret: process.env.JWT_SECRET || 'secret',
-  jwtExpiresIn: process.env.JWT_EXPIRES_IN || '15m',
-  refreshExpiresIn: process.env.REFRESH_EXPIRES_IN || '7d',
-  maxFailedRefreshInfo: parseInt(process.env.AUTH_MAX_FAILED_REFRESH || '5', 10),
-  logLevel: process.env.AUTH_LOG_LEVEL || 'basic',
-}));
+@Injectable({ scope: Scope.REQUEST })
+export class RequestContextInterceptor implements NestInterceptor {
+  constructor(@Inject(RequestContext) private readonly requestContext: RequestContext) {
+    console.log('🏗️ RequestContextInterceptor created, requestContext:', !!this.requestContext);
+  }
+
+  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+    const request = context.switchToHttp().getRequest();
+    
+    // ✅ Sau khi JwtStrategy validate, gắn user từ request.user vào RequestContext
+    if (request.user) {
+      this.requestContext.user = request.user;
+    }
+
+    return next.handle();
+  }
+}
 ````
 
-## File: src/config/database.config.ts
+## File: src/common/localization/vi.ts
 ````typescript
-import { registerAs } from '@nestjs/config';
+export const collectionTranslations: Record<string, string> = {
+  posts: 'Bài viết',
+  users: 'Người dùng',
+  comments: 'Bình luận',
+  roles: 'Vai trò',
+  permissions: 'Quyền',
+  files: 'Tệp tin',
+  reports: 'Báo cáo',
+  items: 'Dữ liệu',
+};
 
-export default registerAs('database', () => ({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432', 10),
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD,
-  name: process.env.DB_NAME || 'postgres',
-  allowGlobalContext: process.env.DB_ALLOW_GLOBAL_CONTEXT === 'true' || process.env.NODE_ENV !== 'production',
-}));
+export const actionTranslations: Record<string, string> = {
+  read: 'Xem',
+  create: 'Tạo mới',
+  update: 'Cập nhật',
+  delete: 'Xóa',
+  publish: 'Xuất bản',
+  generate: 'Tạo',
+  export_pdf: 'Xuất file PDF',
+  view_sales: 'Xem doanh số',
+  manage_users: 'Quản lý người dùng',
+};
 ````
 
 ## File: src/config/query.config.ts
@@ -2886,54 +2995,31 @@ export default registerAs('storage', () => ({
 }));
 ````
 
-## File: src/controllers/items.controller.ts
+## File: src/controllers/post.controller.ts
 ````typescript
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query } from '@nestjs/common';
+import { Controller, Post, Body, Patch, Param } from '@nestjs/common';
 import { ItemsService } from '../services/items.service';
+import { CreatePostDto } from '../dto/post/create-post.dto';
+import { UpdatePostDto } from '../dto/post/update-post.dto';
 
-@Controller('items')
-export class ItemsController {
+@Controller('items/posts')
+export class PostsController {
   constructor(private readonly itemsService: ItemsService) {}
 
-  @Get(':collection')
-  async findMany(@Param('collection') collection: string, @Query() query: any) {
-    return this.itemsService.findMany(collection, query);
+  @Post()
+  create(@Body() createDto: CreatePostDto) {
+    // ValidationPipe sẽ tự động chạy trên createDto.
+    console.log('check==')
+    return this.itemsService.create('posts', createDto);
   }
 
-  @Get(':collection/:id')
-  async findOne(
-      @Param('collection') collection: string, 
-      @Param('id') id: string,
-      @Query() query: any
-  ) {
-    // Attempt parse ID as number if possible, or keep string
-    const parsedId = !isNaN(Number(id)) ? Number(id) : id;
-    return this.itemsService.findOne(collection, parsedId, query);
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() updateDto: UpdatePostDto) {
+    return this.itemsService.update('posts', id, updateDto);
   }
 
-  @Post(':collection')
-  async create(@Param('collection') collection: string, @Body() body: any) {
-    return this.itemsService.create(collection, body);
-  }
-
-  @Patch(':collection/:id')
-  async update(
-      @Param('collection') collection: string, 
-      @Param('id') id: string, 
-      @Body() body: any
-  ) {
-    const parsedId = !isNaN(Number(id)) ? Number(id) : id;
-    return this.itemsService.update(collection, parsedId, body);
-  }
-
-  @Delete(':collection/:id')
-  async delete(
-      @Param('collection') collection: string, 
-      @Param('id') id: string
-  ) {
-    const parsedId = !isNaN(Number(id)) ? Number(id) : id;
-    return this.itemsService.delete(collection, parsedId);
-  }
+  // Ghi chú: Các phương thức GET và DELETE vẫn được ItemsController chung xử lý.
+  // Bạn chỉ định nghĩa lại ở đây khi cần logic đặc biệt cho việc đọc hoặc xóa.
 }
 ````
 
@@ -4361,6 +4447,33 @@ export class Migration20260124030806 extends Migration {
 }
 ````
 
+## File: src/dto/post/create-post.dto.ts
+````typescript
+import { IsString, IsNotEmpty, IsOptional, IsNumber, IsDefined } from 'class-validator';
+
+export class CreatePostDto {
+  @IsDefined({message: "Tiêu đề không được để trống"})
+  @IsNotEmpty({ message: 'Tiêu đề không được để trống' })
+  @IsString({message: "Tiêu đề phải là chuỗi"})
+  title: string;
+  
+  @IsString({message: "Nội dung phải là chuỗi"})
+  @IsOptional()
+  content?: string;
+
+  @IsNotEmpty({message: "Tác giả không được để trống"})
+  author: number;
+}
+````
+
+## File: src/dto/post/update-post.dto.ts
+````typescript
+import { PartialType } from '@nestjs/mapped-types';
+import { CreatePostDto } from './create-post.dto';
+
+export class UpdatePostDto extends PartialType(CreatePostDto) {}
+````
+
 ## File: src/files/dto/commit-file.dto.ts
 ````typescript
 import { IsString, IsOptional, IsObject } from 'class-validator';
@@ -4790,18 +4903,6 @@ export class FilesService {
     return deletedCount;
   }
 }
-````
-
-## File: src/main.ts
-````typescript
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
-
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-  await app.listen(process.env.PORT ?? 3000);
-}
-bootstrap();
 ````
 
 ## File: src/meta/meta.module.ts
@@ -5333,25 +5434,6 @@ export class ReportsService {
 }
 ````
 
-## File: src/services/services.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { ItemsService } from './items.service'; // Adjust path if needed or just export provider
-import { CommonModule } from '../common/common.module';
-import { QueryModule } from '../query/query.module';
-import { RepositoryModule } from '../repository/repository.module';
-import { MetaModule } from '../meta/meta.module';
-import { ItemsController } from '../controllers/items.controller';
-
-@Module({
-  imports: [CommonModule, QueryModule, RepositoryModule, MetaModule],
-  controllers: [ItemsController],
-  providers: [ItemsService],
-  exports: [ItemsService],
-})
-export class ServicesModule {}
-````
-
 ## File: src/storage/storage.service.ts
 ````typescript
 import { Injectable } from '@nestjs/common';
@@ -5478,436 +5560,310 @@ describe('AppController (e2e)', () => {
 }
 ````
 
-## File: src/auth/auth.service.ts
+## File: src/auth/auth.controller.ts
 ````typescript
-import { Injectable, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
-import { EntityManager } from '@mikro-orm/core';
-import * as argon2 from 'argon2';
-import { randomBytes } from 'crypto';
-import { ulid } from 'ulid';
-import { User } from '../database/entities/user.entity';
-import { RefreshToken } from '../database/entities/refresh-token.entity';
-import { ResetPasswordToken } from '../database/entities/reset-password-token.entity';
+import { Controller, Post, Get, Body, UseGuards } from '@nestjs/common';
+import { AuthService } from './auth.service';
+import { LoginDto } from './dto/login.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { CurrentUser } from './decorators/current-user.decorator';
 
 /**
- * AuthService - Handles authentication with split-token refresh mechanism.
+ * AuthController - Handles authentication endpoints.
  * 
- * Token Strategy:
- * - Access tokens: JWT, short-lived (15 min)
- * - Refresh tokens: Split-token format <token_id>.<token_secret>
- *   - token_id: ULID, stored in plaintext, indexed for O(1) lookup
- *   - token_secret: Random bytes, hashed with argon2
- * 
- * Security: All token verification uses O(1) indexed lookup by token_id.
+ * Endpoints:
+ * - POST /auth/login - Login with email/password
+ * - POST /auth/refresh - Rotate refresh token
+ * - POST /auth/logout - Revoke refresh token
+ * - POST /auth/reset-password-request - Request password reset token
+ * - POST /auth/reset-password - Reset password with token
+ * - GET /auth/me - Get current user info (requires JWT)
  */
-@Injectable()
-export class AuthService {
-  private readonly logger = new Logger(AuthService.name);
-  private readonly logLevel: string;
+@Controller('auth')
+export class AuthController {
+  constructor(private readonly authService: AuthService) {}
 
-  constructor(
-    private readonly jwtService: JwtService,
-    private readonly em: EntityManager,
-    private readonly configService: ConfigService,
-  ) {
-      this.logLevel = this.configService.get<string>('auth.logLevel', 'basic');
-  }
-
-  /**
-   * Issue both access and refresh tokens for a user.
-   * 
-   * @param userId - User ID to issue tokens for
-   * @returns Object with accessToken (JWT) and refreshToken (split-token)
-   */
-  async issueTokens(userId: number): Promise<{
-    accessToken: string;
-    refreshToken: string;
-  }> {
-    // 1. Generate JWT access token
-    const accessToken = this.jwtService.sign({ sub: userId });
-
-    // 2. Generate split refresh token
-    const tokenId = ulid();
-    const tokenSecret = randomBytes(32).toString('base64url');
-    const secretHash = await argon2.hash(tokenSecret);
-
-    // 3. Store in database
-    const refreshTokenEntity = this.em.create(RefreshToken, {
-      tokenId,
-      secretHash,
-      user: userId,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
-    });
-    await this.em.persistAndFlush(refreshTokenEntity);
-
-    // 4. Return combined token to client
-    const refreshToken = `${tokenId}.${tokenSecret}`;
-
-    return { accessToken, refreshToken };
-  }
-
-  /**
-   * Rotate refresh token - verify old token and issue new tokens.
-   * 
-   * Security: O(1) lookup by token_id, then constant-time verification.
-   * Old token is immediately revoked.
-   * 
-   * @param fullToken - Full refresh token in format <token_id>.<token_secret>
-   * @returns New access and refresh tokens
-   */
-  async rotateRefreshToken(fullToken: string): Promise<{
-    accessToken: string;
-    refreshToken: string;
-  }> {
-    // 1. Parse token into components
-    const [tokenId, tokenSecret] = fullToken.split('.');
-    
-        if (!tokenId || !tokenSecret) {
-          this.logAuthEvent('Refresh Failed', 'Invalid token format');
-          throw new UnauthorizedException('Invalid token format');
-        }
-    
-        // 2. O(1) lookup by token_id (SINGLE ROW QUERY)
-        const storedToken = await this.em.findOne(RefreshToken, {
-          tokenId,
-          revokedAt: null,
-          expiresAt: { $gt: new Date() },
-        });
-    
-        if (!storedToken) {
-           this.logAuthEvent('Refresh Failed', `Token not found or expired: ${tokenId}`);
-          throw new UnauthorizedException('Invalid or expired refresh token');
-        }
-    
-        // 3. Verify secret using constant-time comparison
-        const isValid = await argon2.verify(storedToken.secretHash, tokenSecret);
-    
-        if (!isValid) {
-          this.logAuthEvent('Refresh Failed', `Invalid secret for token: ${tokenId}`);
-          throw new UnauthorizedException('Invalid refresh token');
-        }
-    
-        // 4. Revoke old token immediately
-        storedToken.revokedAt = new Date();
-        this.logAuthEvent('Token Rotated', `User: ${storedToken.user.id}, Old Token: ${tokenId}`);
-    
-        // 5. Issue new tokens
-        const newTokens = await this.issueTokens(storedToken.user.id);
-    
-        await this.em.flush();
-    
-        return newTokens;
-  }
-
-  /**
-   * Revoke a refresh token (used for logout).
-   * 
-   * @param fullToken - Full refresh token to revoke
-   */
-  async revokeRefreshToken(fullToken: string): Promise<void> {
-    const [tokenId, tokenSecret] = fullToken.split('.');
-
-    if (!tokenId || !tokenSecret) {
-      return; // Silent fail for logout
-    }
-
-    // O(1) lookup
-    const storedToken = await this.em.findOne(RefreshToken, {
-      tokenId,
-      revokedAt: null,
-    });
-
-    if (!storedToken) {
-      return; // Already revoked or doesn't exist
-    }
-
-    // Verify secret
-    const isValid = await argon2.verify(storedToken.secretHash, tokenSecret);
-
-    if (!isValid) {
-      return; // Invalid token, nothing to revoke
-    }
-
-    // Revoke
-    storedToken.revokedAt = new Date();
-    await this.em.flush();
-  }
-
-  /**
-   * Create a reset password token for a user.
-   * Invalidates any existing reset tokens for this user.
-   * 
-   * @param userId - User ID to create reset token for
-   * @returns Reset token in format <token_id>.<token_secret>
-   */
-  async createResetPasswordToken(userId: number): Promise<string> {
-    // 1. Invalidate any existing reset tokens for this user
-    await this.em.nativeUpdate(
-      ResetPasswordToken,
-      { user: userId, usedAt: null },
-      { usedAt: new Date() }
+  @Post('login')
+  async login(@Body() dto: LoginDto) {
+    const { accessToken, refreshToken } = await this.authService.login(
+      dto.email,
+      dto.password
     );
 
-    // 2. Generate split token
-    const tokenId = ulid();
-    const tokenSecret = randomBytes(32).toString('base64url');
-    const secretHash = await argon2.hash(tokenSecret);
-
-    // 3. Store in database
-    const resetTokenEntity = this.em.create(ResetPasswordToken, {
-      tokenId,
-      secretHash,
-      user: userId,
-      expiresAt: new Date(Date.now() + 1 * 60 * 60 * 1000), // 1 hour
-    });
-    await this.em.persistAndFlush(resetTokenEntity);
-
-    // 4. Return combined token
-    return `${tokenId}.${tokenSecret}`;
+    return {
+      accessToken,
+      refreshToken,
+    };
   }
 
-  /**
-   * Reset user password using a reset token.
-   * Token is one-time use only.
-   * 
-   * @param fullToken - Reset token in format <token_id>.<token_secret>
-   * @param newPassword - New password (will be hashed)
-   */
-  async resetPassword(fullToken: string, newPassword: string): Promise<void> {
-    // 1. Parse token
-    const [tokenId, tokenSecret] = fullToken.split('.');
-
-    if (!tokenId || !tokenSecret) {
-      throw new BadRequestException('Invalid token format');
-    }
-
-    // 2. O(1) lookup
-    const storedToken = await this.em.findOne(ResetPasswordToken, {
-      tokenId,
-      usedAt: null,
-      expiresAt: { $gt: new Date() },
-    });
-
-    if (!storedToken) {
-      throw new BadRequestException('Invalid or expired reset token');
-    }
-
-    // 3. Verify secret
-    const isValid = await argon2.verify(storedToken.secretHash, tokenSecret);
-
-    if (!isValid) {
-      throw new BadRequestException('Invalid reset token');
-    }
-
-    // 4. Mark as used (one-time use)
-    storedToken.usedAt = new Date();
-
-    // 5. Update password
-    const passwordHash = await argon2.hash(newPassword);
-    await this.em.nativeUpdate(
-      User,
-      { id: storedToken.user.id },
-      { password: passwordHash }
-    );
-
-    await this.em.flush();
+  @Post('refresh')
+  @UseGuards(JwtAuthGuard)
+  async refresh(@Body('refreshToken') refreshToken: string) {
+    const tokens = await this.authService.rotateRefreshToken(refreshToken);
+    return tokens;
   }
 
-  /**
-   * Login user with email and password.
-   * 
-   * @param email - User email
-   * @param password - User password (plaintext)
-   * @returns Access and refresh tokens
-   */
-  async login(email: string, password: string): Promise<{
-    accessToken: string;
-    refreshToken: string;
-  }> {
-    const user = await this.em.findOne(User, { email });
-
-    if (!user || !user.password) {
-      this.logAuthEvent('Login Failed', `Invalid credentials for email: ${email}`);
-      throw new UnauthorizedException('Invalid credentials');
-    }
-
-    const isValid = await argon2.verify(user.password, password);
-
-    if (!isValid) {
-      this.logAuthEvent('Login Failed', `Invalid password for email: ${email}`);
-      throw new UnauthorizedException('Invalid credentials');
-    }
-
-    this.logAuthEvent('Login Success', `User: ${user.id}`);
-    return this.issueTokens(user.id);
+  @Post('logout')
+  @UseGuards(JwtAuthGuard)
+  async logout(@Body('refreshToken') refreshToken: string) {
+    await this.authService.revokeRefreshToken(refreshToken);
+    return { message: 'Đăng xuất thành công !' };
   }
 
-  /**
-   * Get user by ID (for /auth/me endpoint).
-   * 
-   * @param userId - User ID
-   * @returns User object
-   */
-  async getMe(userId: number): Promise<User> {
-    const user = await this.em.findOne(User, { id: userId });
-
-    if (!user) {
-      throw new UnauthorizedException('User not found');
-    }
-
-    return user;
+  @Post('reset-password-request')
+  async requestPasswordReset(@Body('email') email: string) {
+    // TODO: Find user by email and create reset token
+    // For now, this is a placeholder
+    return { message: 'Yêu cầu thay đổi mật khẩu đã được gửi !' };
   }
 
-  private logAuthEvent(event: string, details: string) {
-      if (this.logLevel === 'verbose' || event.includes('Failed') || event.includes('Reset')) {
-          this.logger.log(`[${event}] ${details}`);
-      }
+  @Post('reset-password')
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    await this.authService.resetPassword(dto.token, dto.newPassword);
+    return { message: 'Mật khẩu đã được thay đổi !' };
+  }
+
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  async getMe(@CurrentUser() user: { id: number; email: string }) {
+    return this.authService.getMe(user.id);
   }
 }
 ````
 
-## File: src/common/permissions/permission.service.ts
+## File: src/auth/auth.module.ts
 ````typescript
-import { Injectable, ForbiddenException } from '@nestjs/common';
-import { EntityManager } from '@mikro-orm/core';
-import { RequestContext } from '../context/request.context';
-import { User } from '../../database/entities/user.entity';
-import { Permission } from '../../database/entities/permission.entity';
+import { Module } from '@nestjs/common';
+import { JwtModule } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
+import { PassportModule } from '@nestjs/passport';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
+import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
+import { JwtStrategy } from './strategies/jwt.strategy';
+import { User } from '../database/entities/user.entity';
+import { RefreshToken } from '../database/entities/refresh-token.entity';
+import { ResetPasswordToken } from '../database/entities/reset-password-token.entity';
+import { CommonModule } from '../common/common.module';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+
+@Module({
+  imports: [
+    CommonModule,
+    PassportModule.register({defaultStrategy: 'jwt'}),
+    JwtModule.registerAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        secret: configService.get<string>('JWT_SECRET') || 'your-secret-key-change-in-production',
+        signOptions: {
+          expiresIn: configService.get<any>('JWT_EXPIRES_IN') || '15m',
+        },
+      }),
+    }),
+    MikroOrmModule.forFeature([User, RefreshToken, ResetPasswordToken]),
+  ],
+  providers: [AuthService, JwtStrategy,JwtAuthGuard],
+  controllers: [AuthController],
+  exports: [AuthService, JwtStrategy, PassportModule,JwtModule,JwtAuthGuard],
+})
+export class AuthModule {}
+````
+
+## File: src/auth/guards/jwt-auth.guard.ts
+````typescript
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
 
 @Injectable()
-export class PermissionService {
-  constructor(
-    private readonly context: RequestContext,
-    private readonly em: EntityManager,
-  ) {}
-
-  /**
-   * Assert that the user has permission to perform action(s) on collection.
-   * Throws ForbiddenException if denied.
-   * 
-   * @param collection - Collection or virtual scope name
-   * @param action - Single action or array of actions (ALL must pass)
-   */
-  async assert(collection: string, action: string | string[]): Promise<void> {
-    const actions = Array.isArray(action) ? action : [action];
-    
-    for (const act of actions) {
-      const result = await this.can(collection, act);
-      
-      // If can() returns false or throws, deny
-      if (result === false) {
-        throw new ForbiddenException(
-          `Permission denied: ${act} on ${collection}`
-        );
+export class JwtAuthGuard extends AuthGuard('jwt') {
+  handleRequest(err, user, info) {
+    if (err || !user) {
+      console.log('🔴 [DEBUG] JwtAuthGuard Failure:');
+      console.log('   Error:', err);
+      console.log('   Info:', info?.message || info);
+      let message = (info?.message || info).toLowerCase();
+      if (message === 'jwt expired') {
+        message = 'Token hết hạn vui lòng đăng nhập lại !';
+      } else if (message === 'invalid signature' || message === 'jwt malformed' || message === 'no auth token') {
+        message = 'Token không hợp lệ !';
       }
-      
-      // If can() returns a filter object with constraints, we can't enforce it here
-      // (assert is for boolean checks, not filter-based row-level security)
-      // For now, we allow it if it returns an object (truthy)
+      throw err || new UnauthorizedException(message);
     }
+    return user;
+  }
+}
+````
+
+## File: src/auth/strategies/jwt.strategy.ts
+````typescript
+import { Injectable } from '@nestjs/common';
+import { PassportStrategy } from '@nestjs/passport';
+import { ExtractJwt, Strategy } from 'passport-jwt';
+
+console.log('🔵 JwtStrategy FILE LOADED');
+
+import { ConfigService } from '@nestjs/config';
+
+@Injectable()
+export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
+  constructor(private readonly configService: ConfigService) {
+    super({
+      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      ignoreExpiration: false,
+      secretOrKey: configService.get<string>('JWT_SECRET') || 'your-secret-key-change-in-production',
+    });
   }
 
-  /**
-   * Check if the current user has permission to perform action on collection.
-   * 
-   * This method resolves the permission chain:
-   * 1. Get current user from RequestContext
-   * 2. Load user's roles (via users_roles join table)
-   * 3. Load permissions for those roles (via roles_permissions join table)
-   * 4. Check if any permission matches (collection, action) pair
-   * 
-   * Returns:
-   * - {} (empty object) = allowed with no row-level filters
-   * - { filter } = allowed with row-level constraints (future enhancement)
-   * - false = denied
-   * 
-   * @param collection - Collection or virtual scope name (e.g., 'post', 'user', 'reports')
-   * @param action - Arbitrary action string (e.g., 'read', 'create', 'export', 'publish')
-   * 
-   * NOTE: Actions are extensible strings, not limited to CRUD operations.
-   * This allows domain-specific permissions like 'publish', 'approve', 'export', etc.
-   */
-  async can(collection: string, action: string): Promise<any> {
-    const user = this.context.user;
+  async validate(payload: any) {
+    if (!payload || !payload.sub) {
+      return null;
+    }
     
-    // TODO: Add caching layer here to avoid repeated database queries
-    // Extension point: Implement Redis/in-memory cache for user permissions
-    // Cache key: `user:${userId}:permissions` with TTL
+    const user = {
+      id: payload.sub
+    };
     
-    // Public/anonymous access - no user in context
-    if (!user || !user.id) {
-      // For demo: allow read on certain collections for public users
-      // In production, check for a "public" or "anonymous" role in the database
-      if (action === 'read' && ['post', 'comment'].includes(collection)) {
-        if (collection === 'post') return { status: 'published' };
-        return {};
-      }
-      return false; // Deny by default
-    }
+    return user;
+  }
+}
+````
 
-    // Load user with roles and permissions from database
-    // This performs the RBAC resolution: user → roles → permissions
-    const userWithRoles = await this.em.findOne(
-      User,
-      { id: Number(user.id) },
-      {
-        populate: ['roles', 'roles.permissions'],
-      }
-    );
+## File: src/common/common.module.ts
+````typescript
+import { Module, Global } from '@nestjs/common';
+import { RequestContext } from './context/request.context';
+import { PermissionService } from './permissions/permission.service';
 
-    if (!userWithRoles) {
-      return false; // User not found
-    }
+import { RequestContextInterceptor } from './interceptors/request-context.interceptor';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 
-    // Check if user has a role with the required permission
-    // Iterate through all roles assigned to the user
-    for (const role of userWithRoles.roles) {
-      // Check if this role has a permission matching (collection, action)
-      const hasPermission = role.permissions.getItems().some(
-        (permission: Permission) =>
-          permission.collection === collection && permission.action === action
-      );
+@Global()
+@Module({
+  providers: [
+    RequestContext, 
+    PermissionService,
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: RequestContextInterceptor,
+    },
+  ],
+  exports: [RequestContext, PermissionService],
+})
+export class CommonModule {}
+````
 
-      if (hasPermission) {
-        // Permission granted - return empty object (no row-level filters)
-        // TODO: Future enhancement - return filter constraints for row-level security
-        // Example: return { authorId: user.id } to limit to user's own records
-        return {};
-      }
-    }
+## File: src/common/context/request.context.ts
+````typescript
+import { Injectable, Scope } from '@nestjs/common';
 
-    // No matching permission found - deny access
-    return false;
+export interface UserContext {
+  id: string | number;
+  role: string;
+  email?: string;
+  permissions?: any[];
+}
+
+@Injectable({ scope: Scope.REQUEST })
+export class RequestContext {
+  private _user: UserContext | null = null;
+  private _tenantId: string | null = null;
+
+  get user(): UserContext | null {
+    return this._user;
   }
 
-  /**
-   * Helper method to check if user has a specific role by name.
-   * Useful for simple role-based checks without full permission resolution.
-   * 
-   * @param roleName - Name of the role to check (e.g., 'admin', 'editor')
-   */
-  async hasRole(roleName: string): Promise<boolean> {
-    const user = this.context.user;
-    
-    if (!user || !user.id) {
-      return false;
-    }
+  set user(user: UserContext | null) {
+    this._user = user;
+  }
 
-    const userWithRoles = await this.em.findOne(
-      User,
-      { id: Number(user.id) },
-      {
-        populate: ['roles'],
-      }
-    );
+  
+  get tenantId(): string | null {
+    return this._tenantId;
+  }
 
-    if (!userWithRoles) {
-      return false;
-    }
+  set tenantId(id: string | null) {
+    this._tenantId = id;
+  }
+}
+````
 
-    return userWithRoles.roles.getItems().some(role => role.name === roleName);
+## File: src/config/auth.config.ts
+````typescript
+import { registerAs } from '@nestjs/config';
+
+export default registerAs('auth', () => ({
+  jwtSecret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN || '15m',
+  refreshExpiresIn: process.env.REFRESH_EXPIRES_IN || '7d',
+  maxFailedRefreshInfo: parseInt(process.env.AUTH_MAX_FAILED_REFRESH || '5', 10),
+  logLevel: process.env.AUTH_LOG_LEVEL || 'basic',
+}));
+````
+
+## File: src/config/database.config.ts
+````typescript
+import { registerAs } from '@nestjs/config';
+
+export default registerAs('database', () => ({
+  host: process.env.DB_HOST || 'localhost',
+  port: parseInt(process.env.DB_PORT || '5432', 10),
+  user: process.env.DB_USER || 'postgres',
+  password: process.env.DB_PASSWORD || '123',
+  name: process.env.DB_NAME || 'postgres',
+  allowGlobalContext: process.env.DB_ALLOW_GLOBAL_CONTEXT === 'true' || process.env.NODE_ENV !== 'production',
+}));
+````
+
+## File: src/controllers/items.controller.ts
+````typescript
+import { Controller, Get, Post, Patch, Delete, Param, Body, Query, UseGuards } from '@nestjs/common';
+import { ItemsService } from '../services/items.service';
+import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
+
+@Controller('items')
+@UseGuards(JwtAuthGuard)
+export class ItemsController {
+  constructor(private readonly itemsService: ItemsService) {}
+
+  @Get(':collection')
+  async findMany(@Param('collection') collection: string, @Query() query: any) {
+    return this.itemsService.findMany(collection, query);
+  }
+
+  @Get(':collection/:id')
+  async findOne(
+      @Param('collection') collection: string, 
+      @Param('id') id: string,
+      @Query() query: any
+  ) {
+    // Attempt parse ID as number if possible, or keep string
+    const parsedId = !isNaN(Number(id)) ? Number(id) : id;
+    return this.itemsService.findOne(collection, parsedId, query);
+  }
+
+  @Post(':collection')
+  async create(@Param('collection') collection: string, @Body() body: any) {
+    return this.itemsService.create(collection, body);
+  }
+
+  @Patch(':collection/:id')
+  async update(
+      @Param('collection') collection: string, 
+      @Param('id') id: string, 
+      @Body() body: any
+  ) {
+    const parsedId = !isNaN(Number(id)) ? Number(id) : id;
+    return this.itemsService.update(collection, parsedId, body);
+  }
+
+  @Delete(':collection/:id')
+  async delete(
+      @Param('collection') collection: string, 
+      @Param('id') id: string
+  ) {
+    const parsedId = !isNaN(Number(id)) ? Number(id) : id;
+    return this.itemsService.delete(collection, parsedId);
   }
 }
 ````
@@ -6224,6 +6180,170 @@ export class Role {
 }
 ````
 
+## File: src/main.ts
+````typescript
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import {
+  BadRequestException,
+  INestApplication,
+  ValidationPipe,
+} from '@nestjs/common';
+import { EntityManager as MikroOrmEntityManager } from '@mikro-orm/core'; // Import generic EM
+import { Role } from './database/entities/role.entity';
+import { Permission } from './database/entities/permission.entity';
+import { User } from './database/entities/user.entity';
+import * as argon from 'argon2'; // Use 'argon' as a common alias
+
+async function seedPermissionsAndRoles(app: INestApplication) {
+  const em = app.get(MikroOrmEntityManager);
+
+  // Define Permissions
+  const postActions = ['create', 'read', 'update', 'delete'];
+  const permissionsToCreate = [] as Pick<Permission, 'collection' | 'action'>[];
+  for (const action of postActions) {
+    permissionsToCreate.push({ collection: 'post', action });
+  }
+
+  const createdPermissions: Permission[] = [];
+  for (const permData of permissionsToCreate) {
+    let permission = await em.findOne(Permission, permData);
+    if (!permission) {
+      permission = em.create(Permission, permData);
+      await em.persistAndFlush(permission);
+      console.log(
+        `Created permission: ${permData.collection}.${permData.action}`,
+      );
+    } else {
+      console.log(
+        `Permission already exists: ${permData.collection}.${permData.action}`,
+      );
+    }
+    createdPermissions.push(permission);
+  }
+
+  // Find specific permissions for roles
+  const postReadPermission = createdPermissions.find(
+    (p) => p.collection === 'post' && p.action === 'read',
+  );
+  const allPostPermissions = createdPermissions.filter(
+    (p) => p.collection === 'post',
+  );
+
+  // Create Roles
+  let adminRole = await em.findOne(Role, { name: 'admin' });
+  if (!adminRole) {
+    adminRole = em.create(Role, {
+      name: 'admin',
+      description: 'Administrator with full access to posts',
+    });
+    for (const perm of allPostPermissions) {
+      adminRole.permissions.add(perm);
+    }
+    await em.persistAndFlush(adminRole);
+    console.log('Created role: admin');
+  } else {
+    // Ensure admin role has all permissions if it already existed but might have been incomplete
+    for (const perm of allPostPermissions) {
+      if (!adminRole.permissions.contains(perm)) {
+        adminRole.permissions.add(perm);
+      }
+    }
+    await em.persistAndFlush(adminRole);
+    console.log('Role already exists: admin (permissions updated)');
+  }
+
+  let publicRole = await em.findOne(Role, { name: 'public' });
+  if (!publicRole) {
+    publicRole = em.create(Role, {
+      name: 'public',
+      description: 'Public user with read-only access to posts',
+    });
+    if (postReadPermission) {
+      publicRole.permissions.add(postReadPermission);
+    }
+    await em.persistAndFlush(publicRole);
+    console.log('Created role: public');
+  } else {
+    // Ensure public role has read permission if it already existed but might have been incomplete
+    if (
+      postReadPermission &&
+      !publicRole.permissions.contains(postReadPermission)
+    ) {
+      publicRole.permissions.add(postReadPermission);
+    }
+    await em.persistAndFlush(publicRole);
+    console.log('Role already exists: public (permissions updated)');
+  }
+
+  // Create Admin User
+  let adminUser = await em.findOne(User, { email: 'admin@example.com' });
+  if (!adminUser) {
+    const hashedPassword = await argon.hash('adminpassword123'); // IMPORTANT: Change this in production!
+    adminUser = em.create(User, {
+      name: 'Admin User',
+      email: 'admin@example.com',
+      password: hashedPassword,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    adminUser.roles.add(adminRole);
+    await em.persistAndFlush(adminUser);
+    console.log('Created admin user: admin@example.com');
+  } else {
+    // Ensure admin user has admin role if it already existed but might have been incomplete
+    if (!adminUser.roles.contains(adminRole)) {
+      adminUser.roles.add(adminRole);
+      await em.persistAndFlush(adminUser);
+      console.log(
+        'Admin user already exists: admin@example.com (role updated)',
+      );
+    } else {
+      console.log('Admin user already exists: admin@example.com');
+    }
+  }
+
+  console.log('RBAC Seeding complete!');
+}
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      stopAtFirstError: true,
+      exceptionFactory: (validationErrors) => {
+        const errors = {};
+
+        for (const err of validationErrors) {
+          const field = err.property;
+          const messages = Object.values(err.constraints || {});
+          errors[field] = messages.length === 1 ? messages[0] : messages;
+        }
+
+        return new BadRequestException({
+          errors,
+        });
+      },
+    }),
+  );
+
+  // Only run seeding in development or when explicitly enabled
+  // IMPORTANT: Remove or secure this in production environments!
+  if (
+    process.env.NODE_ENV !== 'production' ||
+    process.env.RUN_SEEDING === 'true'
+  ) {
+    // await seedPermissionsAndRoles(app);
+  }
+
+  await app.listen(process.env.PORT ?? 3000);
+}
+bootstrap();
+````
+
 ## File: src/meta/entity-registry.service.ts
 ````typescript
 import { Injectable, OnModuleInit, Logger, NotFoundException } from '@nestjs/common';
@@ -6437,123 +6557,25 @@ export class GenericRepository {
 }
 ````
 
-## File: src/services/items.service.ts
+## File: src/services/services.module.ts
 ````typescript
-import { Injectable, BadRequestException } from '@nestjs/common';
-import { GenericRepository } from '../repository/generic.repository';
-import { QueryEngineService } from '../query/query-engine.service';
-import { PermissionService } from '../common/permissions/permission.service';
-import { EntityRegistryService } from '../meta/entity-registry.service';
+import { Module } from '@nestjs/common';
+import { ItemsService } from './items.service'; // Adjust path if needed or just export provider
+import { CommonModule } from '../common/common.module';
+import { QueryModule } from '../query/query.module';
+import { RepositoryModule } from '../repository/repository.module';
+import { MetaModule } from '../meta/meta.module';
+import { ItemsController } from '../controllers/items.controller';
+import { PostsController } from '../controllers/post.controller';
+import { AuthModule } from '../auth/auth.module';
 
-@Injectable()
-export class ItemsService {
-  constructor(
-    private readonly repository: GenericRepository,
-    private readonly queryEngine: QueryEngineService,
-    private readonly permissionService: PermissionService,
-    private readonly registry: EntityRegistryService,
-  ) {}
-
-  private validateCollection(collection: string) {
-    if (!this.registry.hasCollection(collection)) {
-      throw new BadRequestException(`Collection ${collection} does not exist`);
-    }
-  }
-
-  async findMany(collection: string, query: any) {
-    this.validateCollection(collection);
-    
-    const options = await this.queryEngine.parseAndCompile({
-      collection,
-      query,
-    });
-    // Check if meta is requested
-    const hasMeta = options.meta && (options.meta.filter_count || options.meta.total_count);
-    if (!hasMeta) {
-      // No meta requested - return data directly (backward compatible)
-      const data = await this.repository.find(collection, options);
-      return data;
-    }
-    // Optimize: Use findAndCount when filter_count is needed
-    // This gets both data and filter_count in a single query
-    let data: any[];
-    let filterCount: number | undefined;
-    if (options.meta.filter_count) {
-      // Single optimized query for data + filter_count
-      [data, filterCount] = await this.repository.findAndCount(collection, options);
-    } else {
-      // Only total_count needed, use regular find
-      data = await this.repository.find(collection, options);
-    }
-    // Build meta object with only requested fields
-    const meta: any = {};
-    if (options.meta.filter_count) {
-      meta.filter_count = filterCount;
-    }
-    if (options.meta.total_count) {
-      // Separate query for total count (no filters)
-      meta.total_count = await this.repository.count(collection, {});
-    }
-    // Return structured response
-    return {
-      data,
-      meta,
-    };
-  }
-
-  async findOne(collection: string, id: string | number, query: any) {
-    this.validateCollection(collection);
-    
-    // We treat findOne as a findMany with a specific ID filter + read permissions
-    const options = await this.queryEngine.parseAndCompile({
-        collection,
-        query,
-    });
-    
-    // We explicitly use findOne from repo but we use the populate options from the query engine.
-    // Security note: We should also apply the WHERE clause from permissions!
-    // But repo.findOne usually just takes ID.
-    // If we want to strictly enforce row-level permissions on single item fetch,
-    // we should validte the item matches the permission filters.
-    // Or just use findMany with ID filter and limit 1.
-    // For now, let's use check permissions explicitly or trust the generic Find.
-    
-    // Simple verification check:
-    const permissionFilter = this.permissionService.can(collection, 'read');
-    if (Object.keys(permissionFilter).length > 0) {
-        // If there are row-level constraints, we MUST query with them.
-        options.where = { ...options.where, id };
-        // Use findMany to respect the where clause
-        const results = await this.repository.find(collection, { ...options, limit: 1 });
-        if (results.length === 0) {
-            throw new BadRequestException('Not found or forbidden');
-        }
-        return results[0];
-    }
-
-    return this.repository.findOne(collection, id, { populate: options.populate });
-  }
-
-  async create(collection: string, data: any) {
-    this.validateCollection(collection);
-    this.permissionService.assert(collection, 'create');
-    return this.repository.create(collection, data);
-  }
-
-  async update(collection: string, id: string | number, data: any) {
-    this.validateCollection(collection);
-    this.permissionService.assert(collection, 'update');
-    // TODO: Row-level update permissions check?
-    // Usually requires fetching the item first and checking if it meets criteria.
-    return this.repository.update(collection, id, data);
-  }
-
-  async delete(collection: string, id: string | number) {
-    this.validateCollection(collection);
-    this.permissionService.assert(collection, 'delete');
-    return this.repository.delete(collection, id);
-  }
-}
+@Module({
+  imports: [CommonModule, QueryModule, RepositoryModule, MetaModule, AuthModule],
+  controllers: [PostsController,ItemsController],
+  providers: [ItemsService],
+  exports: [ItemsService],
+})
+export class ServicesModule {}
 ````
 
 ## File: src/storage/local-storage.adapter.ts
@@ -6771,6 +6793,634 @@ export interface IStorageAdapter {
 }
 ````
 
+## File: src/auth/auth.service.ts
+````typescript
+import { Injectable, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
+import { EntityManager } from '@mikro-orm/core';
+import * as argon2 from 'argon2';
+import { randomBytes } from 'crypto';
+import { ulid } from 'ulid';
+import { User } from '../database/entities/user.entity';
+import { RefreshToken } from '../database/entities/refresh-token.entity';
+import { ResetPasswordToken } from '../database/entities/reset-password-token.entity';
+
+/**
+ * AuthService - Handles authentication with split-token refresh mechanism.
+ * 
+ * Token Strategy:
+ * - Access tokens: JWT, short-lived (15 min)
+ * - Refresh tokens: Split-token format <token_id>.<token_secret>
+ *   - token_id: ULID, stored in plaintext, indexed for O(1) lookup
+ *   - token_secret: Random bytes, hashed with argon2
+ * 
+ * Security: All token verification uses O(1) indexed lookup by token_id.
+ */
+@Injectable()
+export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+  private readonly logLevel: string;
+
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly em: EntityManager,
+    private readonly configService: ConfigService,
+  ) {
+      this.logLevel = this.configService.get<string>('auth.logLevel', 'basic');
+  }
+
+  /**
+   * Issue both access and refresh tokens for a user.
+   * 
+   * @param userId - User ID to issue tokens for
+   * @returns Object with accessToken (JWT) and refreshToken (split-token)
+   */
+  async issueTokens(userId: number): Promise<{
+    accessToken: string;
+    refreshToken: string;
+  }> {
+    // 1. Generate JWT access token
+    const accessToken = this.jwtService.sign({ sub: userId });
+
+    // 2. Generate split refresh token
+    const tokenId = ulid();
+    const tokenSecret = randomBytes(32).toString('base64url');
+    const secretHash = await argon2.hash(tokenSecret);
+
+    // 3. Store in database
+    const refreshTokenEntity = this.em.create(RefreshToken, {
+      tokenId,
+      secretHash,
+      user: userId,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+    });
+    await this.em.persistAndFlush(refreshTokenEntity);
+
+    // 4. Return combined token to client
+    const refreshToken = `${tokenId}.${tokenSecret}`;
+
+    return { accessToken, refreshToken };
+  }
+
+  /**
+   * Rotate refresh token - verify old token and issue new tokens.
+   * 
+   * Security: O(1) lookup by token_id, then constant-time verification.
+   * Old token is immediately revoked.
+   * 
+   * @param fullToken - Full refresh token in format <token_id>.<token_secret>
+   * @returns New access and refresh tokens
+   */
+  async rotateRefreshToken(fullToken: string): Promise<{
+    accessToken: string;
+    refreshToken: string;
+  }> {
+    // 1. Parse token into components
+    const [tokenId, tokenSecret] = fullToken.split('.');
+    
+        if (!tokenId || !tokenSecret) {
+          this.logAuthEvent('Refresh Failed', 'Invalid token format');
+          throw new UnauthorizedException('Token không hợp lệ !');
+        }
+    
+        // 2. O(1) lookup by token_id (SINGLE ROW QUERY)
+        const storedToken = await this.em.findOne(RefreshToken, {
+          tokenId,
+          revokedAt: null,
+          expiresAt: { $gt: new Date() },
+        });
+    
+        if (!storedToken) {
+           this.logAuthEvent('Refresh Failed', `Token not found or expired: ${tokenId}`);
+          throw new UnauthorizedException('Token không hợp lệ !');
+        }
+    
+        // 3. Verify secret using constant-time comparison
+        const isValid = await argon2.verify(storedToken.secretHash, tokenSecret);
+    
+        if (!isValid) {
+          this.logAuthEvent('Refresh Failed', `Invalid secret for token: ${tokenId}`);
+          throw new UnauthorizedException('Token không hợp lệ !');
+        }
+    
+        // 4. Revoke old token immediately
+        storedToken.revokedAt = new Date();
+        this.logAuthEvent('Token Rotated', `User: ${storedToken.user.id}, Old Token: ${tokenId}`);
+    
+        // 5. Issue new tokens
+        const newTokens = await this.issueTokens(storedToken.user.id);
+    
+        await this.em.flush();
+    
+        return newTokens;
+  }
+
+  /**
+   * Revoke a refresh token (used for logout).
+   * 
+   * @param fullToken - Full refresh token to revoke
+   */
+  async revokeRefreshToken(fullToken: string): Promise<void> {
+    const [tokenId, tokenSecret] = fullToken.split('.');
+
+    if (!tokenId || !tokenSecret) {
+      return; // Silent fail for logout
+    }
+
+    // O(1) lookup
+    const storedToken = await this.em.findOne(RefreshToken, {
+      tokenId,
+      revokedAt: null,
+    });
+
+    if (!storedToken) {
+      return; // Already revoked or doesn't exist
+    }
+
+    // Verify secret
+    const isValid = await argon2.verify(storedToken.secretHash, tokenSecret);
+
+    if (!isValid) {
+      return; // Invalid token, nothing to revoke
+    }
+
+    // Revoke
+    storedToken.revokedAt = new Date();
+    await this.em.flush();
+  }
+
+  /**
+   * Create a reset password token for a user.
+   * Invalidates any existing reset tokens for this user.
+   * 
+   * @param userId - User ID to create reset token for
+   * @returns Reset token in format <token_id>.<token_secret>
+   */
+  async createResetPasswordToken(userId: number): Promise<string> {
+    // 1. Invalidate any existing reset tokens for this user
+    await this.em.nativeUpdate(
+      ResetPasswordToken,
+      { user: userId, usedAt: null },
+      { usedAt: new Date() }
+    );
+
+    // 2. Generate split token
+    const tokenId = ulid();
+    const tokenSecret = randomBytes(32).toString('base64url');
+    const secretHash = await argon2.hash(tokenSecret);
+
+    // 3. Store in database
+    const resetTokenEntity = this.em.create(ResetPasswordToken, {
+      tokenId,
+      secretHash,
+      user: userId,
+      expiresAt: new Date(Date.now() + 1 * 60 * 60 * 1000), // 1 hour
+    });
+    await this.em.persistAndFlush(resetTokenEntity);
+
+    // 4. Return combined token
+    return `${tokenId}.${tokenSecret}`;
+  }
+
+  /**
+   * Reset user password using a reset token.
+   * Token is one-time use only.
+   * 
+   * @param fullToken - Reset token in format <token_id>.<token_secret>
+   * @param newPassword - New password (will be hashed)
+   */
+  async resetPassword(fullToken: string, newPassword: string): Promise<void> {
+    // 1. Parse token
+    const [tokenId, tokenSecret] = fullToken.split('.');
+
+    if (!tokenId || !tokenSecret) {
+      throw new BadRequestException('Token không hợp lệ !');
+    }
+
+    // 2. O(1) lookup
+    const storedToken = await this.em.findOne(ResetPasswordToken, {
+      tokenId,
+      usedAt: null,
+      expiresAt: { $gt: new Date() },
+    });
+
+    if (!storedToken) {
+      throw new BadRequestException('Token không hợp lệ !');
+    }
+
+    // 3. Verify secret
+    const isValid = await argon2.verify(storedToken.secretHash, tokenSecret);
+
+    if (!isValid) {
+      throw new BadRequestException('Token không hợp lệ !');
+    }
+
+    // 4. Mark as used (one-time use)
+    storedToken.usedAt = new Date();
+
+    // 5. Update password
+    const passwordHash = await argon2.hash(newPassword);
+    await this.em.nativeUpdate(
+      User,
+      { id: storedToken.user.id },
+      { password: passwordHash }
+    );
+
+    await this.em.flush();
+  }
+
+  /**
+   * Login user with email and password.
+   * 
+   * @param email - User email
+   * @param password - User password (plaintext)
+   * @returns Access and refresh tokens
+   */
+  async login(email: string, password: string): Promise<{
+    accessToken: string;
+    refreshToken: string;
+  }> {
+    const user = await this.em.findOne(User, { email });
+
+    if (!user || !user.password) {
+      this.logAuthEvent('Login Failed', `Invalid credentials for email: ${email}`);
+      throw new UnauthorizedException('Sai tài khoản hoặc mật khẩu !');
+    }
+
+    const isValid = await argon2.verify(user.password, password);
+
+    if (!isValid) {
+      this.logAuthEvent('Login Failed', `Invalid password for email: ${email}`);
+      throw new UnauthorizedException('Sai tài khoản hoặc mật khẩu !');
+    }
+
+    this.logAuthEvent('Login Success', `User: ${user.id}`);
+    return this.issueTokens(user.id);
+  }
+
+  /**
+   * Get user by ID (for /auth/me endpoint).
+   * 
+   * @param userId - User ID
+   * @returns User object
+   */
+  async getMe(userId: number): Promise<User> {
+    const user = await this.em.findOne(User, { id: userId });
+
+    if (!user) {
+      throw new UnauthorizedException('Người dùng không tồn tại !');
+    }
+
+    return user;
+  }
+
+  private logAuthEvent(event: string, details: string) {
+      if (this.logLevel === 'verbose' || event.includes('Failed') || event.includes('Reset')) {
+          this.logger.log(`[${event}] ${details}`);
+      }
+  }
+}
+````
+
+## File: src/common/permissions/permission.service.ts
+````typescript
+import { Injectable, ForbiddenException } from '@nestjs/common';
+import { EntityManager } from '@mikro-orm/core';
+import { RequestContext } from '../context/request.context';
+import { User } from '../../database/entities/user.entity';
+import { Permission } from '../../database/entities/permission.entity';
+import { actionTranslations, collectionTranslations } from '../localization/vi';
+
+@Injectable()
+export class PermissionService {
+  constructor(
+    private readonly context: RequestContext,
+    private readonly em: EntityManager,
+  ) {}
+
+  /**
+   * Assert that the user has permission to perform action(s) on collection.
+   * Throws ForbiddenException if denied.
+   *
+   * @param collection - Collection or virtual scope name
+   * @param action - Single action or array of actions (ALL must pass)
+   */
+  async assert(collection: string, action: string | string[]): Promise<void> {
+    const actions = Array.isArray(action) ? action : [action];
+
+    for (const act of actions) {
+      const result = await this.can(collection, act);
+
+      // If can() returns false or throws, deny
+      if (result === false) {
+        const translatedCollection =
+          collectionTranslations[collection] || collection;
+        const translatedAction = actionTranslations[act] || act;
+        throw new ForbiddenException(
+          `Bạn không có quyền ${translatedAction} trên ${translatedCollection}`,
+        );
+      }
+
+      // If can() returns a filter object with constraints, we can't enforce it here
+      // (assert is for boolean checks, not filter-based row-level security)
+      // For now, we allow it if it returns an object (truthy)
+    }
+  }
+
+  /**
+   * Check if the current user has permission to perform action on collection.
+   * 
+   * This method resolves the permission chain:
+   * 1. Get current user from RequestContext
+   * 2. Load user's roles (via users_roles join table)
+   * 3. Load permissions for those roles (via roles_permissions join table)
+   * 4. Check if any permission matches (collection, action) pair
+   * 
+   * Returns:
+   * - {} (empty object) = allowed with no row-level filters
+   * - { filter } = allowed with row-level constraints (future enhancement)
+   * - false = denied
+   * 
+   * @param collection - Collection or virtual scope name (e.g., 'post', 'user', 'reports')
+   * @param action - Arbitrary action string (e.g., 'read', 'create', 'export', 'publish')
+   * 
+   * NOTE: Actions are extensible strings, not limited to CRUD operations.
+   * This allows domain-specific permissions like 'publish', 'approve', 'export', etc.
+   */
+  async can(collection: string, action: string): Promise<any> {
+    const user = this.context.user;
+    
+    // TODO: Add caching layer here to avoid repeated database queries
+    // Extension point: Implement Redis/in-memory cache for user permissions
+    // Cache key: `user:${userId}:permissions` with TTL
+    
+    // Public/anonymous access - no user in context
+    if (!user || !user.id) {
+      // For demo: allow read on certain collections for public users
+      // In production, check for a "public" or "anonymous" role in the database
+      if (action === 'read' && ['post', 'comment'].includes(collection)) {
+        if (collection === 'post') return { status: 'published' };
+        return {};
+      }
+      return false; // Deny by default
+    }
+
+    // Load user with roles and permissions from database
+    // This performs the RBAC resolution: user → roles → permissions
+    const userWithRoles = await this.em.findOne(
+      User,
+      { id: Number(user.id) },
+      {
+        populate: ['roles', 'roles.permissions'],
+      }
+    );
+
+    if (!userWithRoles) {
+      return false; // User not found
+    }
+
+    // Check if user has a role with the required permission
+    // Iterate through all roles assigned to the user
+    for (const role of userWithRoles.roles) {
+      // Check if this role has a permission matching (collection, action)
+      const hasPermission = role.permissions.getItems().some(
+        (permission: Permission) =>
+          permission.collection === collection && permission.action === action
+      );
+
+      if (hasPermission) {
+        // Permission granted - return empty object (no row-level filters)
+        // TODO: Future enhancement - return filter constraints for row-level security
+        // Example: return { authorId: user.id } to limit to user's own records
+        return {};
+      }
+    }
+
+    // No matching permission found - deny access
+    return false;
+  }
+
+  /**
+   * Helper method to check if user has a specific role by name.
+   * Useful for simple role-based checks without full permission resolution.
+   * 
+   * @param roleName - Name of the role to check (e.g., 'admin', 'editor')
+   */
+  async hasRole(roleName: string): Promise<boolean> {
+    const user = this.context.user;
+    
+    if (!user || !user.id) {
+      return false;
+    }
+
+    const userWithRoles = await this.em.findOne(
+      User,
+      { id: Number(user.id) },
+      {
+        populate: ['roles'],
+      }
+    );
+
+    if (!userWithRoles) {
+      return false;
+    }
+
+    return userWithRoles.roles.getItems().some(role => role.name === roleName);
+  }
+}
+````
+
+## File: src/database/entities/user.entity.ts
+````typescript
+import { Entity, PrimaryKey, Property, OneToMany, ManyToMany, Collection, Cascade } from '@mikro-orm/core';
+import { Post } from './post.entity';
+import { Comment } from './comment.entity';
+import { Role } from './role.entity';
+
+@Entity({ tableName: 'users' })
+export class User {
+  @PrimaryKey()
+  id!: number;
+
+  @Property()
+  name!: string;
+
+  @Property({ unique: true })
+  email!: string;
+
+  /**
+   * Hashed password for authentication
+   * Should be hashed using bcrypt or similar before storage
+   */
+  @Property({ hidden: true }) // Hidden from serialization by default
+  password!: string;
+
+  @Property({ onCreate: () => new Date() })
+  createdAt = new Date();
+
+  @Property({ onUpdate: () => new Date() })
+  updatedAt = new Date();
+
+  @OneToMany(() => Post, post => post.author, { cascade: [Cascade.ALL] })
+  posts = new Collection<Post>(this);
+
+  @OneToMany(() => Comment, comment => comment.author)
+  comments = new Collection<Comment>(this);
+
+  /**
+   * Roles assigned to this user (many-to-many)
+   * Managed via users_roles join table
+   */
+  @ManyToMany(() => Role, (role) => role.users, { owner: true })
+  roles = new Collection<Role>(this);
+}
+````
+
+## File: src/query/query.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { FilterParser } from './parser/filter.parser';
+import { SortParser } from './parser/sort.parser';
+import { PaginationParser } from './parser/pagination.parser';
+import { FieldsParser } from './parser/fields.parser';
+import { DeepParser } from './parser/deep.parser';
+import { MetaParser } from './parser/meta.parser';
+import { WhereCompiler } from './compiler/where.compiler';
+import { OrderCompiler } from './compiler/order.compiler';
+import { FieldsCompiler } from './compiler/fields.compiler';
+import { QueryEngineService } from './query-engine.service';
+import { CommonModule } from '../common/common.module';
+
+@Module({
+  imports: [CommonModule, ConfigModule],
+  providers: [
+    FilterParser, SortParser, PaginationParser, FieldsParser, DeepParser, MetaParser,
+    WhereCompiler, OrderCompiler, FieldsCompiler,
+    QueryEngineService
+  ],
+  exports: [QueryEngineService],
+})
+export class QueryModule {}
+````
+
+## File: src/services/items.service.ts
+````typescript
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { GenericRepository } from '../repository/generic.repository';
+import { QueryEngineService } from '../query/query-engine.service';
+import { PermissionService } from '../common/permissions/permission.service';
+import { EntityRegistryService } from '../meta/entity-registry.service';
+
+@Injectable()
+export class ItemsService {
+  constructor(
+    private readonly repository: GenericRepository,
+    private readonly queryEngine: QueryEngineService,
+    private readonly permissionService: PermissionService,
+    private readonly registry: EntityRegistryService,
+  ) {}
+
+  private validateCollection(collection: string) {
+    if (!this.registry.hasCollection(collection)) {
+      throw new BadRequestException(`Collection ${collection} does not exist`);
+    }
+  }
+
+  async findMany(collection: string, query: any) {
+     this.validateCollection(collection);
+    
+    const options = await this.queryEngine.parseAndCompile({
+      collection,
+      query,
+    });
+    // Check if meta is requested
+    const hasMeta = options.meta && (options.meta.filter_count || options.meta.total_count);
+    if (!hasMeta) {
+      // No meta requested - return data directly (backward compatible)
+      const data = await this.repository.find(collection, options);
+      return data;
+    }
+    // Optimize: Use findAndCount when filter_count is needed
+    // This gets both data and filter_count in a single query
+    let data: any[];
+    let filterCount: number | undefined;
+    if (options.meta.filter_count) {
+      // Single optimized query for data + filter_count
+      [data, filterCount] = await this.repository.findAndCount(collection, options);
+    } else {
+      // Only total_count needed, use regular find
+      data = await this.repository.find(collection, options);
+    }
+    // Build meta object with only requested fields
+    const meta: any = {};
+    if (options.meta.filter_count) {
+      meta.filter_count = filterCount;
+    }
+    if (options.meta.total_count) {
+      // Separate query for total count (no filters)
+      meta.total_count = await this.repository.count(collection, {});
+    }
+    // Return structured response
+    return {
+      data,
+      meta,
+    };
+  }
+
+  async findOne(collection: string, id: string | number, query: any) {
+    this.validateCollection(collection);
+    
+    // The query engine is responsible for applying 'read' permission filters (row-level security)
+    // into the compiled 'where' clause.
+    const options = await this.queryEngine.parseAndCompile({
+        collection,
+        query,
+    });
+    
+    // Combine the query engine's WHERE clause (which includes permission filters) 
+    // with the ID filter for this specific item.
+    options.where = {
+      $and: [options.where, { id }]
+    };
+
+    // Use find() with limit: 1 to ensure all filters (including permissions) are respected.
+    const results = await this.repository.find(collection, { ...options, limit: 1 });
+
+    if (results.length === 0) {
+      // Using NotFoundException is standard. It prevents leaking information about
+      // whether the resource exists but is forbidden, or truly does not exist.
+      throw new NotFoundException(
+        `Item ${id} in ${collection} not found or permission denied`,
+      );
+    }
+
+    return results[0];
+  }
+
+  async create(collection: string, data: any) {
+     this.validateCollection(collection);
+    await this.permissionService.assert(collection, 'create');
+    return this.repository.create(collection, data);
+  }
+
+  async update(collection: string, id: string | number, data: any) {
+     this.validateCollection(collection);
+    await this.permissionService.assert(collection, 'update');
+    // TODO: Row-level update permissions check?
+    // Usually requires fetching the item first and checking if it meets criteria.
+    return this.repository.update(collection, id, data);
+  }
+
+  async delete(collection: string, id: string | number) {
+    this.validateCollection(collection);
+    await this.permissionService.assert(collection, 'delete');
+    return this.repository.delete(collection, id);
+  }
+}
+````
+
 ## File: mikro-orm.config.ts
 ````typescript
 import 'dotenv/config'; // Ensure .env is loaded for CLI
@@ -6790,7 +7440,7 @@ export default defineConfig({
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT || '5432', 10),
   user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD,
+  password: process.env.DB_PASSWORD || '123',
   debug: process.env.NODE_ENV !== 'production',
   allowGlobalContext: process.env.DB_ALLOW_GLOBAL_CONTEXT === 'true', // CLI/Migration usage
   migrations: {
@@ -6834,6 +7484,7 @@ export default defineConfig({
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.0.1",
     "@nestjs/jwt": "^11.0.2",
+    "@nestjs/mapped-types": "^2.1.0",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/schedule": "^6.1.0",
@@ -6895,52 +7546,6 @@ export default defineConfig({
 }
 ````
 
-## File: src/database/entities/user.entity.ts
-````typescript
-import { Entity, PrimaryKey, Property, OneToMany, ManyToMany, Collection, Cascade } from '@mikro-orm/core';
-import { Post } from './post.entity';
-import { Comment } from './comment.entity';
-import { Role } from './role.entity';
-
-@Entity({ tableName: 'users' })
-export class User {
-  @PrimaryKey()
-  id!: number;
-
-  @Property()
-  name!: string;
-
-  @Property({ unique: true })
-  email!: string;
-
-  /**
-   * Hashed password for authentication
-   * Should be hashed using bcrypt or similar before storage
-   */
-  @Property({ hidden: true }) // Hidden from serialization by default
-  password!: string;
-
-  @Property({ onCreate: () => new Date() })
-  createdAt = new Date();
-
-  @Property({ onUpdate: () => new Date() })
-  updatedAt = new Date();
-
-  @OneToMany(() => Post, post => post.author, { cascade: [Cascade.ALL] })
-  posts = new Collection<Post>(this);
-
-  @OneToMany(() => Comment, comment => comment.author)
-  comments = new Collection<Comment>(this);
-
-  /**
-   * Roles assigned to this user (many-to-many)
-   * Managed via users_roles join table
-   */
-  @ManyToMany(() => Role, (role) => role.users, { owner: true })
-  roles = new Collection<Role>(this);
-}
-````
-
 ## File: src/query/query-engine.service.ts
 ````typescript
 import { Injectable, BadRequestException } from '@nestjs/common';
@@ -6994,7 +7599,7 @@ export class QueryEngineService {
     if (!allowRegex) {
         // Simple recursive check or check stringified query for regex operators if feasible 
         // For now, checks will happen in parsers/compilers ideally, but here is a high level guard
-        const queryStr = JSON.stringify(query.filter);
+        const queryStr = JSON.stringify(query.filter ?? {});
         if (queryStr.includes('"$regex"') || queryStr.includes('"$iregex"')) {
              throw new BadRequestException('Regex queries are disabled by configuration');
         }
@@ -7070,34 +7675,6 @@ export class QueryEngineService {
 }
 ````
 
-## File: src/query/query.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-import { FilterParser } from './parser/filter.parser';
-import { SortParser } from './parser/sort.parser';
-import { PaginationParser } from './parser/pagination.parser';
-import { FieldsParser } from './parser/fields.parser';
-import { DeepParser } from './parser/deep.parser';
-import { MetaParser } from './parser/meta.parser';
-import { WhereCompiler } from './compiler/where.compiler';
-import { OrderCompiler } from './compiler/order.compiler';
-import { FieldsCompiler } from './compiler/fields.compiler';
-import { QueryEngineService } from './query-engine.service';
-import { CommonModule } from '../common/common.module';
-
-@Module({
-  imports: [CommonModule, ConfigModule],
-  providers: [
-    FilterParser, SortParser, PaginationParser, FieldsParser, DeepParser, MetaParser,
-    WhereCompiler, OrderCompiler, FieldsCompiler,
-    QueryEngineService
-  ],
-  exports: [QueryEngineService],
-})
-export class QueryModule {}
-````
-
 ## File: src/app.module.ts
 ````typescript
 import { Module } from '@nestjs/common';
@@ -7124,6 +7701,7 @@ import { Permission } from './database/entities/permission.entity';
 import { RefreshToken } from './database/entities/refresh-token.entity';
 import { ResetPasswordToken } from './database/entities/reset-password-token.entity';
 import { File } from './database/entities/file.entity';
+import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 
 @Module({
   imports: [
@@ -7134,6 +7712,7 @@ import { File } from './database/entities/file.entity';
     MikroOrmModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
+        driver: PostgreSqlDriver,
         entities: [User, Post, Comment, Role, Permission, RefreshToken, ResetPasswordToken, File],
         dbName: configService.get<string>('database.name'),
         host: configService.get<string>('database.host'),

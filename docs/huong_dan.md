@@ -1,253 +1,440 @@
-Tài liệu Kiến trúc Backend
+# Tài liệu Kiến trúc và Hướng dẫn sử dụng Backend
 
-  Tài liệu này mô tả kiến trúc của hệ thống backend, được thiết kế với mục tiêu linh hoạt, an toàn và có khả năng mở rộng cao.
+Tài liệu này mô tả kiến trúc của hệ thống backend, được thiết kế với mục tiêu linh hoạt, an toàn và có khả năng mở rộng cao, đồng thời hướng dẫn cách sử dụng và mở rộng hệ thống.
 
-  1. Tổng quan Kiến trúc
+---
 
-  Hệ thống được xây dựng dựa trên NestJS và đi theo một kiến trúc hướng module, tách biệt rõ ràng các mối quan tâm (separation of concerns). Nền tảng này 
-  không chỉ là một boilerplate thông thường mà là một Headless CMS linh hoạt với các thành phần cốt lõi được thiết kế để trừu tượng hóa các tác vụ lặp lại  và tăng cường bảo mật.
+## 1. Tổng quan Kiến trúc
 
-  Các thành phần chính bao gồm:
+Hệ thống được xây dựng dựa trên NestJS và đi theo một kiến trúc hướng module, tách biệt rõ ràng các mối quan tâm (separation of concerns). Nền tảng này không chỉ là một boilerplate thông thường mà là một Headless CMS linh hoạt với các thành phần cốt lõi được thiết kế để trừu tượng hóa các tác vụ lặp lại và tăng cường bảo mật.
 
-   1. Query Engine: Trái tim của hệ thống, chịu trách nhiệm phân tích và thực thi các truy vấn động từ client.
-   2. Generic Items API: Lớp giao tiếp chính, cung cấp các endpoint CRUD tự động cho mọi thực thể dữ liệu (entity).
-   3. Authentication & Authorization (RBAC): Module bảo mật, quản lý danh tính người dùng và kiểm soát quyền truy cập chi tiết.
-   4. Storage Service: Cung cấp lớp trừu tượng cho việc lưu trữ và quản lý file.
-   5. Custom Endpoints Framework: Cung cấp cấu trúc để xây dựng các endpoint với logic nghiệp vụ riêng.
-   6. Configuration Module: Quản lý cấu hình ứng dụng một cách an toàn và linh hoạt.
+**Các thành phần chính bao gồm:**
 
-  ---
+1.  **Query Engine**: Trái tim của hệ thống, chịu trách nhiệm phân tích và thực thi các truy vấn động từ client.
+2.  **Generic Items API**: Lớp giao tiếp chính, cung cấp các endpoint CRUD tự động cho mọi thực thể dữ liệu (entity).
+3.  **Authentication & Authorization (RBAC)**: Module bảo mật, quản lý danh tính người dùng và kiểm soát quyền truy cập chi tiết.
+4.  **Storage Service**: Cung cấp lớp trừu tượng cho việc lưu trữ và quản lý file.
+5.  **Custom Endpoints Framework**: Cung cấp cấu trúc để xây dựng các endpoint với logic nghiệp vụ riêng.
+6.  **Configuration Module**: Quản lý cấu hình ứng dụng một cách an toàn và linh hoạt.
 
-  2. Module: Query Engine
+---
 
-  2.1. Mục đích
+## 2. Module: Query Engine
 
-  Query Engine là bộ não xử lý dữ liệu của hệ thống. Nó được tạo ra để cung cấp một cơ chế truy vấn dữ liệu mạnh mẽ, linh hoạt và an toàn, cho phép client  yêu cầu dữ liệu phức tạp (lọc, sắp xếp, lồng ghép) thông qua các tham số URL đơn giản mà không cần backend phải định nghĩa trước từng endpoint cụ thể.  
+### 2.1. Mục đích
 
-  2.2. Trách nhiệm
+Query Engine là bộ não xử lý dữ liệu của hệ thống. Nó cung cấp một cơ chế truy vấn dữ liệu mạnh mẽ, linh hoạt và an toàn, cho phép client yêu cầu dữ liệu phức tạp (lọc, sắp xếp, lồng ghép) thông qua các tham số URL đơn giản mà không cần backend phải định nghĩa trước từng endpoint cụ thể.
 
-   * Phân tích (Parse) các tham số truy vấn từ URL (filter, sort, fields, limit, offset, page, deep, meta) thành một cấu trúc dữ liệu trung gian là AST
-     (Abstract Syntax Tree).
-   * Biên dịch (Compile) AST thành câu lệnh truy vấn phù hợp với ORM (MikroORM).
-   * Tự động áp dụng các bộ lọc quyền (permission filters) từ module RBAC để đảm bảo người dùng chỉ thấy dữ liệu họ được phép.
-   * Áp đặt các giới hạn an toàn (query limits) để ngăn chặn các truy vấn có khả năng gây quá tải hệ thống (DoS).
+### 2.2. Trách nhiệm
 
-  2.3. Luồng chính
+- **Phân tích (Parse)** các tham số truy vấn từ URL (`filter`, `sort`, `fields`, `limit`, `offset`, `page`, `deep`, `meta`) thành một cấu trúc dữ liệu trung gian là **AST (Abstract Syntax Tree)**.
+- **Biên dịch (Compile)** AST thành câu lệnh truy vấn phù hợp với ORM (MikroORM).
+- **Tự động áp dụng** các bộ lọc quyền (permission filters) từ module RBAC để đảm bảo người dùng chỉ thấy dữ liệu họ được phép.
+- **Áp đặt** các giới hạn an toàn (query limits) để ngăn chặn các truy vấn có khả năng gây quá tải hệ thống.
 
-   1. Input: Một object chứa các tham số query từ HTTP request (req.query).
-   2. Parsing: Mỗi tham số (filter, sort...) được xử lý bởi một Parser riêng biệt (FilterParser, SortParser...) để chuyển đổi thành các node trong cây 
-      AST.
-   3. Permission Integration: QueryEngine gọi PermissionService để lấy các điều kiện lọc (row-level security) tương ứng với vai trò của người dùng. Các
-      điều kiện này được tích hợp vào cây AST.
-   4. Compiling: Các Compiler (WhereCompiler, OrderCompiler...) duyệt cây AST và xây dựng thành một object FindOptions mà MikroORM có thể hiểu được.   
-   5. Execution: GenericRepository nhận FindOptions và thực thi truy vấn lên cơ sở dữ liệu.
-   6. Output: Dữ liệu trả về cho client.
+### 2.3. Chi Tiết Các Tham Số Truy Vấn
 
-  2.4. Điểm mở rộng
+#### **`filter`**: Lọc dữ liệu
 
-   * Thêm toán tử lọc mới:
-       1. Định nghĩa toán tử trong query.ast.ts (ví dụ: _between).       
-       2. Bổ sung logic xử lý cho toán tử mới trong where.compiler.ts.   
-   * Thêm tham số truy vấn mới:
-       1. Tạo một Parser mới (ví dụ: search.parser.ts).
-       2. Tích hợp Parser này vào luồng xử lý của QueryEngineService.    
-       3. Thêm logic để áp dụng kết quả parse vào câu truy vấn cuối cùng.
+Sử dụng `filter` với một đối tượng JSON để lọc kết quả.
 
-  2.5. Rủi ro / Lưu ý
+- **So sánh bằng:**
+  `GET /items/post?filter={"status":"published"}`
 
-   * Tấn công ReDoS: Nếu cho phép sử dụng Regex ($regex) trong filter mà không có kiểm soát, kẻ tấn công có thể đưa vào các biểu thức Regex phức tạp gây
-     treo hệ thống. Mặc định, tính năng này đã bị vô hiệu hóa (QUERY_ALLOW_REGEX=false).
-   * Truy vấn quá sâu: Các truy vấn lồng nhau quá nhiều cấp có thể gây ra vấn đề N+1 và làm chậm hệ thống. QueryEngine đã có cơ chế giới hạn độ sâu truy
-     vấn (QUERY_MAX_DEPTH, mặc định là 3).
-   * Độ phức tạp của truy vấn: Cần theo dõi và tối ưu hiệu suất cho các truy vấn phức tạp. Luôn đảm bảo các cột dữ liệu được filter thường xuyên đã được
-     đánh index.
+- **Toán tử so sánh:**
+  `GET /items/post?filter={"views":{"_gte":100}}`
+  - Các toán tử được hỗ trợ: `_eq`, `_neq`, `_gt`, `_gte`, `_lt`, `_lte`, `_in`, `_nin`, `_contains`, `_starts_with`.
 
-  ---
+- **Toán tử logic (`_and`, `_or`):**
+  `GET /items/post?filter={"_or":[{"status":"published"},{"status":"archived"}]}`
 
-  3. Module: Generic Items API
+- **Lọc trên quan hệ lồng nhau:**
+  `GET /items/post?filter={"author":{"name":{"_contains":"john"}}}`
 
-  3.1. Mục đích
+#### **`fields`**: Lựa chọn trường dữ liệu
 
-  Cung cấp một bộ API RESTful chung cho tất cả các thực thể dữ liệu đã đăng ký trong hệ thống, giúp giảm thiểu việc phải viết code lặp lại cho các thao
-  tác CRUD cơ bản.
+Kiểm soát các trường được trả về.
 
-  3.2. Trách nhiệm
+- **Tất cả các trường của entity chính:**
+  `GET /items/post?fields=*`
 
-   * Định nghĩa các route chung:
-       * GET /items/:collection
-       * GET /items/:collection/:id
-       * POST /items/:collection
-       * PATCH /items/:collection/:id
-       * DELETE /items/:collection/:id
-   * Tiếp nhận HTTP request, xác định :collection và chuyển tiếp toàn bộ tham số truy vấn đến Query Engine.
-   * Ánh xạ các phương thức HTTP tới các hành động RBAC tương ứng (GET -> read, POST -> create, ...).      
+- **Các trường cụ thể:**
+  `GET /items/post?fields=id,title,createdAt`
 
-  3.3. Luồng chính
+- **Bao gồm các trường của quan hệ:**
+  `GET /items/post?fields=id,title,author.name,author.email`
 
-   1. Một request đến GET /items/post?filter={"status":"published"}.
-   2. ItemsController tiếp nhận, xác định collection là post.
-   3. ItemsController gọi ItemsService.find('post', req.query).
-   4. ItemsService gọi QueryEngine để phân tích và biên dịch req.query.      
-   5. QueryEngine trả về FindOptions đã được xử lý (bao gồm cả filter quyền).
-   6. ItemsService sử dụng GenericRepository để thực thi truy vấn.
-   7. Kết quả được trả về cho client.
+- **Sử dụng wildcard trên quan hệ:**
+  `GET /items/post?fields=*,author.*,comments.*`
 
-  3.4. Điểm mở rộng
+#### **`sort`**: Sắp xếp kết quả
 
-   * Bản thân module này được thiết kế để không cần mở rộng. Thay vào đó, khi cần logic phức tạp hơn, bạn nên tạo một Custom Endpoint mới.
-   * Để đăng ký một collection mới, chỉ cần tạo Entity và thêm vào mikro-orm.config.ts. API sẽ tự động được tạo ra.
+Sử dụng danh sách các trường được phân tách bằng dấu phẩy. Thêm tiền tố `-` để sắp xếp giảm dần.
 
-  3.5. Rủi ro / Lưu ý
+`GET /items/post?sort=-createdAt,title`
 
-   * Field-level security: Module này không hỗ trợ kiểm soát quyền ở cấp độ trường dữ liệu. Nếu một vai trò có quyền read trên một collection, họ có thể
-     yêu cầu bất kỳ trường nào (trừ các trường đã được ẩn ở mức entity như password).
-   * Tên collection: Tên collection trong URL là tên bảng trong CSDL (thường là dạng số ít, viết thường), không phải tên class của Entity.
+#### **`limit`, `offset`, `page`**: Phân trang
 
-  ---
+- **Giới hạn số lượng và bỏ qua:**
+  `GET /items/post?limit=10&offset=20`
 
-  4. Module: Authentication & Authorization (RBAC)
+- **Dựa trên số trang:**
+  `GET /items/post?limit=10&page=3`
 
-  4.1. Mục đích
+#### **`deep`**: Lọc và sắp xếp trên quan hệ sâu
 
-  Đảm bảo chỉ những người dùng hợp lệ mới có thể truy cập hệ thống, và họ chỉ có thể thực hiện các hành động mà họ được cấp phép.
+Áp dụng các tùy chọn truy vấn cho các collection lồng nhau.
 
-  4.2. Trách nhiệm
+`GET /items/post?deep[comments][_filter][status][_eq]=approved&deep[comments][_sort]=-createdAt`
 
-   * Authentication: Xác thực người dùng (login, JWT, refresh token).
-   * Authorization: Kiểm tra quyền hạn của người dùng đối với một hành động trên một tài nguyên cụ thể.
-   * Quản lý vai trò (Role) và quyền (Permission) trong cơ sở dữ liệu.
-   * Cung cấp PermissionService cho các module khác sử dụng để kiểm tra quyền.
+#### **`meta`**: Lấy thông tin metadata
 
-  4.3. Luồng chính
+Yêu cầu dữ liệu metadata về số lượng bản ghi cùng với kết quả.
 
-  Luồng xác thực (Authentication)
+- `meta=filter_count`: Trả về số lượng bản ghi khớp với điều kiện `filter` (bỏ qua phân trang).
+- `meta=total_count`: Trả về tổng số bản ghi trong collection (bỏ qua `filter` và phân trang).
+- `meta=*`: Trả về cả hai.
 
-   1. User gửi email + password đến /auth/login.
-   2. AuthService xác thực thông tin. Nếu thành công, tạo ra một cặp Access Token (JWT) và Refresh Token.
-   3. Access Token chứa thông tin user (payload) và có thời gian sống ngắn.
-   4. Refresh Token có thời gian sống dài hơn, được lưu vào CSDL và dùng để cấp lại Access Token mới.
-   5. Split-Token Strategy: Refresh Token được lưu một cách an toàn. tokenId và tokenSecret được băm (hashed) riêng, giảm thiểu rủi ro nếu CSDL bị lộ.
+**Ví dụ:**
+`GET /items/post?filter={"status":"published"}&meta=*`
 
-  Luồng kiểm tra quyền (Authorization)
+**Phản hồi:**
 
-   1. PermissionService.assert('post', 'publish') được gọi trong một service.
-   2. Service lấy thông tin người dùng hiện tại từ RequestContext.
-   3. Tải danh sách các vai trò (roles) của người dùng.
-   4. Tải tất cả các quyền (permissions) tương ứng với các vai trò đó.
-   5. Kiểm tra xem có quyền nào khớp với cặp collection='post' và action='publish' không.
-   6. Nếu không tìm thấy -> ném lỗi ForbiddenException. Nếu tìm thấy -> cho phép thực hiện tiếp.
+```json
+{
+  "data": [
+    /* các bài post đã published */
+  ],
+  "meta": {
+    "filter_count": 45,
+    "total_count": 150
+  }
+}
+```
 
-  4.4. Điểm mở rộng
+### 2.4. Rủi ro / Lưu ý
 
-   * Thêm hành động (Action) mới:
-       1. Chỉ cần sử dụng một chuỗi action mới trong PermissionService.assert('reports', 'export_pdf').
-       2. Sau đó, trong CSDL (bảng permission), tạo một bản ghi mới với collection='reports' và action='export_pdf'.
-       3. Gán quyền này cho một vai trò.
-       * Mô hình này không yêu cầu thay đổi code của PermissionService để thêm action mới.
+- **Độ phức tạp của truy vấn**: Cần theo dõi và tối ưu hiệu suất cho các truy vấn phức tạp. Luôn đảm bảo các cột dữ liệu được filter thường xuyên đã được đánh index.
+- **Truy vấn quá sâu**: Các truy vấn lồng nhau quá nhiều cấp có thể gây ra vấn đề N+1. QueryEngine đã có cơ chế giới hạn độ sâu truy vấn (mặc định là 3).
 
-  4.5. Rủi ro / Lưu ý
+---
 
-   * Quản lý vai trò: Việc quản lý vai trò và quyền hạn hiện cần được thực hiện trực tiếp trong CSDL hoặc thông qua các script. Hệ thống chưa có giao diện     admin cho việc này.
-   * Caching: PermissionService có thể được tối ưu bằng cách cache lại thông tin quyền của người dùng (ví dụ: qua Redis) để giảm số lượng truy vấn CSDL   
-     trong mỗi request.
+## 3. Module: Generic Items API
 
-  ---
+### 3.1. Mục đích
 
-  5. Module: Storage Service
+Cung cấp một bộ API RESTful chung cho tất cả các thực thể đã đăng ký, giúp giảm thiểu việc viết code lặp lại cho các thao tác CRUD. Tên `collection` trong URL là **tên bảng** trong CSDL (thường là số ít, viết thường).
 
-  5.1. Mục đích
+### 3.2. Các Endpoint
 
-  Cung cấp một lớp trừu tượng (abstraction layer) cho việc quản lý file, giúp ứng dụng không bị phụ thuộc vào một nhà cung cấp lưu trữ cụ thể (local, S3,
-  Google Cloud Storage...).
+- `GET /items/:collection`
+- `GET /items/:collection/:id`
+- `POST /items/:collection`
+- `PATCH /items/:collection/:id`
+- `DELETE /items/:collection/:id`
 
-  5.2. Trách nhiệm
+### 3.3. Ví Dụ Sử Dụng API
 
-   * Định nghĩa một interface chung (IStorageAdapter) cho các thao tác với file: upload, delete, getSignedUrl...    
-   * Cung cấp một StorageService để các module khác sử dụng, service này sẽ gọi đến adapter tương ứng được cấu hình.
+**Lấy danh sách:**
+`GET /items/post?fields=id,title&sort=-createdAt`
 
-  5.3. Luồng chính
+**Lấy một item:**
+`GET /items/post/123`
 
-   1. Trong file cấu hình, STORAGE_DRIVER được thiết lập (ví dụ: local hoặc s3).
-   2. StorageService khởi tạo adapter tương ứng (ví dụ LocalStorageAdapter).
-   3. Khi FilesService cần upload một file, nó sẽ gọi storageService.upload(file).
-   4. StorageService chỉ đơn giản là gọi this.adapter.upload(file), toàn bộ logic xử lý cụ thể nằm trong adapter.
+**Tạo mới:**
 
-  5.4. Điểm mở rộng
+```http
+POST /items/post
+Content-Type: application/json
 
-   * Thêm nhà cung cấp lưu trữ mới (ví dụ: S3):
-       1. Tạo một class S3StorageAdapter implement IStorageAdapter.
-       2. Triển khai các phương thức upload, delete... bằng cách sử dụng AWS SDK.
-       3. Cập nhật logic trong StorageService để khởi tạo S3StorageAdapter khi STORAGE_DRIVER=s3.
+{
+  "title": "Hello World",
+  "content": "Đây là nội dung bài viết."
+}
+```
 
-  5.5. Rủi ro / Lưu ý
+**Cập nhật:**
 
-   * Xử lý file lớn: Adapter cần được implement để xử lý file lớn một cách hiệu quả, ví dụ sử dụng stream để tránh tiêu thụ quá nhiều bộ nhớ.
-     LocalStorageAdapter hiện tại đã làm tốt điều này.
-   * Bảo mật: Khi tạo các URL có chữ ký (signed URL), cần đảm bảo chúng có thời gian hết hạn ngắn và chỉ cấp quyền tối thiểu cần thiết.      
+```http
+PATCH /items/post/123
+Content-Type: application/json
 
-  ---
+{
+  "status": "published"
+}
+```
 
-  6. Module: Custom Endpoints & Mở rộng
+**Xóa:**
+`DELETE /items/post/123`
 
-  6.1. Mục đích
+### 3.4. Rủi ro / Lưu ý
 
-  Cung cấp một cấu trúc chuẩn hóa để xây dựng các API có logic nghiệp vụ phức tạp mà Generic Items API không thể đáp ứng.
+- **Field-level security**: Module này không hỗ trợ kiểm soát quyền ở cấp độ trường. Nếu một vai trò có quyền `read` trên một collection, họ có thể yêu cầu bất kỳ trường nào.
+- **Tên collection**: Tên `collection` trong URL là tên bảng trong CSDL (thường là dạng số ít, viết thường), không phải tên class của Entity.
 
-  6.2. Trách nhiệm
+---
 
-   * Định nghĩa một quy trình rõ ràng để tạo controller, service cho các tính năng mới.
-   * Khuyến khích việc tái sử dụng các module cốt lõi như QueryEngineService và PermissionService.
+## 4. Module: Authentication & Authorization (RBAC)
 
-  6.3. Luồng chính (Ví dụ: API Report)
+### 4.1. Mục đích
 
-   1. Controller (`ReportsController`):
-       * Định nghĩa route (ví dụ: @Get('active-users')).
-       * Chỉ có trách nhiệm nhận request và gọi service tương ứng, không chứa logic nghiệp vụ.
-   2. Service (`ReportsService`):
-       * Inject QueryEngineService, PermissionService, GenericRepository.
-       * Kiểm tra quyền: Gọi this.permissionService.assert('reports', 'generate') để đảm bảo người dùng có quyền thực hiện hành động này.       
-       * Tái sử dụng Query Engine: Gọi this.queryEngine.parseAndCompile() để xử lý các tham số filter, sort... từ client.
-       * Thêm logic nghiệp vụ: Thêm các điều kiện lọc tùy chỉnh vào kết quả từ Query Engine (ví dụ: chỉ lấy user active trong 30 ngày gần nhất).
-       * Thực thi truy vấn: Gọi this.repository.find() với các options đã được xử lý.
-       * Tính toán/Tổng hợp: Xử lý kết quả trả về (tính tổng, trung bình...).
+Đảm bảo chỉ người dùng hợp lệ mới có thể truy cập hệ thống và họ chỉ có thể thực hiện các hành động được cấp phép.
 
-  6.4. Điểm mở rộng
+### 4.2. Luồng chính
 
-  Đây chính là module dùng để mở rộng hệ thống. Bất kỳ tính năng mới nào cũng nên được xây dựng theo mô hình này.
+- **Authentication**: Xác thực qua email/password, cấp cặp Access Token (JWT, ngắn hạn) và Refresh Token (dài hạn, lưu trong CSDL).
+- **Authorization**: `PermissionService` kiểm tra quyền của người dùng dựa trên vai trò (Role) và các quyền (Permission) được gán cho vai trò đó trong CSDL.
 
-  6.5. Rủi ro / Lưu ý
+### 4.3. Điểm mở rộng: Thêm hành động (Action) mới
 
-   * KHÔNG BAO GIỜ bỏ qua PermissionService. Mọi custom endpoint phải có bước kiểm tra quyền.
-   * KHÔNG BAO GIỜ truy cập trực tiếp vào ORM (EntityManager) từ controller hoặc service. Luôn sử dụng GenericRepository.
-   * Tận dụng tối đa QueryEngine để client có thể lọc/sắp xếp trên kết quả của custom API, giúp API của bạn trở nên linh hoạt hơn.
+Mô hình RBAC cho phép thêm các "hành động" tùy chỉnh một cách linh hoạt mà không cần sửa code của `PermissionService`.
 
-  ---
+1.  **Sử dụng action mới trong code**:
+    Trong một service, gọi `assert` với một chuỗi action tùy ý.
 
-  7. Module: Configuration
+    ```typescript
+    // src/services/reports.service.ts
+    async exportData(collection: string, query: any) {
+      // Sử dụng một action tùy chỉnh là 'export_csv'
+      this.permissionService.assert(collection, 'export_csv');
+      // ... logic xuất dữ liệu
+    }
+    ```
 
-  7.1. Mục đích
+2.  **Định nghĩa quyền trong CSDL**:
+    Trong bảng `permission`, tạo một bản ghi mới:
+    - `collection`: "post"
+    - `action`: "export_csv"
 
-  Quản lý toàn bộ cấu hình ứng dụng một cách an toàn, linh hoạt và nhất quán, đặc biệt là các thông tin nhạy cảm như mật khẩu CSDL, secret key...
+3.  **Gán quyền cho vai trò**:
+    Gán quyền vừa tạo cho một vai trò (ví dụ: "analyst") trong bảng gán quyền-vai trò.
 
-  7.2. Trách nhiệm
+---
 
-   * Đọc cấu hình từ các biến môi trường (.env).
-   * Cung cấp một ConfigService để các module khác có thể truy cập cấu hình một cách an toàn.        
-   * Cung cấp các giá trị mặc định (fallback) an toàn cho các cấu hình quan trọng.
-   * Xác thực và chuyển đổi kiểu dữ liệu cho các biến môi trường (ví dụ: PORT từ string sang number).
+## 5. Module: Storage Service
 
-  7.3. Luồng chính
+Cung cấp một lớp trừu tượng (`IStorageAdapter`) cho việc quản lý file, giúp ứng dụng không bị phụ thuộc vào một nhà cung cấp lưu trữ cụ thể (local, S3, GCS...). Việc chuyển đổi giữa các nhà cung cấp chỉ cần thay đổi biến môi trường `STORAGE_DRIVER`.
 
-   1. Khi ứng dụng khởi động, ConfigModule (của NestJS) sẽ tải file .env.
-   2. Các file cấu hình riêng (ví dụ: database.config.ts, auth.config.ts) đăng ký với ConfigModule và định nghĩa các biến mà chúng cần.
-   3. Trong một service, ví dụ DatabaseService, thay vì đọc process.env.DB_HOST trực tiếp, nó sẽ inject ConfigService và gọi
-      this.configService.get('database.host').
+---
 
-  7.4. Điểm mở rộng
+## 6. Module: Custom Endpoints & Mở rộng
 
-   * Khi thêm một module mới cần cấu hình, tạo một file my-module.config.ts và đăng ký nó.
+Cung cấp cấu trúc chuẩn hóa để xây dựng các API có logic nghiệp vụ phức tạp.
 
-  7.5. Rủi ro / Lưu ý
+### Quy trình xây dựng Custom Endpoint
 
-   * Không bao giờ hardcode các giá trị nhạy cảm (secrets, passwords, keys) trong code. Luôn luôn sử dụng biến môi trường.
-   * Cần có một file .env.example để ghi lại tất cả các biến môi trường cần thiết cho dự án, giúp người mới dễ dàng cài đặt.
+Luôn tuân theo quy trình: **Controller → Service → QueryEngine/Repository**.
+
+**1. Tạo Controller**:
+Controller chỉ chịu trách nhiệm định nghĩa route, nhận request và gọi service. **Không chứa logic nghiệp vụ.**
+
+```typescript
+// src/controllers/reports.controller.ts
+import { Controller, Get, Query } from '@nestjs/common';
+import { ReportsService } from '../services/reports.service';
+
+@Controller('reports')
+export class ReportsController {
+  constructor(private readonly reportsService: ReportsService) {}
+
+  @Get('active-users')
+  async getActiveUsers(@Query() query: any) {
+    // Ủy quyền hoàn toàn cho Service
+    return this.reportsService.getActiveUsers(query);
+  }
+}
+```
+
+**2. Tạo Service**:
+Service là nơi chứa toàn bộ logic nghiệp vụ.
+
+```typescript
+// src/services/reports.service.ts
+import { Injectable } from '@nestjs/common';
+import { QueryEngineService } from '../query/query-engine.service';
+import { GenericRepository } from '../repository/generic.repository';
+import { PermissionService } from '../common/permissions/permission.service';
+
+@Injectable()
+export class ReportsService {
+  constructor(
+    private readonly queryEngine: QueryEngineService,
+    private readonly repository: GenericRepository,
+    private readonly permissionService: PermissionService,
+  ) {}
+
+  async getActiveUsers(query: any) {
+    // 1. Luôn kiểm tra quyền trước tiên
+    this.permissionService.assert('reports', 'generate');
+
+    // 2. Tái sử dụng QueryEngine để phân tích các tham số từ client (filter, sort...)
+    const options = await this.queryEngine.parseAndCompile({
+      collection: 'user',
+      query: query,
+    });
+
+    // 3. Thêm logic nghiệp vụ tùy chỉnh
+    // Ví dụ: chỉ lấy user hoạt động trong 30 ngày gần nhất
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    options.where = {
+      $and: [
+        options.where, // Giữ lại các filter từ client
+        { status: 'active' },
+        { lastLoginAt: { $gte: thirtyDaysAgo } },
+      ],
+    };
+
+    // 4. Thực thi truy vấn qua GenericRepository
+    return this.repository.find('user', options);
+  }
+}
+```
+
+**3. Đăng ký vào Module**:
+Đăng ký `ReportsController` và `ReportsService` vào một module (ví dụ `AppModule` hoặc một `ReportsModule` riêng).
+
+### Những điều BẮT BUỘC và KHÔNG ĐƯỢC làm
+
+- ✅ **Luôn** gọi `permissionService.assert()` ở đầu mỗi phương thức service.
+- ✅ **Luôn** tái sử dụng `queryEngine.parseAndCompile()` để hỗ trợ các tham số truy vấn từ client.
+- ✅ **Luôn** thực thi truy vấn qua `GenericRepository`.
+- ❌ **KHÔNG BAO GIỜ** truy cập trực tiếp vào `MikroORM` hay `EntityManager` từ controller hoặc service.
+- ❌ **KHÔNG BAO GIỜ** đặt logic nghiệp vụ trong controller.
+
+### Chuyên biệt hóa Endpoint với DTO (Quy trình được khuyến khích)
+
+Khi bạn muốn thêm validation chặt chẽ cho các thao tác `create` và `update` trên một resource, thay vì tạo một custom endpoint hoàn toàn mới, bạn có thể "chuyên biệt hóa" (specialize) endpoint chung `/items/:collection`. Hệ thống cung cấp một script để tự động hóa quy trình này.
+
+#### **Tự động tạo Controller và DTO với `generate-resource.sh`**
+
+Script này giúp tạo nhanh các file cần thiết để áp dụng Data Transfer Objects (DTOs) cho việc validation.
+
+**1. Mục đích**
+
+Để nhanh chóng tạo validation cho body của request `POST` (create) và `PATCH` (update) trên một resource, đảm bảo dữ liệu đầu vào luôn đúng định dạng bạn mong muốn.
+
+**2. Cách sử dụng**
+
+Chạy script từ thư mục gốc của dự án với tên resource ở dạng `PascalCase` (số ít).
+
+```bash
+bash generate-resource.sh Product
+```
+
+**3. Các file được tạo**
+
+Script sẽ tạo ra các file sau cho resource `Product`:
+
+- `src/controllers/products.controller.ts`: Controller chuyên biệt.
+- `src/dto/product/create-product.dto.ts`: DTO cho việc tạo mới.
+- `src/dto/product/update-product.dto.ts`: DTO cho việc cập nhật.
+
+**4. Luồng hoạt động**
+
+- Controller mới (`ProductsController`) sẽ "ghi đè" các route `POST /items/product` và `PATCH /items/product/:id`.
+- Khi một request `POST` hoặc `PATCH` đến các route này, NestJS sẽ dùng controller chuyên biệt này thay vì `ItemsController` chung.
+- Nhờ đó, `ValidationPipe` của NestJS sẽ tự động được áp dụng lên body của request, sử dụng các quy tắc bạn định nghĩa trong `CreateProductDto` và `UpdateProductDto`.
+- Các request `GET` và `DELETE` vẫn sẽ được xử lý bởi `ItemsController` chung như bình thường.
+
+**5. Các bước tiếp theo (Rất quan trọng)**
+
+Sau khi chạy script, bạn cần làm những việc sau:
+
+1.  **Định nghĩa DTO**: Mở file `src/dto/product/create-product.dto.ts` và thêm các thuộc tính cùng với các decorator validation từ `class-validator` (ví dụ: `@IsString()`, `@IsNotEmpty()`, `@IsNumber()`).
+2.  **Đăng ký Controller**: Mở file `app.module.ts` (hoặc module tương ứng) và **thêm `ProductsController` vào mảng `controllers`**. Nếu không có bước này, controller mới sẽ không hoạt động.
+
+    ```typescript
+    // app.module.ts
+    import { ProductsController } from './controllers/products.controller';
+    // ... các controller khác
+
+    @Module({
+      imports: [
+        // ...
+      ],
+      controllers: [AppController, ProductsController, ItemsController, ...] // <--- Thêm vào đây lưu ý thứ tự controller chuyên biệt phải đứng trước controller chung
+      providers: [
+        // ...
+      ],
+    })
+    export class AppModule {}
+    ```
+
+---
+
+## 7. Mở Rộng Chức Năng Cốt Lõi
+
+### 7.1. Thêm một Entity mới
+
+1.  **Tạo file Entity**:
+
+    ```typescript
+    // src/database/entities/product.entity.ts
+    import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
+
+    @Entity()
+    export class Product {
+      @PrimaryKey()
+      id!: number;
+
+      @Property()
+      name!: string;
+    }
+    ```
+
+2.  **Đăng ký vào `mikro-orm.config.ts`**:
+
+    ```typescript
+    // mikro-orm.config.ts
+    import { Product } from './entities/product.entity';
+
+    export default defineConfig({
+      entities: [User, Post, ..., Product], // Thêm vào đây
+    });
+    ```
+
+3.  **Hoàn tất!** Hệ thống sẽ tự động tạo ra các endpoint `/items/product` cho bạn.
+
+--- Tính năng định mở rộng --
+
+### 7.2. Thêm Toán Tử Lọc Mới (ví dụ: `_between`)
+
+1.  **Cập nhật `query.ast.ts`**:
+    ```typescript
+    // src/query/ast/query.ast.ts
+    export type FilterOperator =
+      | '_eq' | '_neq' | ...
+      | '_between'; // Thêm toán tử mới
+    ```
+2.  **Cập nhật `where.compiler.ts`**:
+    Thêm logic biên dịch cho toán tử mới.
+    ```typescript
+    // src/query/compiler/where.compiler.ts
+    // trong hàm compileOperators
+    switch (op as FilterOperator) {
+      // ... các case khác
+      case '_between':
+        result['$gte'] = val[0];
+        result['$lte'] = val[1];
+        break;
+    }
+    ```
+3.  **Sử dụng**:
+    `GET /items/product?filter={"price":{"_between":[10,100]}}`
+
+### 7.3. Thêm Tham Số Truy Vấn Mới (ví dụ: `search`)
+
+1.  **Tạo một Parser mới**: `src/query/parser/search.parser.ts`.
+2.  **Cập nhật `QueryEngineService`**: Tích hợp parser mới và thêm logic để áp dụng tham số `search` vào mệnh đề `where` của truy vấn (ví dụ: tìm kiếm trên nhiều trường `title`, `content`...).
+3.  **Đăng ký Parser mới** vào `QueryModule`.
+4.  **Sử dụng**: `GET /items/post?search=nestjs&sort=-createdAt`
+
+---
+
+## 8. Module: Configuration
+
+Quản lý toàn bộ cấu hình ứng dụng qua các biến môi trường (`.env`).
+
+- **KHÔNG BAO GIỜ** hardcode các giá trị nhạy cảm (secrets, passwords, keys) trong code.
+- Sử dụng `ConfigService` để truy cập cấu hình một cách an toàn.
+- Tham khảo file `.env.example` để biết tất cả các biến môi trường cần thiết cho dự án.

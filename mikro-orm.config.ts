@@ -8,9 +8,10 @@ import { Permission } from './src/database/entities/permission.entity';
 import { RefreshToken } from './src/database/entities/refresh-token.entity';
 import { ResetPasswordToken } from './src/database/entities/reset-password-token.entity';
 import { File } from './src/database/entities/file.entity';
+import { AuditLog } from './src/database/entities/audit-log.entity';
 
 export default defineConfig({
-  entities: [User, Post, Comment, Role, Permission, RefreshToken, ResetPasswordToken, File],
+  entities: [User, Post, Comment, Role, Permission, RefreshToken, ResetPasswordToken, File, AuditLog],
   dbName: process.env.DB_NAME || 'postgres',
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT || '5432', 10),

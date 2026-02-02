@@ -22,6 +22,9 @@ import { Permission } from './database/entities/permission.entity';
 import { RefreshToken } from './database/entities/refresh-token.entity';
 import { ResetPasswordToken } from './database/entities/reset-password-token.entity';
 import { File } from './database/entities/file.entity';
+import { AuditLog } from './database/entities/audit-log.entity';
+import { AuditLogModule } from './audit/audit.module';
+import { CacheModule } from './common/cache/cache.module';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 
 @Module({
@@ -34,7 +37,7 @@ import { PostgreSqlDriver } from '@mikro-orm/postgresql';
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
         driver: PostgreSqlDriver,
-        entities: [User, Post, Comment, Role, Permission, RefreshToken, ResetPasswordToken, File],
+        entities: [User, Post, Comment, Role, Permission, RefreshToken, ResetPasswordToken, File, AuditLog],
         dbName: configService.get<string>('database.name'),
         host: configService.get<string>('database.host'),
         port: configService.get<number>('database.port'),
@@ -56,6 +59,8 @@ import { PostgreSqlDriver } from '@mikro-orm/postgresql';
     ServicesModule,
     AuthModule,
     FilesModule,
+    AuditLogModule,
+    CacheModule,
   ],
   controllers: [ReportsController],
   providers: [ReportsService],

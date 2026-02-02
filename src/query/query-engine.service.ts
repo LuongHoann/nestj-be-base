@@ -57,7 +57,7 @@ export class QueryEngineService {
 
     // 1. Permissions (Pre-flight check)
     // Get mandatory filters from permission service
-    const permissionFilter = this.permissionService.can(collection, 'read');
+    const permissionFilter = await this.permissionService.can(collection, 'read');
 
     // 2. Parse Standard Params
     const parsed: ParsedQuery = {
