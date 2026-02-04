@@ -21,6 +21,7 @@ export interface MailFolder {
 export interface SendMailOptions {
   to: string[];
   cc?: string[];
+  bcc?: string[];
   subject: string;
   body: string;
 }

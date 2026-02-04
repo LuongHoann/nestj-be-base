@@ -10,6 +10,8 @@ import { Role } from './database/entities/role.entity';
 import { Permission } from './database/entities/permission.entity';
 import { User } from './database/entities/user.entity';
 import * as argon from 'argon2'; // Use 'argon' as a common alias
+import cookieParser from 'cookie-parser';
+
 
 async function seedPermissionsAndRoles(app: INestApplication) {
   const em = app.get(MikroOrmEntityManager);
@@ -154,6 +156,7 @@ async function bootstrap() {
   ) {
     // await seedPermissionsAndRoles(app);
   }
+  app.use(cookieParser());
 
   await app.listen(process.env.PORT ?? 3000);
 }

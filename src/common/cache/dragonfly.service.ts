@@ -113,4 +113,37 @@ export class DragonflyService implements OnModuleDestroy {
          this.logger.warn(`Failed to del cache key ${key}: ${error.message}`);
      }
   }
+  /**
+   * Check if a key exists in cache
+   * @param key - The cache key to check
+   * @returns true if key exists, false otherwise
+   */
+  async exists(key: string): Promise<boolean> {
+    if (!this.enabled || !this.client) return false;
+
+    try {
+      const result = await this.client.exists(key);
+      return result === 1; // Redis EXISTS returns number of keys that exist (1 or 0 for single key)
+    } catch (error) {
+      this.logger.warn(`Failed to check existence of key ${key}: ${error.message}`);
+      return false;
+    }
+  }
+   /**
+   * Set expiration time for a key (in seconds)
+   * @param key - The cache key
+   * @param ttl - Time to live in seconds
+   * @returns true if expiration was set, false otherwise
+   */
+  async expire(key: string, ttl: number): Promise<boolean> {
+    if (!this.enabled || !this.client) return false;
+
+    try {
+      const result = await this.client.expire(key, ttl);
+      return result === 1; // Redis EXPIRE returns 1 if successful, 0 if key doesn't exist
+    } catch (error) {
+      this.logger.warn(`Failed to set expiration for key ${key}: ${error.message}`);
+      return false;
+    }
+  }
 }

@@ -1,7 +1,7 @@
 import { IsString, IsEmail, IsNotEmpty, IsOptional, IsArray } from 'class-validator';
 
 export class ExchangeLoginDto {
-  @IsEmail()
+  @IsString()
   @IsNotEmpty()
   email!: string;
 
