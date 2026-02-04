@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import { DragonflyService } from '../../common/cache/dragonfly.service';
 import * as argon2 from 'argon2';
 import * as crypto from 'crypto';
-import { ExchangeService, ExchangeVersion, WebCredentials, Uri } from 'ews-javascript-api';
 
 /**
  * ⚠️ MVP ONLY
@@ -65,34 +64,36 @@ export class ExchangeAuthService {
   }
 
   async login(userId: string, email: string, pass: string): Promise<boolean> {
-    // 1. Verify against EWS First
-    try {
-        const exch = new ExchangeService(ExchangeVersion.Exchange2013);
-        exch.Credentials = new WebCredentials(email, pass);
-        // Try autodiscover first, fallback to simple guess or config if needed
-        // For MVP, simplistic autodiscover or manual URL
-        // We attempt to ResolveName to verify creds
-        
-        // Note: ews-javascript-api requires a URL or Autodiscover
-        // MVP: Assume Autodiscover works or use a fixed URL if configured, 
-        // usually verifying credentials requires making a call.
-        
-        // Let's assume we have a configurable EWS URL or rely on Autodiscover
-        const ewsUrl = this.configService.get<string>('EWS_URL');
-        if (ewsUrl) {
-            exch.Url = new Uri(ewsUrl);
-        } else {
-             await exch.AutodiscoverUrl(email, (url) => {
-                 // Trust all https for MVP
-                 return url.toLowerCase().startsWith("https://");
-             });
-        }
+    // 1. Verify against IMAP
+    const host = this.configService.get<string>('IMAP_HOST', 'outlook.office365.com');
+    const port = this.configService.get<number>('IMAP_PORT', 993);
+    const secure = this.configService.get<boolean>('IMAP_SECURE', true);
+    
+    // Create a temporary client just for verification
+    const { ImapFlow } = await import('imapflow');
+    
+    const client = new ImapFlow({
+        host,
+        port,
+        secure,
+        auth: {
+            user: email,
+            pass: pass
+        },
+        tls: {
+            minVersion: 'TLSv1.2',
+            rejectUnauthorized: true
+        },
+        logger: false,
+        verifyOnly: true // Optimized mode just to check auth? imapflow doesn't have verifyOnly but we can just connect/logout
+    });
 
-        // Lightweight call to verify credentials
-        await exch.ResolveName(email); 
-        this.logger.log(`Exchange login verified for ${email}`);
+    try {
+        await client.connect();
+        await client.logout();
+        this.logger.log(`Exchange/IMAP login verified for ${email}`);
     } catch (error) {
-        this.logger.warn(`Exchange verification failed for ${email}: ${error.message}`);
+        this.logger.warn(`Exchange/IMAP verification failed for ${email}: ${error.message}`);
         throw new UnauthorizedException('Invalid Exchange credentials');
     }
 
@@ -128,7 +129,7 @@ export class ExchangeAuthService {
       }
   }
   
-  async getStoredCredentials(userId: string): Promise<WebCredentials | null> {
+  async getStoredCredentials(userId: string): Promise<{user: string, pass: string} | null> {
       // DragonflyService.get returns parsed object
       const session = await this.cache.get<{e: string, p: string}>(`exchange:session:${userId}`);
       if (!session) return null;
@@ -137,7 +138,7 @@ export class ExchangeAuthService {
           const key = await this.deriveKey(userId);
           const email = this.decrypt(session.e, key);
           const pass = this.decrypt(session.p, key);
-          return new WebCredentials(email, pass);
+          return { user: email, pass: pass };
       } catch (error) {
           this.logger.error(`Failed to decrypt exchange credentials for user ${userId}`);
           return null;

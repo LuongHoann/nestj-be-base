@@ -4,6 +4,7 @@ import {
   ExecutionContext,
   CallHandler,
   Logger,
+  Scope,
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { tap, catchError } from 'rxjs/operators';
@@ -20,7 +21,7 @@ import { RequestContext } from '../common/context/request.context';
  * Chỉ ghi User Log cho các thao tác thay đổi dữ liệu (POST, PATCH, PUT, DELETE)
  * GET requests chỉ ghi Dev Log
  */
-@Injectable()
+@Injectable({ scope: Scope.REQUEST })
 export class AuditLogInterceptor implements NestInterceptor {
   private readonly logger = new Logger('AuditLog');
 
