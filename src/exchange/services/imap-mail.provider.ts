@@ -63,11 +63,10 @@ export class ImapMailProvider implements IMailProvider {
     );
     const port = this.configService.get<number>('SMTP_PORT', 587);
     const secure = this.configService.get<boolean>('SMTP_SECURE', false);
-    console.log("password==",this.credentials.password)
     return {
       host,
       port,
-      secure:false,
+      secure: false,
       requireTLS: true, // ⬅️ ĐỔI: Không bắt buộc TLS
       auth: {
         user: this.credentials.email,
@@ -76,11 +75,10 @@ export class ImapMailProvider implements IMailProvider {
       tls: {
         minVersion: 'TLSv1.2',
         rejectUnauthorized: false,
-        servername:'mail-ex.mailex.local'
       },
       debug: true,
       logger: true,
-    };  
+    };
   }
 
   async connect(): Promise<void> {
@@ -112,12 +110,12 @@ export class ImapMailProvider implements IMailProvider {
     // Khởi tạo SMTP transporter
     this.transporter = nodemailer.createTransport(this.getSmtpConfig() as any);
     try {
-    await this.transporter.verify();
-    this.logger.log(`SMTP verified for ${this.credentials.email}`);
-  } catch (error) {
-    this.logger.error(`SMTP verification failed: ${error.message}`);
-    throw error;
-  }
+      await this.transporter.verify();
+      this.logger.log(`SMTP verified for ${this.credentials.email}`);
+    } catch (error) {
+      this.logger.error(`SMTP verification failed: ${error.message}`);
+      throw error;
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -154,17 +152,11 @@ export class ImapMailProvider implements IMailProvider {
         INBOX: 'Hộp thư đến',
         'Sent Items': 'Đã gửi',
         Drafts: 'Thư nháp',
-        'Spam': 'Thùng rác',
+        Spam: 'Thùng rác',
         'Junk Email': 'Thư rác',
-
       };
 
-      const standardFolders = [
-        'INBOX',
-        'Sent Items',
-        'Drafts',
-        'Spam',
-      ];
+      const standardFolders = ['INBOX', 'Sent Items', 'Drafts', 'Spam'];
       const folders: MailFolder[] = [];
 
       for (const folderName of standardFolders) {
@@ -363,15 +355,19 @@ export class ImapMailProvider implements IMailProvider {
       throw new Error('Transporter not initialized. Call connect() first.');
     }
 
+    if (!this.client) {
+      throw new Error('IMAP client not connected. Call connect() first.');
+    }
+
     try {
       // Build attachments array if provided
-      const attachments = options.attachments?.map(att => ({
+      const attachments = options.attachments?.map((att) => ({
         filename: att.filename,
         contentType: att.contentType,
         content: Buffer.from(att.content, 'base64'),
       }));
 
-      const info = await this.transporter.sendMail({
+      const mailOptions = {
         from: this.credentials.email,
         to: options.to,
         cc: options.cc,
@@ -381,9 +377,23 @@ export class ImapMailProvider implements IMailProvider {
         text: options.text,
         html: options.html,
         attachments,
-      });
+      };
+
+      // Send email via SMTP
+      const info = await this.transporter.sendMail(mailOptions);
 
       this.logger.log(`Email sent successfully. MessageId: ${info.messageId}`);
+
+      // Append to Sent Items folder using IMAP
+      this.appendToSentFolder(mailOptions,info.messageId)
+        .then(() => {
+          this.logger.log(`Email appended to Sent Items folder`);
+        })
+        .catch((err) => {
+          this.logger.warn(
+            `Failed to append email to Sent Items: ${err.message}`,
+          );
+        });
 
       return {
         success: !!info.messageId,
@@ -391,6 +401,101 @@ export class ImapMailProvider implements IMailProvider {
       };
     } catch (error) {
       this.logger.error(`Error sending email: ${error.message}`);
+      throw error;
+    }
+  }
+
+    private buildRFC822Message(mailOptions: any, messageId: string): string {
+    const lines: string[] = [];
+
+    // Headers
+    lines.push(`Message-ID: ${messageId}`);
+    lines.push(`Date: ${new Date().toUTCString()}`);
+    lines.push(`From: ${mailOptions.from}`);
+    
+    if (mailOptions.to) {
+      const toAddresses = Array.isArray(mailOptions.to)
+        ? mailOptions.to.join(', ')
+        : mailOptions.to;
+      lines.push(`To: ${toAddresses}`);
+    }
+
+    if (mailOptions.cc) {
+      const ccAddresses = Array.isArray(mailOptions.cc)
+        ? mailOptions.cc.join(', ')
+        : mailOptions.cc;
+      lines.push(`Cc: ${ccAddresses}`);
+    }
+
+    if (mailOptions.replyTo) {
+      lines.push(`Reply-To: ${mailOptions.replyTo}`);
+    }
+
+    lines.push(`Subject: ${mailOptions.subject || '(No Subject)'}`);
+    lines.push(`MIME-Version: 1.0`);
+
+    // Handle multipart message (HTML + text or with attachments)
+    if (mailOptions.attachments && mailOptions.attachments.length > 0) {
+      const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      lines.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+      lines.push('');
+      
+      // Text/HTML part
+      lines.push(`--${boundary}`);
+      if (mailOptions.html) {
+        lines.push(`Content-Type: text/html; charset=utf-8`);
+        lines.push(`Content-Transfer-Encoding: quoted-printable`);
+        lines.push('');
+        lines.push(mailOptions.html);
+      } else if (mailOptions.text) {
+        lines.push(`Content-Type: text/plain; charset=utf-8`);
+        lines.push(`Content-Transfer-Encoding: quoted-printable`);
+        lines.push('');
+        lines.push(mailOptions.text);
+      }
+
+      // Attachments
+      for (const att of mailOptions.attachments) {
+        lines.push(`--${boundary}`);
+        lines.push(`Content-Type: ${att.contentType || 'application/octet-stream'}`);
+        lines.push(`Content-Transfer-Encoding: base64`);
+        lines.push(`Content-Disposition: attachment; filename="${att.filename}"`);
+        lines.push('');
+        lines.push(att.content.toString('base64'));
+      }
+
+      lines.push(`--${boundary}--`);
+    } else if (mailOptions.html) {
+      // HTML only
+      lines.push(`Content-Type: text/html; charset=utf-8`);
+      lines.push(`Content-Transfer-Encoding: quoted-printable`);
+      lines.push('');
+      lines.push(mailOptions.html);
+    } else {
+      // Plain text only
+      lines.push(`Content-Type: text/plain; charset=utf-8`);
+      lines.push(`Content-Transfer-Encoding: quoted-printable`);
+      lines.push('');
+      lines.push(mailOptions.text || '');
+    }
+
+    return lines.join('\r\n');
+  }
+
+  /**
+   * Append sent email to Sent Items folder using IMAP APPEND
+   */
+  private async appendToSentFolder(mailOptions: any, messageId: string): Promise<void> {
+    // Find the Sent Items folder
+    const sentData = this.buildRFC822Message(mailOptions, messageId);
+    const sentFolder = 'Sent Items';
+
+    try {
+      // Append message to Sent Items
+      await this.client.append(sentFolder, sentData, ['\Seen'], new Date());
+      this.logger.log(`Successfully appended message to ${sentFolder}`);
+    } catch (error) {
+      this.logger.error(`Error appending to ${sentFolder}: ${error.message}`);
       throw error;
     }
   }
