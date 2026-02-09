@@ -7,8 +7,6 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { User } from '../database/entities/user.entity';
-import { RefreshToken } from '../database/entities/refresh-token.entity';
-import { ResetPasswordToken } from '../database/entities/reset-password-token.entity';
 import { CommonModule } from '../common/common.module';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AuditLogModule } from '../audit/audit.module';
@@ -27,7 +25,7 @@ import { AuditLogModule } from '../audit/audit.module';
         },
       }),
     }),
-    MikroOrmModule.forFeature([User, RefreshToken, ResetPasswordToken]),
+    MikroOrmModule.forFeature([User]),
   ],
   providers: [AuthService, JwtStrategy,JwtAuthGuard],
   controllers: [AuthController],

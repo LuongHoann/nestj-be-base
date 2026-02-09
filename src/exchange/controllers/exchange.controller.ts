@@ -120,11 +120,6 @@ export class ExchangeController {
   @UseGuards(ExchangeAuthGuard)
   @Post('mail/send')
   async send(@Body() dto: SendMailDto) {
-    return this.mailService.sendMessage(
-      dto.to,
-      dto.subject,
-      dto.htmlBody,
-      dto.cc,
-    );
+    return this.mailService.sendMessage(dto);
   }
 }

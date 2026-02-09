@@ -7,24 +7,12 @@ import queryConfig from './config/query.config';
 import storageConfig from './config/storage.config';
 import { MetaModule } from './meta/meta.module';
 import { CommonModule } from './common/common.module';
-import { QueryModule } from './query/query.module';
-import { RepositoryModule } from './repository/repository.module';
-import { ServicesModule } from './services/services.module';
-import { ReportsController } from './controllers/reports.controller';
-import { ReportsService } from './services/reports.service';
 import { AuthModule } from './auth/auth.module';
 import { FilesModule } from './files/files.module';
 import { User } from './database/entities/user.entity';
-import { Post } from './database/entities/post.entity';
-import { Comment } from './database/entities/comment.entity';
-import { Role } from './database/entities/role.entity';
-import { Permission } from './database/entities/permission.entity';
-import { RefreshToken } from './database/entities/refresh-token.entity';
-import { ResetPasswordToken } from './database/entities/reset-password-token.entity';
 import { File } from './database/entities/file.entity';
 import { AuditLog } from './database/entities/audit-log.entity';
 import { AuditLogModule } from './audit/audit.module';
-import { CacheModule } from './common/cache/cache.module';
 import { ExchangeModule } from './exchange/exchange.module';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 
@@ -38,7 +26,7 @@ import { PostgreSqlDriver } from '@mikro-orm/postgresql';
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
         driver: PostgreSqlDriver,
-        entities: [User, Post, Comment, Role, Permission, RefreshToken, ResetPasswordToken, File, AuditLog],
+        entities: [User, File, AuditLog],
         dbName: configService.get<string>('database.name'),
         host: configService.get<string>('database.host'),
         port: configService.get<number>('database.port'),
@@ -55,17 +43,12 @@ import { PostgreSqlDriver } from '@mikro-orm/postgresql';
     }),
     MetaModule,
     CommonModule,
-    QueryModule,
-    RepositoryModule,
-    ServicesModule,
     AuthModule,
     FilesModule,
     AuditLogModule,
-    CacheModule,
     ExchangeModule,
   ],
-  controllers: [ReportsController],
-  providers: [ReportsService],
+  controllers: [],
+  providers: [],
 })
 export class AppModule {}
-

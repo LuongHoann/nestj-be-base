@@ -10,19 +10,56 @@ export class ExchangeLoginDto {
   password!: string;
 }
 
+export class AttachmentDto {
+    @IsString()
+    @IsNotEmpty()
+    filename!: string;
+
+    @IsString()
+    @IsOptional()
+    contentType?: string;
+
+    @IsString()
+    @IsNotEmpty()
+    content!: string; // Base64 encoded content
+}
+
 export class SendMailDto {
     @IsArray()
-    @IsEmail({}, { each: true })
+    @IsEmail({}, { 
+        each: true,
+        message: 'Thông tin người nhận không hợp lệ!'
+    })
     to!: string[];
-
-    @IsString()
-    subject!: string;
-
-    @IsString()
-    htmlBody!: string;
 
     @IsArray()
     @IsOptional()
-    @IsEmail({}, { each: true })
+    @IsEmail({}, { each: true, message: 'Thông tin CC không hợp lệ!' })
     cc?: string[];
+
+    @IsArray()
+    @IsOptional()
+    @IsEmail({}, { each: true, message: 'Thông tin BCC không hợp lệ!' })
+    bcc?: string[];
+
+    @IsArray()
+    @IsOptional()
+    @IsEmail({}, { each: true, message: 'Thông tin Reply-To không hợp lệ!' })
+    replyTo?: string[];
+
+    @IsString()
+    @IsNotEmpty({ message: 'Tiêu đề email không được để trống!' })
+    subject!: string;
+
+    @IsString()
+    @IsOptional()
+    text?: string; // Plain text version
+
+    @IsString()
+    @IsOptional()
+    html?: string; // HTML version
+
+    @IsArray()
+    @IsOptional()
+    attachments?: AttachmentDto[];
 }

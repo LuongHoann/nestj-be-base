@@ -62,12 +62,13 @@ export class ImapMailProvider implements IMailProvider {
       'smtp.office365.com',
     );
     const port = this.configService.get<number>('SMTP_PORT', 587);
-    const isSecure = port === 465;
-
+    const secure = this.configService.get<boolean>('SMTP_SECURE', false);
+    console.log("password==",this.credentials.password)
     return {
       host,
       port,
-      secure: isSecure,
+      secure:false,
+      requireTLS: true, // ⬅️ ĐỔI: Không bắt buộc TLS
       auth: {
         user: this.credentials.email,
         pass: this.credentials.password,
@@ -75,8 +76,11 @@ export class ImapMailProvider implements IMailProvider {
       tls: {
         minVersion: 'TLSv1.2',
         rejectUnauthorized: false,
+        servername:'mail-ex.mailex.local'
       },
-    };
+      debug: true,
+      logger: true,
+    };  
   }
 
   async connect(): Promise<void> {
@@ -107,6 +111,13 @@ export class ImapMailProvider implements IMailProvider {
 
     // Khởi tạo SMTP transporter
     this.transporter = nodemailer.createTransport(this.getSmtpConfig() as any);
+    try {
+    await this.transporter.verify();
+    this.logger.log(`SMTP verified for ${this.credentials.email}`);
+  } catch (error) {
+    this.logger.error(`SMTP verification failed: ${error.message}`);
+    throw error;
+  }
   }
 
   async disconnect(): Promise<void> {
@@ -143,15 +154,16 @@ export class ImapMailProvider implements IMailProvider {
         INBOX: 'Hộp thư đến',
         'Sent Items': 'Đã gửi',
         Drafts: 'Thư nháp',
-        'Deleted Items': 'Thùng rác',
+        'Spam': 'Thùng rác',
         'Junk Email': 'Thư rác',
+
       };
 
       const standardFolders = [
         'INBOX',
         'Sent Items',
         'Drafts',
-        'Deleted Items',
+        'Spam',
       ];
       const folders: MailFolder[] = [];
 
@@ -352,13 +364,23 @@ export class ImapMailProvider implements IMailProvider {
     }
 
     try {
+      // Build attachments array if provided
+      const attachments = options.attachments?.map(att => ({
+        filename: att.filename,
+        contentType: att.contentType,
+        content: Buffer.from(att.content, 'base64'),
+      }));
+
       const info = await this.transporter.sendMail({
         from: this.credentials.email,
         to: options.to,
         cc: options.cc,
         bcc: options.bcc,
+        replyTo: options.replyTo,
         subject: options.subject,
-        html: options.body,
+        text: options.text,
+        html: options.html,
+        attachments,
       });
 
       this.logger.log(`Email sent successfully. MessageId: ${info.messageId}`);

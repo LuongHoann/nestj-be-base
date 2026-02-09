@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ImapMailProvider } from './imap-mail.provider';
-import { MailFolder, MailMessage } from '../interfaces/mail-provider.interface';
+import { MailMessage } from '../interfaces/mail-provider.interface';
+import { SendMailDto } from '../dto/exchange.dto';
 
 @Injectable()
 export class MailService {
@@ -36,6 +37,7 @@ export class MailService {
           case 'sent': folderId = 'Sent Items'; break;
           case 'drafts': folderId = 'Drafts'; break;
           case 'trash': folderId = 'Deleted Items'; break;
+          case 'spam': folderId = 'Spam'; break;
           default: folderId = 'INBOX'; // Default fallthrough or specific handling
       }
 
@@ -46,8 +48,8 @@ export class MailService {
       return this.withProvider(() => this.provider.getMessage(id));
   }
 
-  async sendMessage(to: string[], subject: string, body: string, cc: string[] = []) {
-      return this.withProvider(() => this.provider.sendMessage({ to, subject, body, cc }));
+  async sendMessage(dto: SendMailDto) {
+      return this.withProvider(() => this.provider.sendMessage(dto));
   }
   
   async searchMessages(query: string, page: number = 1, pageSize: number = 20) {

@@ -40,7 +40,7 @@ export class AuditLogService {
   ): Promise<void> {
     try {
       const logEntry = this.em.create(AuditLog, {
-        user: user ? { id: Number((user as any).id) } as User : undefined,
+        user: user ? { id: String((user as any).id) } as User : undefined,
         action,
         collection,
         targetId: String(targetId),
@@ -81,7 +81,7 @@ export class AuditLogService {
    * Useful cho admin dashboard hoặc compliance reports
    */
   async findLogs(options: {
-    userId?: number;
+    userId?: string;
     collection?: string;
     action?: string;
     fromDate?: Date;
@@ -123,7 +123,7 @@ export class AuditLogService {
   /**
    * Lấy logs của một user cụ thể
    */
-  async getLogsByUser(userId: number, limit = 20): Promise<AuditLog[]> {
+  async getLogsByUser(userId: string, limit = 20): Promise<AuditLog[]> {
     return this.auditLogRepository.find(
       { user: { id: userId } },
       {

@@ -146,4 +146,20 @@ export class DragonflyService implements OnModuleDestroy {
       return false;
     }
   }
+  /**
+   * Set value ONLY if it does not exist (SET NX).
+   * @returns true if set, false if already exists
+   */
+  async setIfNotExist(key: string, value: any, ttlSeconds: number): Promise<boolean> {
+    if (!this.enabled || !this.client) return false;
+
+    try {
+      const serialized = JSON.stringify(value);
+      const result = await this.client.set(key, serialized, 'EX', ttlSeconds, 'NX');
+      return result === 'OK';
+    } catch (error) {
+      this.logger.warn(`Failed to set NX cache key ${key}: ${error.message}`);
+      return false;
+    }
+  }
 }

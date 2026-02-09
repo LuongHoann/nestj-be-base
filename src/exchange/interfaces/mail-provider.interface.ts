@@ -18,12 +18,22 @@ export interface MailFolder {
   name: string;
 }
 
+export interface Attachment {
+  filename: string;
+  contentType?: string;
+  content: string; // Base64 encoded
+}
+
 export interface SendMailOptions {
+  from?: string;
   to: string[];
   cc?: string[];
   bcc?: string[];
+  replyTo?: string[];
   subject: string;
-  body: string;
+  text?: string; // Plain text version
+  html?: string; // HTML version
+  attachments?: Attachment[];
 }
 
 export interface IMailProvider {

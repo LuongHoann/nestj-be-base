@@ -20,49 +20,9 @@ import { CurrentUser } from './decorators/current-user.decorator';
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  @Post('login')
-  async login(@Body() dto: LoginDto) {
-    const { accessToken, refreshToken } = await this.authService.login(
-      dto.email,
-      dto.password
-    );
-
-    return {
-      accessToken,
-      refreshToken,
-    };
-  }
-
-  @Post('refresh')
-  @UseGuards(JwtAuthGuard)
-  async refresh(@Body('refreshToken') refreshToken: string) {
-    const tokens = await this.authService.rotateRefreshToken(refreshToken);
-    return tokens;
-  }
-
-  @Post('logout')
-  @UseGuards(JwtAuthGuard)
-  async logout(@Body('refreshToken') refreshToken: string) {
-    await this.authService.revokeRefreshToken(refreshToken);
-    return { message: 'Đăng xuất thành công !' };
-  }
-
-  @Post('reset-password-request')
-  async requestPasswordReset(@Body('email') email: string) {
-    // TODO: Find user by email and create reset token
-    // For now, this is a placeholder
-    return { message: 'Yêu cầu thay đổi mật khẩu đã được gửi !' };
-  }
-
-  @Post('reset-password')
-  async resetPassword(@Body() dto: ResetPasswordDto) {
-    await this.authService.resetPassword(dto.token, dto.newPassword);
-    return { message: 'Mật khẩu đã được thay đổi !' };
-  }
-
   @Get('me')
   @UseGuards(JwtAuthGuard)
-  async getMe(@CurrentUser() user: { id: number; email: string }) {
+  async getMe(@CurrentUser() user: { id: string; email: string }) {
     return this.authService.getMe(user.id);
   }
 }
