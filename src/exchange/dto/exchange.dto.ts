@@ -66,10 +66,10 @@ export class SendMailDto {
 
 export class MoveMailDto {
     @IsString()
-    @IsNotEmpty({ message: 'ID email không được để trống!' })
+    @IsNotEmpty()
     messageId!: string;
 
     @IsString()
-    @IsNotEmpty({ message: 'Thư mục đích không được để trống!' })
+    @IsNotEmpty()
     targetFolder!: string;
 }

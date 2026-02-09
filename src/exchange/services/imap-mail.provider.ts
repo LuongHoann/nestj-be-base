@@ -17,6 +17,7 @@ import {
   SendMailOptions,
 } from '../interfaces/mail-provider.interface';
 import { ExchangeAuthService } from './exchange-auth.service';
+import { safeStringify } from '../utils/json.helper';
 
 @Injectable({ scope: Scope.REQUEST })
 export class ImapMailProvider implements IMailProvider {
@@ -604,7 +605,7 @@ export class ImapMailProvider implements IMailProvider {
         );
 
         this.logger.log(
-          `Successfully moved message to ${targetFolder}.`,
+          `Successfully moved message to ${targetFolder}. Result: ${safeStringify(result)}`,
         );
 
         return { success: true };

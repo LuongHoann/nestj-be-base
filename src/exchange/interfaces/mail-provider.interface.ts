@@ -38,23 +38,23 @@ export interface SendMailOptions {
 
 export interface IMailProvider {
   /**
-    * Connect to the mail server
-    */
+   * Connect to the mail server
+   */
   connect(): Promise<void>;
 
   /**
-    * Disconnect from the mail server
-    */
+   * Disconnect from the mail server
+   */
   disconnect(): Promise<void>;
 
   /**
-    * Get list of standard folders
-    */
+   * Get list of standard folders
+   */
   getFolders(): Promise<MailFolder[]>;
 
   /**
-    * Get messages from a folder with pagination
-    */
+   * Get messages from a folder with pagination
+   */
   getMessages(
     folderId: string,
     page: number,
@@ -62,18 +62,20 @@ export interface IMailProvider {
   ): Promise<{ items: Partial<MailMessage>[]; total: number }>;
 
   /**
-    * Get a single message by its composite ID
-    */
+   * Get a single message by its composite ID
+   */
   getMessage(id: string): Promise<MailMessage>;
 
   /**
-    * Send an email
-    */
-  sendMessage(options: SendMailOptions): Promise<{ success: boolean; messageId?: string }>;
+   * Send an email
+   */
+  sendMessage(
+    options: SendMailOptions,
+  ): Promise<{ success: boolean; messageId?: string }>;
 
   /**
-    * Search messages
-    */
+   * Search messages
+   */
   search(
     query: string,
     page: number,
@@ -81,8 +83,8 @@ export interface IMailProvider {
   ): Promise<{ items: Partial<MailMessage>[]; total: number }>;
 
   /**
-    * Move message to another folder
-    */
+   * Move message to another folder
+   */
   moveMessage(
     messageId: string,
     targetFolder: string,
