@@ -55,4 +55,19 @@ export class MailService {
   async searchMessages(query: string, page: number = 1, pageSize: number = 20) {
       return this.withProvider(() => this.provider.search(query, page, pageSize));
   }
+
+  async moveMessage(messageId: string, targetFolderType: string) {
+      // Map folder type to actual folder ID
+      let targetFolderId = 'INBOX';
+      switch(targetFolderType.toLowerCase()) {
+          case 'inbox': targetFolderId = 'INBOX'; break;
+          case 'sent': targetFolderId = 'Sent Items'; break;
+          case 'drafts': targetFolderId = 'Drafts'; break;
+          case 'trash': targetFolderId = 'Deleted Items'; break;
+          case 'spam': targetFolderId = 'Spam'; break;
+          default: targetFolderId = targetFolderType; // Allow direct folder ID
+      }
+
+      return this.withProvider(() => this.provider.moveMessage(messageId, targetFolderId));
+  }
 }

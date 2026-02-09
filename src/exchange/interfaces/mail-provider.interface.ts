@@ -79,4 +79,12 @@ export interface IMailProvider {
     page: number,
     limit: number,
   ): Promise<{ items: Partial<MailMessage>[]; total: number }>;
+
+  /**
+    * Move message to another folder
+    */
+  moveMessage(
+    messageId: string,
+    targetFolder: string,
+  ): Promise<{ success: boolean }>;
 }

@@ -63,3 +63,13 @@ export class SendMailDto {
     @IsOptional()
     attachments?: AttachmentDto[];
 }
+
+export class MoveMailDto {
+    @IsString()
+    @IsNotEmpty({ message: 'ID email không được để trống!' })
+    messageId!: string;
+
+    @IsString()
+    @IsNotEmpty({ message: 'Thư mục đích không được để trống!' })
+    targetFolder!: string;
+}

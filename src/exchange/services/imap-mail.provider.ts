@@ -572,4 +572,48 @@ export class ImapMailProvider implements IMailProvider {
       lock.release();
     }
   }
+
+  /**
+   * Move message to another folder using IMAP MOVE
+   */
+  async moveMessage(
+    messageId: string,
+    targetFolder: string,
+  ): Promise<{ success: boolean }> {
+    if (!this.client) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+
+    try {
+      // Decode message ID to get source folder and UID
+      const { folder: sourceFolder, uid } = this.decodeId(messageId);
+
+      this.logger.log(
+        `Moving message UID ${uid} from ${sourceFolder} to ${targetFolder}`,
+      );
+
+      // Get lock on source folder
+      const lock = await this.client.getMailboxLock(sourceFolder);
+
+      try {
+        // Use native IMAP MOVE command
+        const result = await this.client.messageMove(
+          uid,
+          targetFolder,
+          { uid: true },
+        );
+
+        this.logger.log(
+          `Successfully moved message to ${targetFolder}.`,
+        );
+
+        return { success: true };
+      } finally {
+        lock.release();
+      }
+    } catch (error) {
+      this.logger.error(`Error moving message: ${error.message}`);
+      throw error;
+    }
+  }
 }

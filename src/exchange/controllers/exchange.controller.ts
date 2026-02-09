@@ -13,7 +13,7 @@ import {
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { ExchangeAuthService } from '../services/exchange-auth.service';
 import { MailService } from '../services/mail.service';
-import { ExchangeLoginDto, SendMailDto } from '../dto/exchange.dto';
+import { ExchangeLoginDto, SendMailDto, MoveMailDto } from '../dto/exchange.dto';
 import { ExchangeErrorInterceptor } from '../interceptors/exchange-error.interceptor';
 import type { Request, Response } from 'express'; // Import từ express
 import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
@@ -121,5 +121,11 @@ export class ExchangeController {
   @Post('mail/send')
   async send(@Body() dto: SendMailDto) {
     return this.mailService.sendMessage(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/move')
+  async move(@Body() dto: MoveMailDto) {
+    return this.mailService.moveMessage(dto.messageId, dto.targetFolder);
   }
 }
