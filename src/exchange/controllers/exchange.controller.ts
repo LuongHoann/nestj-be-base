@@ -31,7 +31,7 @@ export class ExchangeController {
     @Body() dto: ExchangeLoginDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { accessToken, refreshToken } = await this.authService.login(dto.email, dto.password);
+    const { accessToken, refreshToken,email } = await this.authService.login(dto.email, dto.password);
 
     // Maintain cookie for legacy support if needed, but return in body as well
     res.cookie('exchange_session', accessToken, {
@@ -43,6 +43,7 @@ export class ExchangeController {
 
     return {
       success: true,
+      email,
       accessToken,
       refreshToken,
     };
@@ -93,6 +94,12 @@ export class ExchangeController {
   @Get('folders')
   async getFolders() {
     return this.mailService.getFolders();
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Get('folders/counts')
+  async getFolderCounts() {
+    return this.mailService.getFolderCounts();
   }
 
   @UseGuards(ExchangeAuthGuard)

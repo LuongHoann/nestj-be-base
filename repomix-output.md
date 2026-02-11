@@ -34,8 +34,10 @@ The content is organized as follows:
 
 # Directory Structure
 ```
+.env.example
 .gitignore
 .prettierrc
+audit_log_implementation_notes.md
 docs/api-usage.md
 docs/custom-api.md
 docs/extending-endpoints.md
@@ -48,50 +50,56 @@ docs/RBAC.md
 eslint.config.mjs
 first_ai_commad.md
 generate-resource.sh
-guide_line.md
 mikro-orm.config.ts
+MOVE_MAIL_API.md
 nest-cli.json
 package.json
 src/app.controller.spec.ts
 src/app.controller.ts
 src/app.module.ts
 src/app.service.ts
+src/audit/audit-log.interceptor.ts
+src/audit/audit.module.ts
+src/audit/audit.service.ts
 src/auth/auth.controller.ts
 src/auth/auth.module.ts
 src/auth/auth.service.ts
 src/auth/decorators/current-user.decorator.ts
 src/auth/dto/login.dto.ts
 src/auth/dto/reset-password.dto.ts
+src/auth/guards/exchange-auth.guard.ts
 src/auth/guards/jwt-auth.guard.ts
 src/auth/strategies/jwt.strategy.ts
+src/common/cache/cache.module.ts
+src/common/cache/dragonfly.service.ts
 src/common/common.module.ts
 src/common/context/request.context.ts
 src/common/exceptions/invalid-query.exception.ts
 src/common/interceptors/request-context.interceptor.ts
 src/common/localization/vi.ts
-src/common/permissions/permission.service.ts
 src/config/auth.config.ts
 src/config/database.config.ts
+src/config/dragonfly.config.ts
 src/config/query.config.ts
 src/config/storage.config.ts
-src/controllers/items.controller.ts
-src/controllers/post.controller.ts
-src/controllers/reports.controller.ts
-src/database/entities/comment.entity.ts
+src/database/entities/audit-log.entity.ts
 src/database/entities/file.entity.ts
-src/database/entities/permission.entity.ts
-src/database/entities/post.entity.ts
-src/database/entities/refresh-token.entity.ts
-src/database/entities/reset-password-token.entity.ts
-src/database/entities/role.entity.ts
 src/database/entities/user.entity.ts
 src/database/migrations/.snapshot-postgres.json
-src/database/migrations/Migration20260116000000_InitialSchema.ts
-src/database/migrations/Migration20260116012800.ts
-src/database/migrations/Migration20260116094900_TokenTables.ts
-src/database/migrations/Migration20260124030806.ts
+src/database/migrations/Migration20260204095049.ts
 src/dto/post/create-post.dto.ts
 src/dto/post/update-post.dto.ts
+src/exchange/controllers/exchange.controller.ts
+src/exchange/dto/exchange.dto.ts
+src/exchange/exchange.module.ts
+src/exchange/interceptors/exchange-error.interceptor.ts
+src/exchange/interfaces/mail-provider.interface.ts
+src/exchange/README_DOC.md
+src/exchange/README.md
+src/exchange/services/exchange-auth.service.ts
+src/exchange/services/imap-mail.provider.ts
+src/exchange/services/mail.service.ts
+src/exchange/utils/json.helper.ts
 src/files/dto/commit-file.dto.ts
 src/files/dto/temp-upload-response.dto.ts
 src/files/files.controller.ts
@@ -102,24 +110,6 @@ src/main.ts
 src/meta/entity-registry.service.ts
 src/meta/meta.module.ts
 src/meta/metadata-reader.service.ts
-src/query/ast/query.ast.ts
-src/query/compiler/fields.compiler.ts
-src/query/compiler/order.compiler.ts
-src/query/compiler/where.compiler.ts
-src/query/parser/deep.parser.ts
-src/query/parser/fields.parser.ts
-src/query/parser/filter.parser.ts
-src/query/parser/meta.parser.ts
-src/query/parser/pagination.parser.ts
-src/query/parser/sort.parser.ts
-src/query/query-engine.service.spec.ts
-src/query/query-engine.service.ts
-src/query/query.module.ts
-src/repository/generic.repository.ts
-src/repository/repository.module.ts
-src/services/items.service.ts
-src/services/reports.service.ts
-src/services/services.module.ts
 src/storage/local-storage.adapter.ts
 src/storage/storage.interface.ts
 src/storage/storage.service.ts
@@ -135,72 +125,52 @@ tsconfig.json
 
 # Files
 
-## File: .gitignore
-````
-# compiled output
-/dist
-/node_modules
-/build
-
-# Logs
-logs
-*.log
-npm-debug.log*
-pnpm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
-
-# OS
-.DS_Store
-
-# Tests
-/coverage
-/.nyc_output
-
-# IDEs and editors
-/.idea
-.project
-.classpath
-.c9/
-*.launch
-.settings/
-*.sublime-workspace
-
-# IDE - VSCode
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-# dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
-
-# temp directory
-.temp
-.tmp
-
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-
-# Diagnostic reports (https://nodejs.org/api/report.html)
-report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
-````
-
 ## File: .prettierrc
 ````
 {
   "singleQuote": true,
   "trailingComma": "all"
 }
+````
+
+## File: audit_log_implementation_notes.md
+````markdown
+# Audit Log Implementation Notes and Justification
+
+This document explains the rationale behind the approach chosen for integrating `AuditLogService` into the application, specifically addressing the interaction between singleton services and request-scoped contexts in NestJS.
+
+## The Problem: Scope Mismatch between Singleton Service and Request-Scoped Context
+
+When implementing the audit logging feature, the goal was to log user actions (`create`, `update`, `delete`) within the `ItemsService`. The `AuditLogService` requires information about the `User` performing the action. This user information is available in the `RequestContext` (managed by `RequestContextInterceptor`) and is `Scope.REQUEST`, meaning a new instance is created for each incoming HTTP request.
+
+`ItemsService`, by default, is a **singleton** in NestJS. This means only one instance of `ItemsService` is created and reused throughout the application's lifecycle.
+
+A fundamental rule in NestJS dependency injection is that a **singleton service cannot reliably inject a request-scoped provider.** If `ItemsService` were to directly inject `RequestContext`, NestJS would resolve `RequestContext` only once when `ItemsService` is first instantiated (e.g., at application startup). At that time, there is no active HTTP request, so the `RequestContext` would be empty or contain stale data. All subsequent requests processed by this singleton `ItemsService` would then operate with the same, incorrect `RequestContext` instance, leading to inaccurate audit logs (e.g., logging the wrong user or no user at all).
+
+## Why Passing UserContext from the Controller is the Solution
+
+The `ItemsController` (like all controllers) is inherently **request-scoped**. This means for every incoming HTTP request, a new instance of the controller (or at least its methods) is invoked, and it has direct access to the context of *that specific request*.
+
+The solution implemented involves:
+
+1.  **Extracting `UserContext` in the Controller:** The `@CurrentUser()` decorator is used in the `ItemsController`'s `create`, `update`, and `delete` methods to reliably extract the `UserContext` (which correctly originates from `request.user` populated by `JwtStrategy` and `RequestContextInterceptor`) for the current request.
+
+2.  **Passing `UserContext` as a Method Argument to the Service:** The extracted `UserContext` is then explicitly passed as an argument to the corresponding `ItemsService` methods (`itemsService.create(user, collection, data)`).
+
+This approach ensures:
+
+*   **Scope Safety:** The singleton `ItemsService` does not directly inject a request-scoped `RequestContext`. Instead, it receives the *already resolved and request-specific* `UserContext` as a method parameter. This completely avoids the scope mismatch problem.
+*   **Explicitness:** The method signatures of `ItemsService` (`async create(user: UserContext, collection: string, data: any)`) clearly indicate that these operations depend on user context. This improves code readability and maintainability.
+*   **Testability:** `ItemsService` methods become easier to unit test, as `UserContext` can be directly mocked and passed as an argument, without needing to simulate the entire NestJS request lifecycle.
+*   **Handling Anonymous/Public Actions:** If an endpoint does not require authentication (e.g., if `JwtAuthGuard` is not applied or the user is not logged in), the `@CurrentUser()` decorator will provide `null` (or an object indicating no user). This `null` can then be passed to the `AuditLogService`, allowing it to correctly log actions by anonymous users or simply ignore logging if no user is present.
+*   **Preserving Singleton Benefits:** `ItemsService` remains a singleton, benefiting from better performance and resource utilization by avoiding re-instantiation for every request.
+
+## Alternatives Considered (and why they were not chosen)
+
+*   **Making `ItemsService` Request-Scoped:** While this would resolve the scope mismatch, it would mean `ItemsService` (and potentially other services that depend on it) would be instantiated for every request, which can have performance implications. It also complicates the overall service architecture by introducing more request-scoped components than necessary.
+*   **Using `ModuleRef` to Dynamically Resolve `RequestContext`:** NestJS provides `ModuleRef` which can be used within a singleton service to dynamically resolve request-scoped providers. However, this adds more boilerplate code and complexity (`this.moduleRef.resolve(RequestContext, { strict: false })`) compared to the straightforward method parameter passing. For this specific use case, direct parameter passing is cleaner.
+
+In conclusion, while `JwtStrategy` and `RequestContextInterceptor` correctly prepare the user context, the most robust and idiomatic way for a singleton service to access this request-specific information is to have it explicitly passed down from a request-scoped component like a controller.
 ````
 
 ## File: docs/api-usage.md
@@ -1097,263 +1067,6 @@ private async applyHooks(hook: string, collection: string, data: any) {
 5. **Framework code** stays generic → collection-specific logic in services
 
 Follow these patterns and the system scales from 3 entities to 300.
-````
-
-## File: docs/huong_dan.md
-````markdown
-Tài liệu Kiến trúc Backend
-
-  Tài liệu này mô tả kiến trúc của hệ thống backend, được thiết kế với mục tiêu linh hoạt, an toàn và có khả năng mở rộng cao.
-
-  1. Tổng quan Kiến trúc
-
-  Hệ thống được xây dựng dựa trên NestJS và đi theo một kiến trúc hướng module, tách biệt rõ ràng các mối quan tâm (separation of concerns). Nền tảng này 
-  không chỉ là một boilerplate thông thường mà là một Headless CMS linh hoạt với các thành phần cốt lõi được thiết kế để trừu tượng hóa các tác vụ lặp lại  và tăng cường bảo mật.
-
-  Các thành phần chính bao gồm:
-
-   1. Query Engine: Trái tim của hệ thống, chịu trách nhiệm phân tích và thực thi các truy vấn động từ client.
-   2. Generic Items API: Lớp giao tiếp chính, cung cấp các endpoint CRUD tự động cho mọi thực thể dữ liệu (entity).
-   3. Authentication & Authorization (RBAC): Module bảo mật, quản lý danh tính người dùng và kiểm soát quyền truy cập chi tiết.
-   4. Storage Service: Cung cấp lớp trừu tượng cho việc lưu trữ và quản lý file.
-   5. Custom Endpoints Framework: Cung cấp cấu trúc để xây dựng các endpoint với logic nghiệp vụ riêng.
-   6. Configuration Module: Quản lý cấu hình ứng dụng một cách an toàn và linh hoạt.
-
-  ---
-
-  2. Module: Query Engine
-
-  2.1. Mục đích
-
-  Query Engine là bộ não xử lý dữ liệu của hệ thống. Nó được tạo ra để cung cấp một cơ chế truy vấn dữ liệu mạnh mẽ, linh hoạt và an toàn, cho phép client  yêu cầu dữ liệu phức tạp (lọc, sắp xếp, lồng ghép) thông qua các tham số URL đơn giản mà không cần backend phải định nghĩa trước từng endpoint cụ thể.  
-
-  2.2. Trách nhiệm
-
-   * Phân tích (Parse) các tham số truy vấn từ URL (filter, sort, fields, limit, offset, page, deep, meta) thành một cấu trúc dữ liệu trung gian là AST
-     (Abstract Syntax Tree).
-   * Biên dịch (Compile) AST thành câu lệnh truy vấn phù hợp với ORM (MikroORM).
-   * Tự động áp dụng các bộ lọc quyền (permission filters) từ module RBAC để đảm bảo người dùng chỉ thấy dữ liệu họ được phép.
-   * Áp đặt các giới hạn an toàn (query limits) để ngăn chặn các truy vấn có khả năng gây quá tải hệ thống (DoS).
-
-  2.3. Luồng chính
-
-   1. Input: Một object chứa các tham số query từ HTTP request (req.query).
-   2. Parsing: Mỗi tham số (filter, sort...) được xử lý bởi một Parser riêng biệt (FilterParser, SortParser...) để chuyển đổi thành các node trong cây 
-      AST.
-   3. Permission Integration: QueryEngine gọi PermissionService để lấy các điều kiện lọc (row-level security) tương ứng với vai trò của người dùng. Các
-      điều kiện này được tích hợp vào cây AST.
-   4. Compiling: Các Compiler (WhereCompiler, OrderCompiler...) duyệt cây AST và xây dựng thành một object FindOptions mà MikroORM có thể hiểu được.   
-   5. Execution: GenericRepository nhận FindOptions và thực thi truy vấn lên cơ sở dữ liệu.
-   6. Output: Dữ liệu trả về cho client.
-
-  2.4. Điểm mở rộng
-
-   * Thêm toán tử lọc mới:
-       1. Định nghĩa toán tử trong query.ast.ts (ví dụ: _between).       
-       2. Bổ sung logic xử lý cho toán tử mới trong where.compiler.ts.   
-   * Thêm tham số truy vấn mới:
-       1. Tạo một Parser mới (ví dụ: search.parser.ts).
-       2. Tích hợp Parser này vào luồng xử lý của QueryEngineService.    
-       3. Thêm logic để áp dụng kết quả parse vào câu truy vấn cuối cùng.
-
-  2.5. Rủi ro / Lưu ý
-
-   * Tấn công ReDoS: Nếu cho phép sử dụng Regex ($regex) trong filter mà không có kiểm soát, kẻ tấn công có thể đưa vào các biểu thức Regex phức tạp gây
-     treo hệ thống. Mặc định, tính năng này đã bị vô hiệu hóa (QUERY_ALLOW_REGEX=false).
-   * Truy vấn quá sâu: Các truy vấn lồng nhau quá nhiều cấp có thể gây ra vấn đề N+1 và làm chậm hệ thống. QueryEngine đã có cơ chế giới hạn độ sâu truy
-     vấn (QUERY_MAX_DEPTH, mặc định là 3).
-   * Độ phức tạp của truy vấn: Cần theo dõi và tối ưu hiệu suất cho các truy vấn phức tạp. Luôn đảm bảo các cột dữ liệu được filter thường xuyên đã được
-     đánh index.
-
-  ---
-
-  3. Module: Generic Items API
-
-  3.1. Mục đích
-
-  Cung cấp một bộ API RESTful chung cho tất cả các thực thể dữ liệu đã đăng ký trong hệ thống, giúp giảm thiểu việc phải viết code lặp lại cho các thao
-  tác CRUD cơ bản.
-
-  3.2. Trách nhiệm
-
-   * Định nghĩa các route chung:
-       * GET /items/:collection
-       * GET /items/:collection/:id
-       * POST /items/:collection
-       * PATCH /items/:collection/:id
-       * DELETE /items/:collection/:id
-   * Tiếp nhận HTTP request, xác định :collection và chuyển tiếp toàn bộ tham số truy vấn đến Query Engine.
-   * Ánh xạ các phương thức HTTP tới các hành động RBAC tương ứng (GET -> read, POST -> create, ...).      
-
-  3.3. Luồng chính
-
-   1. Một request đến GET /items/post?filter={"status":"published"}.
-   2. ItemsController tiếp nhận, xác định collection là post.
-   3. ItemsController gọi ItemsService.find('post', req.query).
-   4. ItemsService gọi QueryEngine để phân tích và biên dịch req.query.      
-   5. QueryEngine trả về FindOptions đã được xử lý (bao gồm cả filter quyền).
-   6. ItemsService sử dụng GenericRepository để thực thi truy vấn.
-   7. Kết quả được trả về cho client.
-
-  3.4. Điểm mở rộng
-
-   * Bản thân module này được thiết kế để không cần mở rộng. Thay vào đó, khi cần logic phức tạp hơn, bạn nên tạo một Custom Endpoint mới.
-   * Để đăng ký một collection mới, chỉ cần tạo Entity và thêm vào mikro-orm.config.ts. API sẽ tự động được tạo ra.
-
-  3.5. Rủi ro / Lưu ý
-
-   * Field-level security: Module này không hỗ trợ kiểm soát quyền ở cấp độ trường dữ liệu. Nếu một vai trò có quyền read trên một collection, họ có thể
-     yêu cầu bất kỳ trường nào (trừ các trường đã được ẩn ở mức entity như password).
-   * Tên collection: Tên collection trong URL là tên bảng trong CSDL (thường là dạng số ít, viết thường), không phải tên class của Entity.
-
-  ---
-
-  4. Module: Authentication & Authorization (RBAC)
-
-  4.1. Mục đích
-
-  Đảm bảo chỉ những người dùng hợp lệ mới có thể truy cập hệ thống, và họ chỉ có thể thực hiện các hành động mà họ được cấp phép.
-
-  4.2. Trách nhiệm
-
-   * Authentication: Xác thực người dùng (login, JWT, refresh token).
-   * Authorization: Kiểm tra quyền hạn của người dùng đối với một hành động trên một tài nguyên cụ thể.
-   * Quản lý vai trò (Role) và quyền (Permission) trong cơ sở dữ liệu.
-   * Cung cấp PermissionService cho các module khác sử dụng để kiểm tra quyền.
-
-  4.3. Luồng chính
-
-  Luồng xác thực (Authentication)
-
-   1. User gửi email + password đến /auth/login.
-   2. AuthService xác thực thông tin. Nếu thành công, tạo ra một cặp Access Token (JWT) và Refresh Token.
-   3. Access Token chứa thông tin user (payload) và có thời gian sống ngắn.
-   4. Refresh Token có thời gian sống dài hơn, được lưu vào CSDL và dùng để cấp lại Access Token mới.
-   5. Split-Token Strategy: Refresh Token được lưu một cách an toàn. tokenId và tokenSecret được băm (hashed) riêng, giảm thiểu rủi ro nếu CSDL bị lộ.
-
-  Luồng kiểm tra quyền (Authorization)
-
-   1. PermissionService.assert('post', 'publish') được gọi trong một service.
-   2. Service lấy thông tin người dùng hiện tại từ RequestContext.
-   3. Tải danh sách các vai trò (roles) của người dùng.
-   4. Tải tất cả các quyền (permissions) tương ứng với các vai trò đó.
-   5. Kiểm tra xem có quyền nào khớp với cặp collection='post' và action='publish' không.
-   6. Nếu không tìm thấy -> ném lỗi ForbiddenException. Nếu tìm thấy -> cho phép thực hiện tiếp.
-
-  4.4. Điểm mở rộng
-
-   * Thêm hành động (Action) mới:
-       1. Chỉ cần sử dụng một chuỗi action mới trong PermissionService.assert('reports', 'export_pdf').
-       2. Sau đó, trong CSDL (bảng permission), tạo một bản ghi mới với collection='reports' và action='export_pdf'.
-       3. Gán quyền này cho một vai trò.
-       * Mô hình này không yêu cầu thay đổi code của PermissionService để thêm action mới.
-
-  4.5. Rủi ro / Lưu ý
-
-   * Quản lý vai trò: Việc quản lý vai trò và quyền hạn hiện cần được thực hiện trực tiếp trong CSDL hoặc thông qua các script. Hệ thống chưa có giao diện     admin cho việc này.
-   * Caching: PermissionService có thể được tối ưu bằng cách cache lại thông tin quyền của người dùng (ví dụ: qua Redis) để giảm số lượng truy vấn CSDL   
-     trong mỗi request.
-
-  ---
-
-  5. Module: Storage Service
-
-  5.1. Mục đích
-
-  Cung cấp một lớp trừu tượng (abstraction layer) cho việc quản lý file, giúp ứng dụng không bị phụ thuộc vào một nhà cung cấp lưu trữ cụ thể (local, S3,
-  Google Cloud Storage...).
-
-  5.2. Trách nhiệm
-
-   * Định nghĩa một interface chung (IStorageAdapter) cho các thao tác với file: upload, delete, getSignedUrl...    
-   * Cung cấp một StorageService để các module khác sử dụng, service này sẽ gọi đến adapter tương ứng được cấu hình.
-
-  5.3. Luồng chính
-
-   1. Trong file cấu hình, STORAGE_DRIVER được thiết lập (ví dụ: local hoặc s3).
-   2. StorageService khởi tạo adapter tương ứng (ví dụ LocalStorageAdapter).
-   3. Khi FilesService cần upload một file, nó sẽ gọi storageService.upload(file).
-   4. StorageService chỉ đơn giản là gọi this.adapter.upload(file), toàn bộ logic xử lý cụ thể nằm trong adapter.
-
-  5.4. Điểm mở rộng
-
-   * Thêm nhà cung cấp lưu trữ mới (ví dụ: S3):
-       1. Tạo một class S3StorageAdapter implement IStorageAdapter.
-       2. Triển khai các phương thức upload, delete... bằng cách sử dụng AWS SDK.
-       3. Cập nhật logic trong StorageService để khởi tạo S3StorageAdapter khi STORAGE_DRIVER=s3.
-
-  5.5. Rủi ro / Lưu ý
-
-   * Xử lý file lớn: Adapter cần được implement để xử lý file lớn một cách hiệu quả, ví dụ sử dụng stream để tránh tiêu thụ quá nhiều bộ nhớ.
-     LocalStorageAdapter hiện tại đã làm tốt điều này.
-   * Bảo mật: Khi tạo các URL có chữ ký (signed URL), cần đảm bảo chúng có thời gian hết hạn ngắn và chỉ cấp quyền tối thiểu cần thiết.      
-
-  ---
-
-  6. Module: Custom Endpoints & Mở rộng
-
-  6.1. Mục đích
-
-  Cung cấp một cấu trúc chuẩn hóa để xây dựng các API có logic nghiệp vụ phức tạp mà Generic Items API không thể đáp ứng.
-
-  6.2. Trách nhiệm
-
-   * Định nghĩa một quy trình rõ ràng để tạo controller, service cho các tính năng mới.
-   * Khuyến khích việc tái sử dụng các module cốt lõi như QueryEngineService và PermissionService.
-
-  6.3. Luồng chính (Ví dụ: API Report)
-
-   1. Controller (`ReportsController`):
-       * Định nghĩa route (ví dụ: @Get('active-users')).
-       * Chỉ có trách nhiệm nhận request và gọi service tương ứng, không chứa logic nghiệp vụ.
-   2. Service (`ReportsService`):
-       * Inject QueryEngineService, PermissionService, GenericRepository.
-       * Kiểm tra quyền: Gọi this.permissionService.assert('reports', 'generate') để đảm bảo người dùng có quyền thực hiện hành động này.       
-       * Tái sử dụng Query Engine: Gọi this.queryEngine.parseAndCompile() để xử lý các tham số filter, sort... từ client.
-       * Thêm logic nghiệp vụ: Thêm các điều kiện lọc tùy chỉnh vào kết quả từ Query Engine (ví dụ: chỉ lấy user active trong 30 ngày gần nhất).
-       * Thực thi truy vấn: Gọi this.repository.find() với các options đã được xử lý.
-       * Tính toán/Tổng hợp: Xử lý kết quả trả về (tính tổng, trung bình...).
-
-  6.4. Điểm mở rộng
-
-  Đây chính là module dùng để mở rộng hệ thống. Bất kỳ tính năng mới nào cũng nên được xây dựng theo mô hình này.
-
-  6.5. Rủi ro / Lưu ý
-
-   * KHÔNG BAO GIỜ bỏ qua PermissionService. Mọi custom endpoint phải có bước kiểm tra quyền.
-   * KHÔNG BAO GIỜ truy cập trực tiếp vào ORM (EntityManager) từ controller hoặc service. Luôn sử dụng GenericRepository.
-   * Tận dụng tối đa QueryEngine để client có thể lọc/sắp xếp trên kết quả của custom API, giúp API của bạn trở nên linh hoạt hơn.
-
-  ---
-
-  7. Module: Configuration
-
-  7.1. Mục đích
-
-  Quản lý toàn bộ cấu hình ứng dụng một cách an toàn, linh hoạt và nhất quán, đặc biệt là các thông tin nhạy cảm như mật khẩu CSDL, secret key...
-
-  7.2. Trách nhiệm
-
-   * Đọc cấu hình từ các biến môi trường (.env).
-   * Cung cấp một ConfigService để các module khác có thể truy cập cấu hình một cách an toàn.        
-   * Cung cấp các giá trị mặc định (fallback) an toàn cho các cấu hình quan trọng.
-   * Xác thực và chuyển đổi kiểu dữ liệu cho các biến môi trường (ví dụ: PORT từ string sang number).
-
-  7.3. Luồng chính
-
-   1. Khi ứng dụng khởi động, ConfigModule (của NestJS) sẽ tải file .env.
-   2. Các file cấu hình riêng (ví dụ: database.config.ts, auth.config.ts) đăng ký với ConfigModule và định nghĩa các biến mà chúng cần.
-   3. Trong một service, ví dụ DatabaseService, thay vì đọc process.env.DB_HOST trực tiếp, nó sẽ inject ConfigService và gọi
-      this.configService.get('database.host').
-
-  7.4. Điểm mở rộng
-
-   * Khi thêm một module mới cần cấu hình, tạo một file my-module.config.ts và đăng ký nó.
-
-  7.5. Rủi ro / Lưu ý
-
-   * Không bao giờ hardcode các giá trị nhạy cảm (secrets, passwords, keys) trong code. Luôn luôn sử dụng biến môi trường.
-   * Cần có một file .env.example để ghi lại tất cả các biến môi trường cần thiết cho dự án, giúp người mới dễ dàng cài đặt.
 ````
 
 ## File: docs/meta-queries.md
@@ -2671,131 +2384,141 @@ echo -e "\n\033[0;32mHoàn thành! Script đã ánh xạ các thuộc tính từ
 exit 0
 ````
 
-## File: guide_line.md
+## File: MOVE_MAIL_API.md
 ````markdown
----
+# Move Mail API Documentation
 
-  Hướng dẫn Hội nhập dành cho Lập trình viên mới
+## Endpoint
 
-  Chào mừng bạn đến với dự án!
+```
+POST /webmail/mail/move
+```
 
-  Bạn đang tham gia vào một dự án có kiến trúc được thiết kế rất cẩn thận để đạt được tốc độ, sự linh hoạt và bảo mật. Việc tuân thủ kiến trúc này không  
-  phải là sự gò bó, mà là cách để chúng ta cùng nhau xây dựng các tính năng một cách nhanh chóng và bền vững.
+## Description
 
-  Hãy đọc kỹ hướng dẫn này, nó sẽ là bản đồ giúp bạn di chuyển một cách tự tin trong codebase.
+Di chuyển email từ folder này sang folder khác sử dụng IMAP MOVE command native.
 
-  Mục tiêu chính của kiến trúc này là gì?
+## Authentication
 
-  "Tập trung vào logic nghiệp vụ, không phải code lặp lại."
+Yêu cầu `ExchangeAuthGuard` - cần có session token hợp lệ trong cookie hoặc Authorization header.
 
-  Hệ thống đã tự động hóa việc tạo API, truy vấn dữ liệu và kiểm tra quyền. Nhiệm-vụ-của-bạn là xây dựng các tính năng độc đáo mang lại giá trị, không
-  phải là viết đi viết lại các endpoint CRUD.
+## Request Body
 
-  ---
+```typescript
+{
+  "messageId": string,    // ID của email cần di chuyển (base64 encoded: folder:uid)
+  "targetFolder": string  // Folder đích (có thể dùng tên ngắn hoặc tên đầy đủ)
+}
+```
 
-  Bước 0: Ba Nguyên tắc Vàng (The 3 Golden Rules)
+### Supported Target Folders
 
-  Trước khi đọc bất kỳ dòng code nào, hãy ghi nhớ BA NGUYÊN TẮC BẤT DI BẤT DỊCH. Vi phạm những nguyên tắc này là cách nhanh nhất để phá hỏng kiến trúc.   
+Bạn có thể sử dụng tên ngắn (sẽ được map tự động):
 
-   1. KHÔNG BAO GIỜ TRUY CẬP TRỰC TIẾP DATABASE: Mọi tương tác với dữ liệu PHẢI thông qua GenericRepository hoặc QueryEngine. Không được inject
-      EntityManager hay tự viết câu lệnh SQL/ORM trong service của bạn.
-   2. KHÔNG BAO GIỜ BỎ QUA KIỂM TRA QUYỀN: Mọi endpoint, mọi service xử lý dữ liệu PHẢI được bảo vệ bởi PermissionService. Không có ngoại lệ, kể cả "chỉ
-      là làm tạm".
-   3. CONTROLLER CHỈ DÀNH CHO HTTP: Controller là lớp mỏng nhất có thể. Nó chỉ nhận request, gọi một phương thức của service, và trả về kết quả. KHÔNG  
-      chứa bất kỳ logic nghiệp vụ, tính toán, hay biến đổi dữ liệu nào.
+- `inbox` → `INBOX`
+- `sent` → `Sent Items`
+- `drafts` → `Drafts`
+- `trash` → `Deleted Items`
+- `spam` → `Spam`
 
-  Nếu bạn thấy mình sắp vi phạm một trong ba nguyên tắc trên, hãy dừng lại và hỏi một developer senior.
+Hoặc sử dụng tên folder đầy đủ trực tiếp (ví dụ: `Sent Items`, `Drafts`, etc.)
 
-  ---
+## Example Requests
 
-  Bước 1: Đọc hiểu luồng đi của một Request (Read-Only Path)
+### 1. Di chuyển email từ Inbox sang Trash
 
-  Để hiểu hệ thống, hãy theo dõi hành trình của một request đơn giản. Đây là cách tốt nhất để xây dựng một "mental model" về dự án.
+```bash
+curl -X POST http://localhost:3000/webmail/mail/move \
+  -H "Content-Type: application/json" \
+  -H "Cookie: exchange_session=YOUR_SESSION_TOKEN" \
+  -d '{
+    "messageId": "SU5CT1g6MTIzNDU=",
+    "targetFolder": "trash"
+  }'
+```
 
-  Nhiệm vụ của bạn: Tìm hiểu xem điều gì xảy ra khi client gọi GET /items/post?sort=-createdAt&limit=10.
+### 2. Di chuyển email từ Inbox sang Drafts
 
-   1. Đọc tài liệu kiến trúc: Mở file repomix-output.md (hoặc tài liệu kiến trúc chính thức) và đọc các phần về Query Engine và Generic Items API.        
-   2. Theo dõi trong code:
-       * Bắt đầu từ src/controllers/items.controller.ts. Bạn sẽ thấy nó nhận request và gọi ItemsService.
-       * Đi tới src/services/items.service.ts. Bạn sẽ thấy nó gọi queryEngine.parseAndCompile(req.query). Đây là "phép thuật" xảy ra.
-       * Nhìn vào src/query/query-engine.service.ts. Bạn không cần hiểu chi tiết, chỉ cần biết rằng nó nhận req.query và "dịch" nó thành một object       
-         FindOptions mà ORM có thể hiểu.
-       * Quay lại items.service.ts, bạn sẽ thấy nó gọi repository.find('post', options).
-       * Cuối cùng, src/repository/generic.repository.ts là nơi thực sự tương tác với ORM/database.
+```bash
+curl -X POST http://localhost:3000/webmail/mail/move \
+  -H "Content-Type: application/json" \
+  -H "Cookie: exchange_session=YOUR_SESSION_TOKEN" \
+  -d '{
+    "messageId": "SU5CT1g6MTIzNDU=",
+    "targetFolder": "drafts"
+  }'
+```
 
-  Sau khi đi hết luồng này, bạn sẽ hiểu tại sao chúng ta không cần viết controller và service cho mỗi loại dữ liệu.
+### 3. Di chuyển email sang folder với tên đầy đủ
 
-  ---
+```bash
+curl -X POST http://localhost:3000/webmail/mail/move \
+  -H "Content-Type: application/json" \
+  -H "Cookie: exchange_session=YOUR_SESSION_TOKEN" \
+  -d '{
+    "messageId": "SU5CT1g6MTIzNDU=",
+    "targetFolder": "Sent Items"
+  }'
+```
 
-  Bước 2: Nhiệm vụ đầu tiên - Thêm một Module CRUD
+## Response
 
-  Nhiệm vụ đầu tiên của bạn không phải là sửa bug hay làm một tính năng phức tạp. Nhiệm vụ của bạn là thêm một module quản lý mới để thấy được sức mạnh
-  của kiến trúc này.
+### Success Response
 
-  Yêu cầu: Thêm chức năng quản lý Product (Sản phẩm).
+```json
+{
+  "success": true
+}
+```
 
-   1. Tạo Entity (`product.entity.ts`):
-       * Trong thư mục src/database/entities, tạo một file product.entity.ts.
-       * Định nghĩa class Product với các trường như id, name, price, stock. Sử dụng các decorator @Entity(), @Property() của MikroORM.
-   2. Đăng ký Entity:
-       * Mở file mikro-orm.config.ts.
-       * Import Product và thêm nó vào mảng entities.
-   3. Tạo Migration:
-       * Chạy lệnh npm run migration:create để tạo file migration mới.
-       * Chạy lệnh npm run migration:up để cập nhật schema của database.
-   4. Kiểm tra "phép thuật":
-       * Khởi động server (npm run start:dev).
-       * Sử dụng Postman (hoặc curl), gọi GET http://localhost:3000/items/product.
-       * Chúc mừng! Bạn vừa có một bộ API CRUD đầy đủ cho Product với khả năng lọc, sắp xếp, phân trang... mà không cần viết một dòng logic nào trong     
-         controller hay service.
-   5. Thêm Quyền:
-       * Vào database, thêm các bản ghi vào bảng permission cho collection product với các action create, read, update, delete.
-       * Gán các quyền này cho một vai trò (role) nào đó. Bây giờ, API của bạn đã được bảo vệ.
+### Error Response
 
-  Hoàn thành nhiệm vụ này giúp bạn hiểu được 90% "tại sao" dự án được thiết kế như vậy.
+```json
+{
+  "statusCode": 400,
+  "message": "Error message here",
+  "error": "Bad Request"
+}
+```
 
-  ---
+## Implementation Details
 
-  Bước 3: Xây dựng một Tính năng Tùy chỉnh
+### Backend Flow
 
-  Bây giờ bạn đã sẵn sàng để tạo một tính năng có logic nghiệp vụ riêng.
+1. **Controller** (`exchange.controller.ts`):
+   - Nhận request với `MoveMailDto`
+   - Validate dữ liệu đầu vào
+   - Gọi `mailService.moveMessage()`
 
-  Yêu cầu: Tạo một endpoint GET /reports/low-stock để lấy danh sách các sản phẩm sắp hết hàng (tồn kho < 10).
+2. **Service** (`mail.service.ts`):
+   - Map folder type sang folder ID thực tế
+   - Gọi provider với connection management (`withProvider`)
 
-   1. Tạo Controller & Service: Nếu chưa có, tạo reports.controller.ts và reports.service.ts.
-   2. Trong `ReportsController`:
-       * Thêm một phương thức getLowStockProducts().
-       * Gắn decorator @Get('low-stock').
-       * Trong thân hàm, chỉ có một dòng: return this.reportsService.getLowStockProducts(req.query);. req.query cho phép người dùng vẫn có thể sort,
-         paginate trên kết quả của bạn.
-   3. Trong `ReportsService`:
-       * Nguyên tắc Vàng #2: Dòng đầu tiên là await this.permissionService.assert('reports', 'read_low_stock');.
-       * Tái sử dụng Query Engine:
-   1         const options = await this.queryEngine.parseAndCompile({
-   2           collection: 'product',
-   3           query: query, // query từ controller
-   4         });
-       * Thêm logic nghiệp vụ:
+3. **Provider** (`imap-mail.provider.ts`):
+   - Decode messageId để lấy source folder và UID
+   - Sử dụng `client.messageMove()` với native IMAP MOVE command
+   - Lock source folder trong quá trình di chuyển
+   - Log kết quả
 
-   1         const lowStockCondition = { stock: { '$lt': 10 } };
-   2         options.where = {
-   3           $and: [options.where, lowStockCondition],
-   4         };
-       * Nguyên tắc Vàng #1: Gọi repository: return this.repository.find('product', options);.    
+### Technical Notes
 
-  Bằng cách này, bạn vừa tạo ra một tính năng mới mà vẫn tuân thủ kiến trúc, an toàn và linh hoạt.
+- Sử dụng **native IMAP MOVE command** (RFC 6851) - hiệu quả hơn COPY + DELETE
+- Tự động lock mailbox trong quá trình di chuyển để tránh race conditions
+- Message ID được encode dưới dạng base64: `folder:uid`
+- Hỗ trợ đầy đủ error handling và logging
 
-  ---
+## Validation Rules
 
-  Tóm tắt: Những điều TUYỆT ĐỐI KHÔNG LÀM
+- `messageId`: Bắt buộc, phải là string không rỗng
+- `targetFolder`: Bắt buộc, phải là string không rỗng
 
-   * KHÔNG inject EntityManager hay MikroORM vào service nghiệp vụ.
-   * KHÔNG đặt logic xử lý if/else, tính toán, biến đổi dữ liệu trong Controller.
-   * KHÔNG comment out permissionService.assert() để "test cho nhanh".
-   * KHÔNG tự viết các câu query phức tạp trong service. Hãy hỏi xem QueryEngine có thể làm điều đó cho bạn không.
+## Error Cases
 
-  Nếu có bất kỳ nghi ngờ nào, đừng ngần ngại hỏi một thành viên senior trong đội. Thà hỏi một câu còn hơn là đi sai đường và tốn thời gian sửa chữa sau   vậy
-  này. Chúc bạn thành công
+- Message không tồn tại
+- Folder đích không tồn tại
+- Không có quyền truy cập folder
+- Session hết hạn hoặc không hợp lệ
+- IMAP connection error
 ````
 
 ## File: nest-cli.json
@@ -2864,6 +2587,33 @@ export class AppService {
 }
 ````
 
+## File: src/audit/audit.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { AuditLog } from '../database/entities/audit-log.entity';
+import { AuditLogService } from './audit.service';
+import { AuditLogInterceptor } from './audit-log.interceptor';
+import { CommonModule } from '../common/common.module';
+
+@Module({
+  imports: [
+    MikroOrmModule.forFeature([AuditLog]),
+    CommonModule,
+  ],
+  providers: [
+    AuditLogService,
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: AuditLogInterceptor,
+    },
+  ],
+  exports: [AuditLogService],
+})
+export class AuditLogModule {}
+````
+
 ## File: src/auth/decorators/current-user.decorator.ts
 ````typescript
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
@@ -2902,6 +2652,58 @@ export class ResetPasswordDto {
   @MinLength(6)
   newPassword!: string;
 }
+````
+
+## File: src/auth/guards/exchange-auth.guard.ts
+````typescript
+// guards/exchange-auth.guard.ts
+import { Injectable, CanActivate, ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { Request } from 'express';
+import { ExchangeAuthService } from '../../exchange/services/exchange-auth.service';
+
+@Injectable()
+export class ExchangeAuthGuard implements CanActivate {
+  constructor(private readonly authService: ExchangeAuthService) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request = context.switchToHttp().getRequest<Request>();
+    const sessionToken = request.cookies?.['exchange_session'];
+
+    if (!sessionToken) {
+      throw new UnauthorizedException('No session token provided');
+    }
+
+    const isValid = await this.authService.validateSession(sessionToken);
+    
+    if (!isValid) {
+      throw new UnauthorizedException('Invalid or expired session');
+    }
+
+    // Refresh session on each request
+    await this.authService.refreshSession(sessionToken);
+    
+    // Attach session token to request
+    request['exchangeSession'] = sessionToken;
+    
+    return true;
+  }
+}
+````
+
+## File: src/common/cache/cache.module.ts
+````typescript
+import { Module, Global } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import dragonflyConfig from '../../config/dragonfly.config';
+import { DragonflyService } from './dragonfly.service';
+
+@Global()
+@Module({
+  imports: [ConfigModule.forFeature(dragonflyConfig)],
+  providers: [DragonflyService],
+  exports: [DragonflyService],
+})
+export class CacheModule {}
 ````
 
 ## File: src/common/exceptions/invalid-query.exception.ts
@@ -2973,6 +2775,19 @@ export const actionTranslations: Record<string, string> = {
 };
 ````
 
+## File: src/config/dragonfly.config.ts
+````typescript
+import { registerAs } from '@nestjs/config';
+
+export default registerAs('dragonfly', () => ({
+  enabled: process.env.DRAGONFLY_ENABLED === 'true' || false,
+  host: process.env.DRAGONFLY_HOST || 'localhost',
+  port: parseInt(process.env.DRAGONFLY_PORT || '6379', 10),
+  password: process.env.DRAGONFLY_PASSWORD || '',
+  ttl: parseInt(process.env.DRAGONFLY_TTL || '300', 10), // Default 5 minutes
+}));
+````
+
 ## File: src/config/query.config.ts
 ````typescript
 import { registerAs } from '@nestjs/config';
@@ -2995,48 +2810,34 @@ export default registerAs('storage', () => ({
 }));
 ````
 
-## File: src/controllers/post.controller.ts
+## File: src/database/entities/audit-log.entity.ts
 ````typescript
-import { Controller, Post, Body, Patch, Param } from '@nestjs/common';
-import { ItemsService } from '../services/items.service';
-import { CreatePostDto } from '../dto/post/create-post.dto';
-import { UpdatePostDto } from '../dto/post/update-post.dto';
+import { Entity, PrimaryKey, Property, ManyToOne, Index } from '@mikro-orm/core';
+import { User } from './user.entity';
 
-@Controller('items/posts')
-export class PostsController {
-  constructor(private readonly itemsService: ItemsService) {}
+@Entity({ tableName: 'audit_logs' })
+@Index({ properties: ['collection', 'targetId'] })
+export class AuditLog {
+  @PrimaryKey({ type: 'bigint' })
+  id!: string;
 
-  @Post()
-  create(@Body() createDto: CreatePostDto) {
-    // ValidationPipe sẽ tự động chạy trên createDto.
-    console.log('check==')
-    return this.itemsService.create('posts', createDto);
-  }
+  @ManyToOne(() => User, { nullable: true, index: 'audit_log_user_id_index' })
+  user?: User;
 
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateDto: UpdatePostDto) {
-    return this.itemsService.update('posts', id, updateDto);
-  }
+  @Property({ length: 100, index: 'audit_log_collection_index' })
+  collection!: string;
 
-  // Ghi chú: Các phương thức GET và DELETE vẫn được ItemsController chung xử lý.
-  // Bạn chỉ định nghĩa lại ở đây khi cần logic đặc biệt cho việc đọc hoặc xóa.
-}
-````
+  @Property({ length: 50 })
+  action!: string;
 
-## File: src/controllers/reports.controller.ts
-````typescript
-import { Controller, Get, Query } from '@nestjs/common';
-import { ReportsService } from '../services/reports.service';
+  @Property({ length: 255, index: 'audit_log_target_id_index' })
+  targetId!: string;
 
-@Controller('reports')
-export class ReportsController {
-  constructor(private readonly reportsService: ReportsService) {}
+  @Property({ type: 'json', nullable: true })
+  details?: Record<string, any>;
 
-  @Get('active-users')
-  async getActiveUsers(@Query() query: any) {
-    // Allows standard Directus filtering on top of custom logic
-    return this.reportsService.getActiveUsers(query);
-  }
+  @Property({ onCreate: () => new Date() })
+  timestamp = new Date();
 }
 ````
 
@@ -3136,1312 +2937,60 @@ export class File {
 }
 ````
 
-## File: src/database/migrations/.snapshot-postgres.json
-````json
-{
-  "namespaces": [
-    "public"
-  ],
-  "name": "public",
-  "tables": [
-    {
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "mappedType": "uuid"
-        },
-        "original_name": {
-          "name": "original_name",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "stored_name": {
-          "name": "stored_name",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "mime_type": {
-          "name": "mime_type",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "size": {
-          "name": "size",
-          "type": "bigint",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "mappedType": "bigint"
-        },
-        "storage_path": {
-          "name": "storage_path",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "default": "'TEMP'",
-          "enumItems": [
-            "TEMP",
-            "ACTIVE",
-            "DELETED"
-          ],
-          "mappedType": "enum"
-        },
-        "custom_metadata": {
-          "name": "custom_metadata",
-          "type": "jsonb",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": true,
-          "mappedType": "json"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        }
-      },
-      "name": "files",
-      "schema": "public",
-      "indexes": [
-        {
-          "columnNames": [
-            "status"
-          ],
-          "composite": false,
-          "keyName": "files_status_index",
-          "constraint": false,
-          "primary": false,
-          "unique": false
-        },
-        {
-          "keyName": "files_pkey",
-          "columnNames": [
-            "id"
-          ],
-          "composite": false,
-          "constraint": true,
-          "primary": true,
-          "unique": true
-        }
-      ],
-      "checks": [],
-      "foreignKeys": {},
-      "nativeEnums": {}
-    },
-    {
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "unsigned": false,
-          "autoincrement": true,
-          "primary": true,
-          "nullable": false,
-          "mappedType": "integer"
-        },
-        "collection": {
-          "name": "collection",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "action": {
-          "name": "action",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "description": {
-          "name": "description",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": true,
-          "length": 255,
-          "mappedType": "string"
-        }
-      },
-      "name": "permissions",
-      "schema": "public",
-      "indexes": [
-        {
-          "keyName": "permissions_collection_action_index",
-          "columnNames": [
-            "collection",
-            "action"
-          ],
-          "composite": true,
-          "constraint": false,
-          "primary": false,
-          "unique": false
-        },
-        {
-          "keyName": "permissions_pkey",
-          "columnNames": [
-            "id"
-          ],
-          "composite": false,
-          "constraint": true,
-          "primary": true,
-          "unique": true
-        }
-      ],
-      "checks": [],
-      "foreignKeys": {},
-      "nativeEnums": {}
-    },
-    {
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "unsigned": false,
-          "autoincrement": true,
-          "primary": true,
-          "nullable": false,
-          "mappedType": "integer"
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "description": {
-          "name": "description",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": true,
-          "length": 255,
-          "mappedType": "string"
-        }
-      },
-      "name": "roles",
-      "schema": "public",
-      "indexes": [
-        {
-          "columnNames": [
-            "name"
-          ],
-          "composite": false,
-          "keyName": "roles_name_unique",
-          "constraint": true,
-          "primary": false,
-          "unique": true
-        },
-        {
-          "keyName": "roles_pkey",
-          "columnNames": [
-            "id"
-          ],
-          "composite": false,
-          "constraint": true,
-          "primary": true,
-          "unique": true
-        }
-      ],
-      "checks": [],
-      "foreignKeys": {},
-      "nativeEnums": {}
-    },
-    {
-      "columns": {
-        "role_id": {
-          "name": "role_id",
-          "type": "int",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "mappedType": "integer"
-        },
-        "permission_id": {
-          "name": "permission_id",
-          "type": "int",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "mappedType": "integer"
-        }
-      },
-      "name": "roles_permissions",
-      "schema": "public",
-      "indexes": [
-        {
-          "keyName": "roles_permissions_pkey",
-          "columnNames": [
-            "role_id",
-            "permission_id"
-          ],
-          "composite": true,
-          "constraint": true,
-          "primary": true,
-          "unique": true
-        }
-      ],
-      "checks": [],
-      "foreignKeys": {
-        "roles_permissions_role_id_foreign": {
-          "constraintName": "roles_permissions_role_id_foreign",
-          "columnNames": [
-            "role_id"
-          ],
-          "localTableName": "public.roles_permissions",
-          "referencedColumnNames": [
-            "id"
-          ],
-          "referencedTableName": "public.roles",
-          "deleteRule": "cascade",
-          "updateRule": "cascade"
-        },
-        "roles_permissions_permission_id_foreign": {
-          "constraintName": "roles_permissions_permission_id_foreign",
-          "columnNames": [
-            "permission_id"
-          ],
-          "localTableName": "public.roles_permissions",
-          "referencedColumnNames": [
-            "id"
-          ],
-          "referencedTableName": "public.permissions",
-          "deleteRule": "cascade",
-          "updateRule": "cascade"
-        }
-      },
-      "nativeEnums": {}
-    },
-    {
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "unsigned": false,
-          "autoincrement": true,
-          "primary": true,
-          "nullable": false,
-          "mappedType": "integer"
-        },
-        "name": {
-          "name": "name",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "email": {
-          "name": "email",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "password": {
-          "name": "password",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        }
-      },
-      "name": "users",
-      "schema": "public",
-      "indexes": [
-        {
-          "columnNames": [
-            "email"
-          ],
-          "composite": false,
-          "keyName": "users_email_unique",
-          "constraint": true,
-          "primary": false,
-          "unique": true
-        },
-        {
-          "keyName": "users_pkey",
-          "columnNames": [
-            "id"
-          ],
-          "composite": false,
-          "constraint": true,
-          "primary": true,
-          "unique": true
-        }
-      ],
-      "checks": [],
-      "foreignKeys": {},
-      "nativeEnums": {}
-    },
-    {
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "unsigned": false,
-          "autoincrement": true,
-          "primary": true,
-          "nullable": false,
-          "mappedType": "integer"
-        },
-        "token_id": {
-          "name": "token_id",
-          "type": "varchar(26)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 26,
-          "mappedType": "string"
-        },
-        "secret_hash": {
-          "name": "secret_hash",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "int",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "mappedType": "integer"
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        },
-        "used_at": {
-          "name": "used_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": true,
-          "length": 6,
-          "mappedType": "datetime"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        }
-      },
-      "name": "reset_password_tokens",
-      "schema": "public",
-      "indexes": [
-        {
-          "columnNames": [
-            "token_id"
-          ],
-          "composite": false,
-          "keyName": "reset_password_tokens_token_id_index",
-          "constraint": false,
-          "primary": false,
-          "unique": false
-        },
-        {
-          "columnNames": [
-            "token_id"
-          ],
-          "composite": false,
-          "keyName": "reset_password_tokens_token_id_unique",
-          "constraint": true,
-          "primary": false,
-          "unique": true
-        },
-        {
-          "keyName": "reset_password_tokens_pkey",
-          "columnNames": [
-            "id"
-          ],
-          "composite": false,
-          "constraint": true,
-          "primary": true,
-          "unique": true
-        }
-      ],
-      "checks": [],
-      "foreignKeys": {
-        "reset_password_tokens_user_id_foreign": {
-          "constraintName": "reset_password_tokens_user_id_foreign",
-          "columnNames": [
-            "user_id"
-          ],
-          "localTableName": "public.reset_password_tokens",
-          "referencedColumnNames": [
-            "id"
-          ],
-          "referencedTableName": "public.users",
-          "updateRule": "cascade"
-        }
-      },
-      "nativeEnums": {}
-    },
-    {
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "unsigned": false,
-          "autoincrement": true,
-          "primary": true,
-          "nullable": false,
-          "mappedType": "integer"
-        },
-        "token_id": {
-          "name": "token_id",
-          "type": "varchar(26)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 26,
-          "mappedType": "string"
-        },
-        "secret_hash": {
-          "name": "secret_hash",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "int",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "mappedType": "integer"
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        },
-        "revoked_at": {
-          "name": "revoked_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": true,
-          "length": 6,
-          "mappedType": "datetime"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        }
-      },
-      "name": "refresh_tokens",
-      "schema": "public",
-      "indexes": [
-        {
-          "columnNames": [
-            "token_id"
-          ],
-          "composite": false,
-          "keyName": "refresh_tokens_token_id_index",
-          "constraint": false,
-          "primary": false,
-          "unique": false
-        },
-        {
-          "columnNames": [
-            "token_id"
-          ],
-          "composite": false,
-          "keyName": "refresh_tokens_token_id_unique",
-          "constraint": true,
-          "primary": false,
-          "unique": true
-        },
-        {
-          "keyName": "refresh_tokens_pkey",
-          "columnNames": [
-            "id"
-          ],
-          "composite": false,
-          "constraint": true,
-          "primary": true,
-          "unique": true
-        }
-      ],
-      "checks": [],
-      "foreignKeys": {
-        "refresh_tokens_user_id_foreign": {
-          "constraintName": "refresh_tokens_user_id_foreign",
-          "columnNames": [
-            "user_id"
-          ],
-          "localTableName": "public.refresh_tokens",
-          "referencedColumnNames": [
-            "id"
-          ],
-          "referencedTableName": "public.users",
-          "updateRule": "cascade"
-        }
-      },
-      "nativeEnums": {}
-    },
-    {
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "unsigned": false,
-          "autoincrement": true,
-          "primary": true,
-          "nullable": false,
-          "mappedType": "integer"
-        },
-        "title": {
-          "name": "title",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "content": {
-          "name": "content",
-          "type": "text",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "mappedType": "text"
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "default": "'draft'",
-          "mappedType": "string"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        },
-        "author_id": {
-          "name": "author_id",
-          "type": "int",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "mappedType": "integer"
-        }
-      },
-      "name": "posts",
-      "schema": "public",
-      "indexes": [
-        {
-          "keyName": "posts_pkey",
-          "columnNames": [
-            "id"
-          ],
-          "composite": false,
-          "constraint": true,
-          "primary": true,
-          "unique": true
-        }
-      ],
-      "checks": [],
-      "foreignKeys": {
-        "posts_author_id_foreign": {
-          "constraintName": "posts_author_id_foreign",
-          "columnNames": [
-            "author_id"
-          ],
-          "localTableName": "public.posts",
-          "referencedColumnNames": [
-            "id"
-          ],
-          "referencedTableName": "public.users",
-          "updateRule": "cascade"
-        }
-      },
-      "nativeEnums": {}
-    },
-    {
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "serial",
-          "unsigned": false,
-          "autoincrement": true,
-          "primary": true,
-          "nullable": false,
-          "mappedType": "integer"
-        },
-        "body": {
-          "name": "body",
-          "type": "text",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "mappedType": "text"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        },
-        "author_id": {
-          "name": "author_id",
-          "type": "int",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "mappedType": "integer"
-        },
-        "post_id": {
-          "name": "post_id",
-          "type": "int",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "mappedType": "integer"
-        }
-      },
-      "name": "comments",
-      "schema": "public",
-      "indexes": [
-        {
-          "keyName": "comments_pkey",
-          "columnNames": [
-            "id"
-          ],
-          "composite": false,
-          "constraint": true,
-          "primary": true,
-          "unique": true
-        }
-      ],
-      "checks": [],
-      "foreignKeys": {
-        "comments_author_id_foreign": {
-          "constraintName": "comments_author_id_foreign",
-          "columnNames": [
-            "author_id"
-          ],
-          "localTableName": "public.comments",
-          "referencedColumnNames": [
-            "id"
-          ],
-          "referencedTableName": "public.users",
-          "updateRule": "cascade"
-        },
-        "comments_post_id_foreign": {
-          "constraintName": "comments_post_id_foreign",
-          "columnNames": [
-            "post_id"
-          ],
-          "localTableName": "public.comments",
-          "referencedColumnNames": [
-            "id"
-          ],
-          "referencedTableName": "public.posts",
-          "updateRule": "cascade"
-        }
-      },
-      "nativeEnums": {}
-    },
-    {
-      "columns": {
-        "user_id": {
-          "name": "user_id",
-          "type": "int",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "mappedType": "integer"
-        },
-        "role_id": {
-          "name": "role_id",
-          "type": "int",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "mappedType": "integer"
-        }
-      },
-      "name": "users_roles",
-      "schema": "public",
-      "indexes": [
-        {
-          "keyName": "users_roles_pkey",
-          "columnNames": [
-            "user_id",
-            "role_id"
-          ],
-          "composite": true,
-          "constraint": true,
-          "primary": true,
-          "unique": true
-        }
-      ],
-      "checks": [],
-      "foreignKeys": {
-        "users_roles_user_id_foreign": {
-          "constraintName": "users_roles_user_id_foreign",
-          "columnNames": [
-            "user_id"
-          ],
-          "localTableName": "public.users_roles",
-          "referencedColumnNames": [
-            "id"
-          ],
-          "referencedTableName": "public.users",
-          "deleteRule": "cascade",
-          "updateRule": "cascade"
-        },
-        "users_roles_role_id_foreign": {
-          "constraintName": "users_roles_role_id_foreign",
-          "columnNames": [
-            "role_id"
-          ],
-          "localTableName": "public.users_roles",
-          "referencedColumnNames": [
-            "id"
-          ],
-          "referencedTableName": "public.roles",
-          "deleteRule": "cascade",
-          "updateRule": "cascade"
-        }
-      },
-      "nativeEnums": {}
-    }
-  ],
-  "nativeEnums": {}
-}
-````
-
-## File: src/database/migrations/Migration20260116000000_InitialSchema.ts
+## File: src/database/migrations/Migration20260204095049.ts
 ````typescript
 import { Migration } from '@mikro-orm/migrations';
 
-/**
- * Initial database schema migration.
- * Creates base tables: users, posts, comments
- */
-export class Migration20260116000000_InitialSchema extends Migration {
-
-  async up(): Promise<void> {
-    // Create users table
-    this.addSql(`
-      create table if not exists "users" (
-        "id" serial primary key,
-        "name" varchar(255) not null,
-        "email" varchar(255) not null,
-        "created_at" timestamptz not null default now(),
-        "updated_at" timestamptz not null default now(),
-        constraint "users_email_unique" unique ("email")
-      );
-    `);
-
-    // Create posts table
-    this.addSql(`
-      create table if not exists "posts" (
-        "id" serial primary key,
-        "title" varchar(255) not null,
-        "content" text not null,
-        "author_id" int not null,
-        "created_at" timestamptz not null default now(),
-        "updated_at" timestamptz not null default now(),
-        constraint "posts_author_id_foreign" 
-        foreign key ("author_id") references "users" ("id") 
-        on update cascade on delete cascade
-      );
-    `);
-
-    // Create comments table
-    this.addSql(`
-      create table if not exists "comments" (
-        "id" serial primary key,
-        "content" text not null,
-        "author_id" int not null,
-        "post_id" int not null,
-        "created_at" timestamptz not null default now(),
-        constraint "comments_author_id_foreign" 
-        foreign key ("author_id") references "users" ("id") 
-        on update cascade on delete cascade,
-        constraint "comments_post_id_foreign" 
-        foreign key ("post_id") references "posts" ("id") 
-        on update cascade on delete cascade
-      );
-    `);
-  }
-
-  async down(): Promise<void> {
-    this.addSql(`drop table if exists "comments" cascade;`);
-    this.addSql(`drop table if exists "posts" cascade;`);
-    this.addSql(`drop table if exists "users" cascade;`);
-  }
-}
-````
-
-## File: src/database/migrations/Migration20260116012800.ts
-````typescript
-import { Migration } from '@mikro-orm/migrations';
-
-/**
- * RBAC (Role-Based Access Control) migration.
- * 
- * Creates the following tables:
- * 1. roles - Role definitions
- * 2. permissions - Permission definitions with (collection, action) model
- * 3. users_roles - Many-to-many join table for user-role assignments
- * 4. roles_permissions - Many-to-many join table for role-permission grants
- * 
- * Note: This assumes base tables (users, posts, comments) already exist.
- * If they don't, run the base migration first.
- */
-export class Migration20260116012800 extends Migration {
-
-  async up(): Promise<void> {
-    // Create roles table
-    this.addSql(`
-      create table "roles" (
-        "id" serial primary key,
-        "name" varchar(255) not null,
-        "description" varchar(255) null,
-        constraint "roles_name_unique" unique ("name")
-      );
-    `);
-
-    // Create permissions table with composite index on (collection, action)
-    this.addSql(`
-      create table "permissions" (
-        "id" serial primary key,
-        "collection" varchar(255) not null,
-        "action" varchar(255) not null,
-        "description" varchar(255) null
-      );
-    `);
-
-    // Create composite index for efficient permission lookups
-    this.addSql(`
-      create index "permissions_collection_action_index" 
-      on "permissions" ("collection", "action");
-    `);
-
-    // Add password field to existing users table (if it exists)
-    this.addSql(`
-      alter table "users" 
-      add column if not exists "password" varchar(255);
-    `);
-
-    // Create users_roles join table (many-to-many)
-    this.addSql(`
-      create table "users_roles" (
-        "user_id" int not null,
-        "role_id" int not null,
-        constraint "users_roles_pkey" primary key ("user_id", "role_id")
-      );
-    `);
-
-    // Add foreign key constraints for users_roles
-    this.addSql(`
-      alter table "users_roles" 
-      add constraint "users_roles_user_id_foreign" 
-      foreign key ("user_id") references "users" ("id") 
-      on update cascade on delete cascade;
-    `);
-
-    this.addSql(`
-      alter table "users_roles" 
-      add constraint "users_roles_role_id_foreign" 
-      foreign key ("role_id") references "roles" ("id") 
-      on update cascade on delete cascade;
-    `);
-
-    // Create roles_permissions join table (many-to-many)
-    this.addSql(`
-      create table "roles_permissions" (
-        "role_id" int not null,
-        "permission_id" int not null,
-        constraint "roles_permissions_pkey" primary key ("role_id", "permission_id")
-      );
-    `);
-
-    // Add foreign key constraints for roles_permissions
-    this.addSql(`
-      alter table "roles_permissions" 
-      add constraint "roles_permissions_role_id_foreign" 
-      foreign key ("role_id") references "roles" ("id") 
-      on update cascade on delete cascade;
-    `);
-
-    this.addSql(`
-      alter table "roles_permissions" 
-      add constraint "roles_permissions_permission_id_foreign" 
-      foreign key ("permission_id") references "permissions" ("id") 
-      on update cascade on delete cascade;
-    `);
-  }
-
-  async down(): Promise<void> {
-    // Drop join tables first (due to foreign key constraints)
-    this.addSql(`drop table if exists "roles_permissions" cascade;`);
-    this.addSql(`drop table if exists "users_roles" cascade;`);
-
-    // Remove password column from users (if it exists)
-    this.addSql(`alter table "users" drop column if exists "password";`);
-
-    // Drop RBAC tables
-    this.addSql(`drop table if exists "permissions" cascade;`);
-    this.addSql(`drop table if exists "roles" cascade;`);
-  }
-}
-````
-
-## File: src/database/migrations/Migration20260116094900_TokenTables.ts
-````typescript
-import { Migration } from '@mikro-orm/migrations';
-
-/**
- * Migration for Refresh Token and Reset Password Token tables.
- * 
- * Implements split-token model:
- * - token_id: ULID stored in plaintext, indexed for O(1) lookup
- * - secret_hash: argon2 hash of token secret
- * 
- * Security guarantee: All token verification uses indexed lookup by token_id.
- * No table scans, no hash queries.
- */
-export class Migration20260116094900_TokenTables extends Migration {
-
-  async up(): Promise<void> {
-    // Create refresh_tokens table
-    this.addSql(`
-      create table "refresh_tokens" (
-        "id" serial primary key,
-        "token_id" varchar(26) not null,
-        "secret_hash" varchar(255) not null,
-        "user_id" int not null,
-        "expires_at" timestamptz not null,
-        "revoked_at" timestamptz null,
-        "created_at" timestamptz not null default now(),
-        constraint "refresh_tokens_token_id_unique" unique ("token_id")
-      );
-    `);
-
-    // Create index on token_id for O(1) lookup
-    this.addSql(`
-      create index "refresh_tokens_token_id_index" 
-      on "refresh_tokens" ("token_id");
-    `);
-
-    // Create index on user_id for user-specific queries
-    this.addSql(`
-      create index "refresh_tokens_user_id_index" 
-      on "refresh_tokens" ("user_id");
-    `);
-
-    // Add foreign key constraint
-    this.addSql(`
-      alter table "refresh_tokens" 
-      add constraint "refresh_tokens_user_id_foreign" 
-      foreign key ("user_id") references "users" ("id") 
-      on update cascade on delete cascade;
-    `);
-
-    // Create reset_password_tokens table
-    this.addSql(`
-      create table "reset_password_tokens" (
-        "id" serial primary key,
-        "token_id" varchar(26) not null,
-        "secret_hash" varchar(255) not null,
-        "user_id" int not null,
-        "expires_at" timestamptz not null,
-        "used_at" timestamptz null,
-        "created_at" timestamptz not null default now(),
-        constraint "reset_password_tokens_token_id_unique" unique ("token_id")
-      );
-    `);
-
-    // Create index on token_id for O(1) lookup
-    this.addSql(`
-      create index "reset_password_tokens_token_id_index" 
-      on "reset_password_tokens" ("token_id");
-    `);
-
-    // Create index on user_id
-    this.addSql(`
-      create index "reset_password_tokens_user_id_index" 
-      on "reset_password_tokens" ("user_id");
-    `);
-
-    // Add foreign key constraint
-    this.addSql(`
-      alter table "reset_password_tokens" 
-      add constraint "reset_password_tokens_user_id_foreign" 
-      foreign key ("user_id") references "users" ("id") 
-      on update cascade on delete cascade;
-    `);
-  }
-
-  async down(): Promise<void> {
-    this.addSql(`drop table if exists "reset_password_tokens" cascade;`);
-    this.addSql(`drop table if exists "refresh_tokens" cascade;`);
-  }
-}
-````
-
-## File: src/database/migrations/Migration20260124030806.ts
-````typescript
-import { Migration } from '@mikro-orm/migrations';
-
-export class Migration20260124030806 extends Migration {
+export class Migration20260204095049 extends Migration {
 
   override async up(): Promise<void> {
-    this.addSql(`create table "files" ("id" uuid not null default gen_random_uuid(), "original_name" varchar(255) not null, "stored_name" varchar(255) not null, "mime_type" varchar(255) not null, "size" bigint not null, "storage_path" varchar(255) not null, "status" text check ("status" in ('TEMP', 'ACTIVE', 'DELETED')) not null default 'TEMP', "custom_metadata" jsonb null, "created_at" timestamptz not null, "updated_at" timestamptz not null, constraint "files_pkey" primary key ("id"));`);
-    this.addSql(`create index "files_status_index" on "files" ("status");`);
+    this.addSql(`alter table "roles_permissions" drop constraint "roles_permissions_permission_id_foreign";`);
 
-    this.addSql(`alter table "reset_password_tokens" drop constraint "reset_password_tokens_user_id_foreign";`);
+    this.addSql(`alter table "roles_permissions" drop constraint "roles_permissions_role_id_foreign";`);
 
-    this.addSql(`alter table "refresh_tokens" drop constraint "refresh_tokens_user_id_foreign";`);
+    this.addSql(`create table "users" ("id" varchar(255) not null, "email" varchar(255) not null, "is_active" boolean not null default true, "mailbox_initialized" boolean not null default false, "created_at" timestamptz not null, "updated_at" timestamptz not null, constraint "users_pkey" primary key ("id"));`);
+    this.addSql(`alter table "users" add constraint "users_email_unique" unique ("email");`);
 
-    this.addSql(`alter table "posts" drop constraint "posts_author_id_foreign";`);
+    this.addSql(`create table "audit_logs" ("id" bigserial primary key, "user_id" varchar(255) null, "collection" varchar(100) not null, "action" varchar(50) not null, "target_id" varchar(255) not null, "details" jsonb null, "timestamp" timestamptz not null);`);
+    this.addSql(`create index "audit_log_user_id_index" on "audit_logs" ("user_id");`);
+    this.addSql(`create index "audit_log_collection_index" on "audit_logs" ("collection");`);
+    this.addSql(`create index "audit_log_target_id_index" on "audit_logs" ("target_id");`);
+    this.addSql(`create index "audit_logs_collection_target_id_index" on "audit_logs" ("collection", "target_id");`);
 
-    this.addSql(`alter table "comments" drop constraint "comments_author_id_foreign";`);
-    this.addSql(`alter table "comments" drop constraint "comments_post_id_foreign";`);
+    this.addSql(`alter table "audit_logs" add constraint "audit_logs_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade on delete set null;`);
 
-    this.addSql(`alter table "users" alter column "created_at" drop default;`);
-    this.addSql(`alter table "users" alter column "created_at" type timestamptz using ("created_at"::timestamptz);`);
-    this.addSql(`alter table "users" alter column "updated_at" drop default;`);
-    this.addSql(`alter table "users" alter column "updated_at" type timestamptz using ("updated_at"::timestamptz);`);
-    this.addSql(`alter table "users" alter column "password" type varchar(255) using ("password"::varchar(255));`);
-    this.addSql(`alter table "users" alter column "password" set not null;`);
+    this.addSql(`drop table if exists "permissions" cascade;`);
 
-    this.addSql(`drop index "reset_password_tokens_user_id_index";`);
+    this.addSql(`drop table if exists "roles" cascade;`);
 
-    this.addSql(`alter table "reset_password_tokens" alter column "created_at" drop default;`);
-    this.addSql(`alter table "reset_password_tokens" alter column "created_at" type timestamptz using ("created_at"::timestamptz);`);
-    this.addSql(`alter table "reset_password_tokens" add constraint "reset_password_tokens_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade;`);
+    this.addSql(`drop table if exists "roles_permissions" cascade;`);
 
-    this.addSql(`drop index "refresh_tokens_user_id_index";`);
-
-    this.addSql(`alter table "refresh_tokens" alter column "created_at" drop default;`);
-    this.addSql(`alter table "refresh_tokens" alter column "created_at" type timestamptz using ("created_at"::timestamptz);`);
-    this.addSql(`alter table "refresh_tokens" add constraint "refresh_tokens_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade;`);
-
-    this.addSql(`alter table "posts" alter column "created_at" drop default;`);
-    this.addSql(`alter table "posts" alter column "created_at" type timestamptz using ("created_at"::timestamptz);`);
-    this.addSql(`alter table "posts" alter column "updated_at" drop default;`);
-    this.addSql(`alter table "posts" alter column "updated_at" type timestamptz using ("updated_at"::timestamptz);`);
-    this.addSql(`alter table "posts" alter column "status" type varchar(255) using ("status"::varchar(255));`);
-    this.addSql(`alter table "posts" alter column "status" set not null;`);
-    this.addSql(`alter table "posts" add constraint "posts_author_id_foreign" foreign key ("author_id") references "users" ("id") on update cascade;`);
-
-    this.addSql(`alter table "comments" alter column "created_at" drop default;`);
-    this.addSql(`alter table "comments" alter column "created_at" type timestamptz using ("created_at"::timestamptz);`);
-    this.addSql(`alter table "comments" rename column "content" to "body";`);
-    this.addSql(`alter table "comments" add constraint "comments_author_id_foreign" foreign key ("author_id") references "users" ("id") on update cascade;`);
-    this.addSql(`alter table "comments" add constraint "comments_post_id_foreign" foreign key ("post_id") references "posts" ("id") on update cascade;`);
+    this.addSql(`alter table "files" alter column "id" drop default;`);
+    this.addSql(`alter table "files" alter column "id" type uuid using ("id"::text::uuid);`);
+    this.addSql(`alter table "files" alter column "id" set default gen_random_uuid();`);
   }
 
   override async down(): Promise<void> {
-    this.addSql(`drop table if exists "files" cascade;`);
+    this.addSql(`alter table "audit_logs" drop constraint "audit_logs_user_id_foreign";`);
 
-    this.addSql(`alter table "comments" drop constraint "comments_author_id_foreign";`);
-    this.addSql(`alter table "comments" drop constraint "comments_post_id_foreign";`);
+    this.addSql(`create table "permissions" ("id" serial primary key, "collection" varchar(255) not null, "action" varchar(255) not null, "description" varchar(255) null);`);
+    this.addSql(`create index "permissions_collection_action_index" on "permissions" ("collection", "action");`);
 
-    this.addSql(`alter table "posts" drop constraint "posts_author_id_foreign";`);
+    this.addSql(`create table "roles" ("id" serial primary key, "name" varchar(255) not null, "description" varchar(255) null);`);
+    this.addSql(`alter table "roles" add constraint "roles_name_unique" unique ("name");`);
 
-    this.addSql(`alter table "refresh_tokens" drop constraint "refresh_tokens_user_id_foreign";`);
+    this.addSql(`create table "roles_permissions" ("role_id" int4 not null, "permission_id" int4 not null, constraint "roles_permissions_pkey" primary key ("role_id", "permission_id"));`);
 
-    this.addSql(`alter table "reset_password_tokens" drop constraint "reset_password_tokens_user_id_foreign";`);
+    this.addSql(`alter table "roles_permissions" add constraint "roles_permissions_permission_id_foreign" foreign key ("permission_id") references "permissions" ("id") on update cascade on delete cascade;`);
+    this.addSql(`alter table "roles_permissions" add constraint "roles_permissions_role_id_foreign" foreign key ("role_id") references "roles" ("id") on update cascade on delete cascade;`);
 
-    this.addSql(`alter table "comments" alter column "created_at" type timestamptz(6) using ("created_at"::timestamptz(6));`);
-    this.addSql(`alter table "comments" alter column "created_at" set default now();`);
-    this.addSql(`alter table "comments" rename column "body" to "content";`);
-    this.addSql(`alter table "comments" add constraint "comments_author_id_foreign" foreign key ("author_id") references "users" ("id") on update cascade on delete cascade;`);
-    this.addSql(`alter table "comments" add constraint "comments_post_id_foreign" foreign key ("post_id") references "posts" ("id") on update cascade on delete cascade;`);
+    this.addSql(`drop table if exists "users" cascade;`);
 
-    this.addSql(`alter table "posts" alter column "status" type varchar(50) using ("status"::varchar(50));`);
-    this.addSql(`alter table "posts" alter column "status" drop not null;`);
-    this.addSql(`alter table "posts" alter column "created_at" type timestamptz(6) using ("created_at"::timestamptz(6));`);
-    this.addSql(`alter table "posts" alter column "created_at" set default now();`);
-    this.addSql(`alter table "posts" alter column "updated_at" type timestamptz(6) using ("updated_at"::timestamptz(6));`);
-    this.addSql(`alter table "posts" alter column "updated_at" set default now();`);
-    this.addSql(`alter table "posts" add constraint "posts_author_id_foreign" foreign key ("author_id") references "users" ("id") on update cascade on delete cascade;`);
+    this.addSql(`drop table if exists "audit_logs" cascade;`);
 
-    this.addSql(`alter table "refresh_tokens" alter column "created_at" type timestamptz(6) using ("created_at"::timestamptz(6));`);
-    this.addSql(`alter table "refresh_tokens" alter column "created_at" set default now();`);
-    this.addSql(`alter table "refresh_tokens" add constraint "refresh_tokens_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade on delete cascade;`);
-    this.addSql(`create index "refresh_tokens_user_id_index" on "refresh_tokens" ("user_id");`);
-
-    this.addSql(`alter table "reset_password_tokens" alter column "created_at" type timestamptz(6) using ("created_at"::timestamptz(6));`);
-    this.addSql(`alter table "reset_password_tokens" alter column "created_at" set default now();`);
-    this.addSql(`alter table "reset_password_tokens" add constraint "reset_password_tokens_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade on delete cascade;`);
-    this.addSql(`create index "reset_password_tokens_user_id_index" on "reset_password_tokens" ("user_id");`);
-
-    this.addSql(`alter table "users" alter column "password" type varchar(255) using ("password"::varchar(255));`);
-    this.addSql(`alter table "users" alter column "password" drop not null;`);
-    this.addSql(`alter table "users" alter column "created_at" type timestamptz(6) using ("created_at"::timestamptz(6));`);
-    this.addSql(`alter table "users" alter column "created_at" set default now();`);
-    this.addSql(`alter table "users" alter column "updated_at" type timestamptz(6) using ("updated_at"::timestamptz(6));`);
-    this.addSql(`alter table "users" alter column "updated_at" set default now();`);
+    this.addSql(`alter table "files" alter column "id" drop default;`);
+    this.addSql(`alter table "files" alter column "id" drop default;`);
+    this.addSql(`alter table "files" alter column "id" type uuid using ("id"::text::uuid);`);
   }
 
 }
@@ -4472,6 +3021,286 @@ import { PartialType } from '@nestjs/mapped-types';
 import { CreatePostDto } from './create-post.dto';
 
 export class UpdatePostDto extends PartialType(CreatePostDto) {}
+````
+
+## File: src/exchange/interceptors/exchange-error.interceptor.ts
+````typescript
+import { Injectable, NestInterceptor, ExecutionContext, CallHandler, HttpException, Logger } from '@nestjs/common';
+import { Observable, throwError } from 'rxjs';
+import { catchError } from 'rxjs/operators';
+
+@Injectable()
+export class ExchangeErrorInterceptor implements NestInterceptor {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+    return next.handle().pipe(
+      catchError(err => {
+        // Map EWS errors to HTTP Status
+        // err.name or err.message often contains the code
+        const msg = err.message || '';
+        
+        if (msg.includes('ErrorInvalidCredentials') || msg.includes('401')) {
+            return throwError(() => new HttpException('Sai thông tin đăng nhập Exchange', 401));
+        }
+        if (msg.includes('AccountIsLocked') || msg.includes('ErrorImpersonationDenied')) {
+            return throwError(() => new HttpException('Tài khoản bị khóa hoặc không có quyền truy cập', 403));
+        }
+        if (msg.includes('ErrorServerBusy')) {
+            return throwError(() => new HttpException('Máy chủ đang bận, vui lòng thử lại sau', 429));
+        }
+         if (msg.includes('ETIMEDOUT') || msg.includes('timeout')) {
+            return throwError(() => new HttpException('Mất kết nối đến Exchange Server', 504));
+        }
+
+        // Default
+        Logger.error(`EWS Error: ${msg}`, err.stack);
+        return throwError(() => new HttpException('Lỗi kết nối Exchange Webmail', 500));
+      }),
+    );
+  }
+}
+````
+
+## File: src/exchange/README_DOC.md
+````markdown
+# Tài liệu Module Exchange Webmail (Cập nhật: Refresh Token Flow)
+
+Tài liệu này cung cấp cái nhìn tổng quan về luồng hoạt động (Flow) và hướng dẫn sử dụng API (Implementation) của module Exchange Webmail, phục vụ cho Frontend Developers và Testers.
+
+---
+
+## 1. Luồng hoạt động (Flow Doc)
+
+Hệ thống hoạt động theo mô hình **Stateless Session** kết hợp cơ chế **Split-Token Refresh**, tương tự như module Auth chính của hệ thống.
+
+### A. Luồng Đăng nhập (Login Flow)
+
+**Thông tin gửi đi (Request):**
+
+- **Endpoint**: `POST /webmail/auth/login`
+- **Địa điểm gửi**: **Body (JSON)**
+- **Nội dung**:
+  ```json
+  {
+    "email": "user@domain.com",
+    "password": "your_password"
+  }
+  ```
+
+**Thông tin nhận về (Response):**
+
+- **Tại Body (JSON)**: Trả về bộ đôi token mới nhất.
+  ```json
+  {
+    "success": true,
+    "accessToken": "ULID_SESSION_TOKEN",
+    "refreshToken": "TOKEN_ID.TOKEN_SECRET"
+  }
+  ```
+- **Tại Cookie (Browser Store)**: Tự động lưu vào Cookie có tên `exchange_session`. Cookie này chứa giá trị của `accessToken`.
+
+---
+
+### B. Luồng Làm mới Token (Refresh Flow)
+
+**Thông tin gửi đi (Request):**
+
+- **Endpoint**: `POST /webmail/auth/refresh`
+- **Địa điểm gửi**: **Body (JSON)**
+- **Nội dung**:
+  ```json
+  {
+    "refreshToken": "TOKEN_ID.TOKEN_SECRET"
+  }
+  ```
+
+**Thông tin nhận về (Response):**
+
+- **Tại Body (JSON)**: Trả về bộ đôi token MỚI (Token cũ sẽ bị hủy ngay lập tức).
+  ```json
+  {
+    "accessToken": "NEW_ULID_SESSION_TOKEN",
+    "refreshToken": "NEW_TOKEN_ID.TOKEN_SECRET"
+  }
+  ```
+- **Tại Cookie (Browser Store)**: Cập nhật lại giá trị mới của `accessToken` vào Cookie `exchange_session`.
+
+---
+
+### C. Cách sử dụng Token cho các API khác (Folders, Mail List, Send...)
+
+Hệ thống hỗ trợ 2 cách để xác thực các yêu cầu tiếp theo:
+
+1. **Cookie (Tự động)**: Browser sẽ tự gửi kèm Cookie `exchange_session`.
+2. **Access Token**: Nếu không dùng Browser, các công cụ khác có thể gửi `accessToken` trong Header hoặc tùy biến theo Guard. (Hiện tại Guard ưu tiên nhận từ Cookie).
+
+---
+
+### D. Luồng Đăng xuất (Logout Flow)
+
+**Thông tin gửi đi (Request):**
+
+- **Endpoint**: `POST /webmail/auth/logout`
+- **Địa điểm gửi**: **Body (JSON)**
+- **Nội dung (Khuyên dùng)**:
+  ```json
+  {
+    "refreshToken": "TOKEN_ID.TOKEN_SECRET"
+  }
+  ```
+  **Kết quả**:
+- Cookie `exchange_session` bị xóa ở browser.
+- Access Token và Refresh Token tương ứng bị xóa khỏi Redis.
+
+---
+
+## 2. Hướng dẫn sử dụng API (Implements Doc)
+
+**Base URL**: `/webmail`
+
+### A. Xác thực (Authentication)
+
+#### 1. Đăng nhập
+
+- **Endpoint**: `POST /auth/login`
+- **Body**:
+  ```json
+  {
+    "email": "user@example.com",
+    "password": "yourpassword"
+  }
+  ```
+- **Response**:
+  ```json
+  {
+    "success": true,
+    "accessToken": "...",
+    "refreshToken": "..."
+  }
+  ```
+- **Lưu ý**: Server cũng tự động set cookie `exchange_session` chứa `accessToken`.
+
+#### 2. Làm mới Token
+
+- **Endpoint**: `POST /auth/refresh`
+- **Body**:
+  ```json
+  {
+    "refreshToken": "token_id.token_secret"
+  }
+  ```
+- **Response**: Trả về bộ token mới.
+
+#### 3. Đăng xuất
+
+- **Endpoint**: `POST /auth/logout`
+- **Body** (Khuyên dùng):
+  ```json
+  {
+    "refreshToken": "..."
+  }
+  ```
+- **Mô tả**: Xóa session (Access Token) và thu hồi Refresh Token trong Redis.
+
+---
+
+### B. Quản lý Mail (Mail Management)
+
+#### 1. Lấy danh sách thư mục (Folders)
+
+- **Endpoint**: `GET /folders`
+- **Response**:
+  ```json
+  [
+    { "id": "INBOX", "name": "Hộp thư đến" },
+    ...
+  ]
+  ```
+
+#### 2. Lấy danh sách email
+
+- **Endpoint**: `GET /mail`
+- **Query Params**: `folder`, `page`, `pageSize`.
+- **Lưu ý về ID**: ID trả về là chuỗi Base64 (ví dụ: `SU5CT1g6MTIzNDU=`). Dùng ID này cho các API chi tiết.
+
+#### 3. Xem chi tiết email
+
+- **Endpoint**: `GET /mail/:id`
+- **Tác động**: Đánh dấu thư là **Đã đọc** trên server.
+
+#### 4. Gửi email
+
+- **Endpoint**: `POST /mail/send`
+- **Body**: `to`, `cc`, `subject`, `htmlBody`.
+
+---
+
+## 3. Lưu ý cho Testers & Frontend
+
+1. **Token Rotation**: Refresh Token chỉ sử dụng được **MỘT LẦN**. Ngay khi gọi `/refresh`, token cũ sẽ bị hủy.
+2. **TTL**: Access Token hết hạn sau 1 giờ. Refresh Token hết hạn sau 7 ngày.
+3. **Security**: Thông tin đăng nhập Exchange được mã hóa cực kỳ an toàn trong Redis, không bao giờ lưu dưới dạng plaintext.
+````
+
+## File: src/exchange/README.md
+````markdown
+# Exchange Webmail MVP Module
+
+This module provides a backend-only integration with Microsoft Exchange Web Services (EWS) via `ews-javascript-api`.
+
+## ⚠️ MVP ONLY WARNING
+
+**This implementation is an MVP (Minimum Viable Product).**
+
+1.  **Direct Credentials**: It uses direct Username/Password authentication against Exchange.
+    - Credentials are encrypted using **AES-256-GCM**.
+    - Key is derived using **Argon2** from a dedicated secret + user salt.
+    - Stored temporarily in Redis with a 30-minute TTL.
+    - **MUST** be replaced by OAuth / Modern Auth before production hardening.
+
+2.  **No Attachments**: Attachments are out of scope.
+3.  **Strict Folder Mapping**: Only supports `Inbox`, `SentItems`, `Drafts`, `DeletedItems` via `WellKnownFolderName`.
+
+## Configuration
+
+Ensure these environment variables are set:
+
+```env
+EXCHANGE_CRED_SECRET=complex_secret_string_for_argon2
+EWS_URL=https://outlook.office365.com/EWS/Exchange.asmx
+```
+
+(See `.env.example` for details)
+
+## Architecture
+
+- `ExchangeAuthService`: Handles login, key derivation, encryption/decryption.
+- `ExchangeClientFactory`: Creates request-scoped `ExchangeService` instances using cached credentials.
+- `MailService`: Business logic for folders, listing, reading, sending.
+- `ExchangeController`: Exposes REST endpoints (`/webmail/...`).
+
+## Endpoints
+
+- `POST /webmail/auth/login`: Login to Exchange context (requires App Auth).
+- `POST /webmail/auth/logout`: Clear Exchange context.
+- `GET /webmail/folders`: List supported folders.
+- `GET /webmail/mail?folder=inbox&page=1`: List emails.
+- `GET /webmail/mail/:id`: Read email body.
+- `POST /webmail/mail/send`: Send email.
+- `GET /webmail/mail/search?q=...`: Search inbox.
+````
+
+## File: src/exchange/utils/json.helper.ts
+````typescript
+/**
+ * Safely stringify objects that may contain BigInt values
+ * @param obj - The object to stringify
+ * @returns JSON string with BigInt values converted to strings
+ */
+export function safeStringify(obj: any): string {
+  return JSON.stringify(obj, (_, value) =>
+    typeof value === 'bigint' ? value.toString() : value,
+  );
+}
 ````
 
 ## File: src/files/dto/commit-file.dto.ts
@@ -4971,469 +3800,6 @@ export class MetadataReaderService {
 }
 ````
 
-## File: src/query/compiler/fields.compiler.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-
-@Injectable()
-export class FieldsCompiler {
-  compile(fields: string[]): any {
-    // fields=['*', 'author.name', 'comments.*']
-    // MikroORM needs "populate" array.
-    // We assume explicit fields selection logic.
-    // If fields=['*'], populate nothing? Or populate all? 
-    // Directus lazy loads nothing by default unless requested.
-    
-    // We simply extract relations from fields to populate them.
-    // 'author.name' -> populate 'author'
-    // 'comments.*' -> populate 'comments'
-    
-    const populate = new Set<string>();
-    
-    for (const f of fields) {
-      if (f.includes('.')) {
-        const parts = f.split('.');
-        populate.add(parts[0]);
-        // Support 2 levels? parts[0] + '.' + parts[1]
-      }
-    }
-
-    return Array.from(populate);
-  }
-}
-````
-
-## File: src/query/compiler/order.compiler.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { SortNode } from '../ast/query.ast';
-
-@Injectable()
-export class OrderCompiler {
-  compile(sort: SortNode[]): any {
-    if (!sort || sort.length === 0) return {};
-
-    const orderBy: any = {};
-    for (const node of sort) {
-      // Handle nested sort "author.name" -> { author: { name: 'asc' } }
-      // But MikroORM orderBy simple array is { field: 'ASC' } or { 'rel.field': 'ASC' }
-      
-      // MikroORM supports { 'author.name': 'asc' }
-      orderBy[node.field] = node.direction;
-    }
-
-    return orderBy;
-  }
-}
-````
-
-## File: src/query/compiler/where.compiler.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { FilterNode, FilterOperator } from '../ast/query.ast';
-
-@Injectable()
-export class WhereCompiler {
-  compile(filter: FilterNode): any {
-    if (!filter || Object.keys(filter).length === 0) return {};
-
-    const where: any = {};
-
-    for (const key of Object.keys(filter)) {
-      if (key === '_and') {
-        where['$and'] = (filter[key] as any[]).map(f => this.compile(f));
-      } else if (key === '_or') {
-        where['$or'] = (filter[key] as any[]).map(f => this.compile(f));
-      } else {
-        // Field or Relation
-        const value = filter[key];
-        if (this.isOperatorObject(value)) {
-          where[key] = this.compileOperators(value);
-        } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-            // Nested relation filter (join)
-            // MikroORM handles nested object keys as joins automatically if relation exists
-            // { author: { name: { _eq: 'John' } } }
-            where[key] = this.compile(value);
-        } else {
-            // Implicit _eq
-            where[key] = value;
-        }
-      }
-    }
-
-    return where;
-  }
-
-  private isOperatorObject(obj: any): boolean {
-    if (typeof obj !== 'object' || obj === null) return false;
-    const keys = Object.keys(obj);
-    // Simple check: starts with _
-    return keys.some(k => k.startsWith('_'));
-  }
-
-  private compileOperators(ops: any): any {
-    const result: any = {};
-    for (const op of Object.keys(ops)) {
-      const val = ops[op];
-      switch (op as FilterOperator) {
-        case '_eq': result['$eq'] = val; break;
-        case '_neq': result['$ne'] = val; break;
-        case '_gt': result['$gt'] = val; break;
-        case '_gte': result['$gte'] = val; break;
-        case '_lt': result['$lt'] = val; break;
-        case '_lte': result['$lte'] = val; break;
-        case '_in': result['$in'] = val; break;
-        case '_nin': result['$nin'] = val; break;
-        case '_contains': result['$like'] = `%${val}%`; break;
-        case '_starts_with': result['$like'] = `${val}%`; break;
-        // ... mapped others
-        default: break;
-      }
-    }
-    return result;
-  }
-}
-````
-
-## File: src/query/parser/deep.parser.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { DeepNode } from '../ast/query.ast';
-import { FilterParser } from './filter.parser';
-import { SortParser } from './sort.parser';
-
-@Injectable()
-export class DeepParser {
-  constructor(
-      private readonly filterParser: FilterParser,
-      private readonly sortParser: SortParser,
-  ) {}
-
-  parse(deep: any): DeepNode {
-    if (!deep) return {};
-    // Expect deep to be an object: deep[comments][_filter][status]=active
-    // In express/nestjs, qs might handle this object nesting.
-    
-    const result: DeepNode = {};
-
-    for (const relation of Object.keys(deep)) {
-      const relConfig = deep[relation];
-      result[relation] = {};
-
-      if (relConfig._filter) {
-        const parsed = this.filterParser.parse(relConfig._filter);
-        if (parsed) {
-             result[relation]._filter = parsed;
-        }
-      }
-      if (relConfig._sort) {
-        result[relation]._sort = this.sortParser.parse(relConfig._sort);
-      }
-      if (relConfig._limit) {
-        result[relation]._limit = parseInt(relConfig._limit, 10);
-      }
-      if (relConfig._offset) {
-        result[relation]._offset = parseInt(relConfig._offset, 10);
-      }
-    }
-
-    return result;
-  }
-}
-````
-
-## File: src/query/parser/fields.parser.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-
-@Injectable()
-export class FieldsParser {
-  // fields=*,author.name,comments.*
-  parse(fields: string | string[]): string[] {
-    if (!fields) return ['*'];
-    
-    if (Array.isArray(fields)) return fields;
-    
-    return fields.split(',').map(f => f.trim()).filter(f => f.length > 0);
-  }
-}
-````
-
-## File: src/query/parser/filter.parser.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { FilterNode, LogicalOperator } from '../ast/query.ast';
-import { InvalidQueryException } from '../../common/exceptions/invalid-query.exception';
-
-@Injectable()
-export class FilterParser {
-  parse(filter: any): FilterNode | null {
-    if (!filter) return null;
-    if (typeof filter === 'string') {
-        try {
-            filter = JSON.parse(filter);
-        } catch (e) {
-            throw new InvalidQueryException('Filter must be valid JSON');
-        }
-    }
-
-    return this.parseNode(filter);
-  }
-
-  private parseNode(node: any): any {
-    if (Object.keys(node).length === 0) return {};
-
-    const result: any = {};
-
-    for (const key of Object.keys(node)) {
-      if (key === '_and' || key === '_or') {
-        // Logical Operator
-        if (!Array.isArray(node[key])) {
-            throw new InvalidQueryException(`Logical operator ${key} must be an array`);
-        }
-        result[key] = node[key].map((child: any) => this.parseNode(child));
-      } else {
-        // Field or Operator or Nested Relation
-        // We don't deeply validate fields here, we trust the structure is roughly correct
-        // and validation happens at compile time or DB level to keep parser generic.
-        result[key] = node[key];
-      }
-    }
-
-    return result;
-  }
-}
-````
-
-## File: src/query/parser/meta.parser.ts
-````typescript
-import { Injectable, BadRequestException } from '@nestjs/common';
-import { MetaNode } from '../ast/query.ast';
-
-@Injectable()
-export class MetaParser {
-  parse(meta: string | string[]): MetaNode {
-    if (!meta) {
-      return {};
-    }
-
-    // Handle array or comma-separated string
-    const metaValues = Array.isArray(meta) 
-      ? meta 
-      : meta.split(',').map(v => v.trim());
-
-    const result: MetaNode = {};
-
-    for (const value of metaValues) {
-      if (value === '*') {
-        // Wildcard: include all meta fields
-        result.filter_count = true;
-        result.total_count = true;
-      } else if (value === 'filter_count') {
-        result.filter_count = true;
-      } else if (value === 'total_count') {
-        result.total_count = true;
-      } else if (value) {
-        // Non-empty unsupported value
-        throw new BadRequestException(
-          `Invalid meta value: "${value}". Supported values: filter_count, total_count, *`
-        );
-      }
-    }
-
-    return result;
-  }
-}
-````
-
-## File: src/query/parser/pagination.parser.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { PaginationNode } from '../ast/query.ast';
-
-@Injectable()
-export class PaginationParser {
-  parse(query: any): PaginationNode {
-    const limit = query.limit ? parseInt(query.limit, 10) : undefined;
-    const offset = query.offset ? parseInt(query.offset, 10) : undefined;
-    const page = query.page ? parseInt(query.page, 10) : undefined;
-
-    return { limit, offset, page };
-  }
-}
-````
-
-## File: src/query/parser/sort.parser.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { SortNode } from '../ast/query.ast';
-
-@Injectable()
-export class SortParser {
-  // sort=title,-createdAt
-  parse(sort: string | string[]): SortNode[] {
-    if (!sort) return [];
-    
-    const sortParams = Array.isArray(sort) ? sort : sort.split(',');
-    
-    return sortParams.map(param => {
-      let direction: 'asc' | 'desc' = 'asc';
-      let field = param.trim();
-
-      if (field.startsWith('-')) {
-        direction = 'desc';
-        field = field.substring(1);
-      }
-
-      return { field, direction };
-    });
-  }
-}
-````
-
-## File: src/query/query-engine.service.spec.ts
-````typescript
-import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { QueryEngineService } from './query-engine.service';
-import { FilterParser } from './parser/filter.parser';
-import { SortParser } from './parser/sort.parser';
-import { PaginationParser } from './parser/pagination.parser';
-import { FieldsParser } from './parser/fields.parser';
-import { DeepParser } from './parser/deep.parser';
-import { MetaParser } from './parser/meta.parser';
-import { WhereCompiler } from './compiler/where.compiler';
-import { OrderCompiler } from './compiler/order.compiler';
-import { FieldsCompiler } from './compiler/fields.compiler';
-import { PermissionService } from '../common/permissions/permission.service';
-
-describe('QueryEngineService Limits', () => {
-  let service: QueryEngineService;
-  let configService: ConfigService;
-
-  const mockConfigService = {
-    get: jest.fn((key, defaultValue) => {
-        if (key === 'query.maxSortFields') return 2;
-        if (key === 'query.maxConditions') return 3;
-        if (key === 'query.allowRegex') return false;
-        return defaultValue;
-    }),
-  };
-
-  const mockPermissionService = {
-      can: jest.fn().mockReturnValue({})
-  };
-
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        QueryEngineService,
-        { provide: ConfigService, useValue: mockConfigService },
-        { provide: PermissionService, useValue: mockPermissionService },
-        // Mocks for dependencies not under test
-        { provide: FilterParser, useValue: { parse: jest.fn(x => x) } },
-        { provide: SortParser, useValue: { parse: jest.fn(x => x) } },
-        { provide: PaginationParser, useValue: { parse: jest.fn(() => ({ limit: 10, offset: 0 })) } },
-        { provide: FieldsParser, useValue: { parse: jest.fn() } },
-        { provide: DeepParser, useValue: { parse: jest.fn() } },
-        { provide: MetaParser, useValue: { parse: jest.fn() } },
-        { provide: WhereCompiler, useValue: { compile: jest.fn(x => x) } }, // Passthrough for condition counting test
-        { provide: OrderCompiler, useValue: { compile: jest.fn() } },
-        { provide: FieldsCompiler, useValue: { compile: jest.fn() } },
-      ],
-    }).compile();
-
-    service = module.get<QueryEngineService>(QueryEngineService);
-    configService = module.get<ConfigService>(ConfigService);
-  });
-
-  it('should throw if sort fields exceed limit', async () => {
-    const context: any = {
-        collection: 'users',
-        query: {
-            sort: { a: 'ASC', b: 'DESC', c: 'ASC' } // 3 fields, limit is 2
-        }
-    };
-
-    await expect(service.parseAndCompile(context)).rejects.toThrow(BadRequestException);
-  });
-
-  it('should throw if regex is used when disabled', async () => {
-      const context: any = {
-          collection: 'users',
-          query: {
-              filter: { name: { $regex: 'pattern' } }
-          }
-      };
-      
-      await expect(service.parseAndCompile(context)).rejects.toThrow(BadRequestException);
-  });
-});
-````
-
-## File: src/repository/repository.module.ts
-````typescript
-import { Module, Global } from '@nestjs/common';
-import { GenericRepository } from './generic.repository';
-import { MetaModule } from '../meta/meta.module';
-import { MikroOrmModule } from '@mikro-orm/nestjs';
-
-@Global()
-@Module({
-  imports: [MetaModule, MikroOrmModule.forFeature([])],
-  providers: [GenericRepository],
-  exports: [GenericRepository],
-})
-export class RepositoryModule {}
-````
-
-## File: src/services/reports.service.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { QueryEngineService } from '../query/query-engine.service';
-import { GenericRepository } from '../repository/generic.repository';
-import { PermissionService } from '../common/permissions/permission.service';
-
-@Injectable()
-export class ReportsService {
-  constructor(
-      private readonly queryEngine: QueryEngineService,
-      private readonly repository: GenericRepository,
-      private readonly permissionService: PermissionService
-  ) {}
-
-  async getActiveUsers(query: any) {
-    // 1. Assert custom permission for this specific report
-    // This demonstrates arbitrary action strings beyond CRUD
-    this.permissionService.assert('reports', 'generate');
-
-    // 2. Force a filter for "active" users (assuming we have such a field, or logic)
-    // For demo, let's say "active" means email contains "active" (just as a sample constraint)
-    const customFilter = { email: { _contains: 'active' } };
-
-    // 3. Reuse Query Engine to parse user provided query (sorting, fields, etc)
-    // but inject our atomic custom filter.
-    const options = await this.queryEngine.parseAndCompile({
-        collection: 'user', // "user" maps to User entity
-        query: query
-    });
-
-    // 4. Merge custom business logic into the generic options
-    // Note: options.where comes from QueryEngine which already merged Permission Filters.
-    // Now we merge Business Logic Filters.
-    options.where = {
-        '$and': [
-            options.where,
-            { email: { '$like': '%active%' } } // The compiled version of our custom logic
-        ]
-    };
-
-    return this.repository.find('user', options);
-  }
-}
-````
-
 ## File: src/storage/storage.service.ts
 ````typescript
 import { Injectable } from '@nestjs/common';
@@ -5560,114 +3926,982 @@ describe('AppController (e2e)', () => {
 }
 ````
 
-## File: src/auth/auth.controller.ts
+## File: .env.example
+````
+# ==============================================================================
+# SERVER CONFIGURATION
+# ==============================================================================
+PORT=3000
+NODE_ENV=development
+# Set to 'true' to run seed data on startup (creates default admin/roles)
+RUN_SEEDING=false
+
+# ==============================================================================
+# DATABASE CONFIGURATION (PostgreSQL)
+# ==============================================================================
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=your_password
+DB_NAME=nestjs_base_db
+# Allow global context for simpler MikroORM usage (default false for strictness)
+DB_ALLOW_GLOBAL_CONTEXT=false
+
+# ==============================================================================
+# AUTHENTICATION & SECURITY
+# ==============================================================================
+# JWT Secret Key - CHANGE THIS IN PRODUCTION!
+JWT_SECRET=your-super-secret-key-change-it-now
+# Access Token Lifetime
+JWT_EXPIRES_IN=15m
+# Refresh Token Lifetime
+REFRESH_EXPIRES_IN=7d
+# Max number of failed refresh attempts before blocking context (optional)
+AUTH_MAX_FAILED_REFRESH=5
+# Logging level for auth events: 'basic' or 'verbose'
+AUTH_LOG_LEVEL=basic
+
+# ==============================================================================
+# CACHE CONFIGURATION (DragonflyDB / Redis)
+# ==============================================================================
+# Enable caching layer (Optional)
+DRAGONFLY_ENABLED=false
+DRAGONFLY_HOST=localhost
+DRAGONFLY_PORT=6379
+DRAGONFLY_PASSWORD=
+# Default Cache TTL in seconds (e.g. 300 = 5 minutes)
+DRAGONFLY_TTL=300
+
+# ==============================================================================
+# QUERY ENGINE CONFIGURATION
+# ==============================================================================
+# Max nested depth for filtering/relations
+QUERY_MAX_DEPTH=3
+# Max number of conditions in a single query (hard limit for safety)
+QUERY_MAX_CONDITIONS=50
+# Max number of fields allowed in sort
+QUERY_MAX_SORT_FIELDS=3
+# Allow regex in filters? (Warning: performance impact)
+QUERY_ALLOW_REGEX=false
+
+# ==============================================================================
+# FILE STORAGE
+# ==============================================================================
+# Driver: 'local' | 's3' (future support)
+STORAGE_DRIVER=local
+FILE_STORAGE_PATH=./storage
+
+# ==============================================================================
+# EXCHANGE WEBMAIL CONFIGURATION (MVP)
+# ==============================================================================
+# Secret used to derive encryption keys for storing Exchange credentials in Redis
+# MUST be a long, random string. NEVER use JWT_SECRET for this.
+EXCHANGE_CRED_SECRET=change_this_to_a_complex_random_string_mvp_only
+
+# EWS Endpoint URL (e.g., Office 365)
+# Default: https://outlook.office365.com/EWS/Exchange.asmx
+EWS_URL=https://outlook.office365.com/EWS/Exchange.asmx
+````
+
+## File: .gitignore
+````
+# compiled output
+/dist
+/node_modules
+/build
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+
+# Tests
+/coverage
+/.nyc_output
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# temp directory
+.temp
+.tmp
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+repomix-output.md
+````
+
+## File: docs/huong_dan.md
+````markdown
+# Tài liệu Kiến trúc và Hướng dẫn sử dụng Backend
+
+Tài liệu này mô tả kiến trúc của hệ thống backend, được thiết kế với mục tiêu linh hoạt, an toàn và có khả năng mở rộng cao, đồng thời hướng dẫn cách sử dụng và mở rộng hệ thống.
+
+---
+
+## 1. Tổng quan Kiến trúc
+
+Hệ thống được xây dựng dựa trên NestJS và đi theo một kiến trúc hướng module, tách biệt rõ ràng các mối quan tâm (separation of concerns). Nền tảng này không chỉ là một boilerplate thông thường mà là một Headless CMS linh hoạt với các thành phần cốt lõi được thiết kế để trừu tượng hóa các tác vụ lặp lại và tăng cường bảo mật.
+
+**Các thành phần chính bao gồm:**
+
+1.  **Query Engine**: Trái tim của hệ thống, chịu trách nhiệm phân tích và thực thi các truy vấn động từ client.
+2.  **Generic Items API**: Lớp giao tiếp chính, cung cấp các endpoint CRUD tự động cho mọi thực thể dữ liệu (entity).
+3.  **Authentication & Authorization (RBAC)**: Module bảo mật, quản lý danh tính người dùng và kiểm soát quyền truy cập chi tiết.
+4.  **Storage Service**: Cung cấp lớp trừu tượng cho việc lưu trữ và quản lý file.
+5.  **Custom Endpoints Framework**: Cung cấp cấu trúc để xây dựng các endpoint với logic nghiệp vụ riêng.
+6.  **Configuration Module**: Quản lý cấu hình ứng dụng một cách an toàn và linh hoạt.
+
+---
+
+## 2. Module: Query Engine
+
+### 2.1. Mục đích
+
+Query Engine là bộ não xử lý dữ liệu của hệ thống. Nó cung cấp một cơ chế truy vấn dữ liệu mạnh mẽ, linh hoạt và an toàn, cho phép client yêu cầu dữ liệu phức tạp (lọc, sắp xếp, lồng ghép) thông qua các tham số URL đơn giản mà không cần backend phải định nghĩa trước từng endpoint cụ thể.
+
+### 2.2. Trách nhiệm
+
+- **Phân tích (Parse)** các tham số truy vấn từ URL (`filter`, `sort`, `fields`, `limit`, `offset`, `page`, `deep`, `meta`) thành một cấu trúc dữ liệu trung gian là **AST (Abstract Syntax Tree)**.
+- **Biên dịch (Compile)** AST thành câu lệnh truy vấn phù hợp với ORM (MikroORM).
+- **Tự động áp dụng** các bộ lọc quyền (permission filters) từ module RBAC để đảm bảo người dùng chỉ thấy dữ liệu họ được phép.
+- **Áp đặt** các giới hạn an toàn (query limits) để ngăn chặn các truy vấn có khả năng gây quá tải hệ thống.
+
+### 2.3. Chi Tiết Các Tham Số Truy Vấn
+
+#### **`filter`**: Lọc dữ liệu
+
+Sử dụng `filter` với một đối tượng JSON để lọc kết quả.
+
+- **So sánh bằng:**
+  `GET /items/post?filter={"status":"published"}`
+
+- **Toán tử so sánh:**
+  `GET /items/post?filter={"views":{"_gte":100}}`
+  - Các toán tử được hỗ trợ: `_eq`, `_neq`, `_gt`, `_gte`, `_lt`, `_lte`, `_in`, `_nin`, `_contains`, `_starts_with`.
+
+- **Toán tử logic (`_and`, `_or`):**
+  `GET /items/post?filter={"_or":[{"status":"published"},{"status":"archived"}]}`
+
+- **Lọc trên quan hệ lồng nhau:**
+  `GET /items/post?filter={"author":{"name":{"_contains":"john"}}}`
+
+#### **`fields`**: Lựa chọn trường dữ liệu
+
+Kiểm soát các trường được trả về.
+
+- **Tất cả các trường của entity chính:**
+  `GET /items/post?fields=*`
+
+- **Các trường cụ thể:**
+  `GET /items/post?fields=id,title,createdAt`
+
+- **Bao gồm các trường của quan hệ:**
+  `GET /items/post?fields=id,title,author.name,author.email`
+
+- **Sử dụng wildcard trên quan hệ:**
+  `GET /items/post?fields=*,author.*,comments.*`
+
+#### **`sort`**: Sắp xếp kết quả
+
+Sử dụng danh sách các trường được phân tách bằng dấu phẩy. Thêm tiền tố `-` để sắp xếp giảm dần.
+
+`GET /items/post?sort=-createdAt,title`
+
+#### **`limit`, `offset`, `page`**: Phân trang
+
+- **Giới hạn số lượng và bỏ qua:**
+  `GET /items/post?limit=10&offset=20`
+
+- **Dựa trên số trang:**
+  `GET /items/post?limit=10&page=3`
+
+#### **`deep`**: Lọc và sắp xếp trên quan hệ sâu
+
+Áp dụng các tùy chọn truy vấn cho các collection lồng nhau.
+
+`GET /items/post?deep[comments][_filter][status][_eq]=approved&deep[comments][_sort]=-createdAt`
+
+#### **`meta`**: Lấy thông tin metadata
+
+Yêu cầu dữ liệu metadata về số lượng bản ghi cùng với kết quả.
+
+- `meta=filter_count`: Trả về số lượng bản ghi khớp với điều kiện `filter` (bỏ qua phân trang).
+- `meta=total_count`: Trả về tổng số bản ghi trong collection (bỏ qua `filter` và phân trang).
+- `meta=*`: Trả về cả hai.
+
+**Ví dụ:**
+`GET /items/post?filter={"status":"published"}&meta=*`
+
+**Phản hồi:**
+
+```json
+{
+  "data": [
+    /* các bài post đã published */
+  ],
+  "meta": {
+    "filter_count": 45,
+    "total_count": 150
+  }
+}
+```
+
+### 2.4. Rủi ro / Lưu ý
+
+- **Độ phức tạp của truy vấn**: Cần theo dõi và tối ưu hiệu suất cho các truy vấn phức tạp. Luôn đảm bảo các cột dữ liệu được filter thường xuyên đã được đánh index.
+- **Truy vấn quá sâu**: Các truy vấn lồng nhau quá nhiều cấp có thể gây ra vấn đề N+1. QueryEngine đã có cơ chế giới hạn độ sâu truy vấn (mặc định là 3).
+
+---
+
+## 3. Module: Generic Items API
+
+### 3.1. Mục đích
+
+Cung cấp một bộ API RESTful chung cho tất cả các thực thể đã đăng ký, giúp giảm thiểu việc viết code lặp lại cho các thao tác CRUD. Tên `collection` trong URL là **tên bảng** trong CSDL (thường là số ít, viết thường).
+
+### 3.2. Các Endpoint
+
+- `GET /items/:collection`
+- `GET /items/:collection/:id`
+- `POST /items/:collection`
+- `PATCH /items/:collection/:id`
+- `DELETE /items/:collection/:id`
+
+### 3.3. Ví Dụ Sử Dụng API
+
+**Lấy danh sách:**
+`GET /items/post?fields=id,title&sort=-createdAt`
+
+**Lấy một item:**
+`GET /items/post/123`
+
+**Tạo mới:**
+
+```http
+POST /items/post
+Content-Type: application/json
+
+{
+  "title": "Hello World",
+  "content": "Đây là nội dung bài viết."
+}
+```
+
+**Cập nhật:**
+
+```http
+PATCH /items/post/123
+Content-Type: application/json
+
+{
+  "status": "published"
+}
+```
+
+**Xóa:**
+`DELETE /items/post/123`
+
+### 3.4. Rủi ro / Lưu ý
+
+- **Field-level security**: Module này không hỗ trợ kiểm soát quyền ở cấp độ trường. Nếu một vai trò có quyền `read` trên một collection, họ có thể yêu cầu bất kỳ trường nào.
+- **Tên collection**: Tên `collection` trong URL là tên bảng trong CSDL (thường là dạng số ít, viết thường), không phải tên class của Entity.
+
+---
+
+## 4. Module: Authentication & Authorization (RBAC)
+
+### 4.1. Mục đích
+
+Đảm bảo chỉ người dùng hợp lệ mới có thể truy cập hệ thống và họ chỉ có thể thực hiện các hành động được cấp phép.
+
+### 4.2. Luồng chính
+
+- **Authentication**: Xác thực qua email/password, cấp cặp Access Token (JWT, ngắn hạn) và Refresh Token (dài hạn, lưu trong CSDL).
+- **Authorization**: `PermissionService` kiểm tra quyền của người dùng dựa trên vai trò (Role) và các quyền (Permission) được gán cho vai trò đó trong CSDL.
+
+### 4.3. Điểm mở rộng: Thêm hành động (Action) mới
+
+Mô hình RBAC cho phép thêm các "hành động" tùy chỉnh một cách linh hoạt mà không cần sửa code của `PermissionService`.
+
+1.  **Sử dụng action mới trong code**:
+    Trong một service, gọi `assert` với một chuỗi action tùy ý.
+
+    ```typescript
+    // src/services/reports.service.ts
+    async exportData(collection: string, query: any) {
+      // Sử dụng một action tùy chỉnh là 'export_csv'
+      this.permissionService.assert(collection, 'export_csv');
+      // ... logic xuất dữ liệu
+    }
+    ```
+
+2.  **Định nghĩa quyền trong CSDL**:
+    Trong bảng `permission`, tạo một bản ghi mới:
+    - `collection`: "post"
+    - `action`: "export_csv"
+
+3.  **Gán quyền cho vai trò**:
+    Gán quyền vừa tạo cho một vai trò (ví dụ: "analyst") trong bảng gán quyền-vai trò.
+
+---
+
+## 5. Module: Storage Service
+
+Cung cấp một lớp trừu tượng (`IStorageAdapter`) cho việc quản lý file, giúp ứng dụng không bị phụ thuộc vào một nhà cung cấp lưu trữ cụ thể (local, S3, GCS...). Việc chuyển đổi giữa các nhà cung cấp chỉ cần thay đổi biến môi trường `STORAGE_DRIVER`.
+
+---
+
+## 6. Module: Custom Endpoints & Mở rộng
+
+Cung cấp cấu trúc chuẩn hóa để xây dựng các API có logic nghiệp vụ phức tạp.
+
+### Quy trình xây dựng Custom Endpoint
+
+Luôn tuân theo quy trình: **Controller → Service → QueryEngine/Repository**.
+
+**1. Tạo Controller**:
+Controller chỉ chịu trách nhiệm định nghĩa route, nhận request và gọi service. **Không chứa logic nghiệp vụ.**
+
+```typescript
+// src/controllers/reports.controller.ts
+import { Controller, Get, Query } from '@nestjs/common';
+import { ReportsService } from '../services/reports.service';
+
+@Controller('reports')
+export class ReportsController {
+  constructor(private readonly reportsService: ReportsService) {}
+
+  @Get('active-users')
+  async getActiveUsers(@Query() query: any) {
+    // Ủy quyền hoàn toàn cho Service
+    return this.reportsService.getActiveUsers(query);
+  }
+}
+```
+
+**2. Tạo Service**:
+Service là nơi chứa toàn bộ logic nghiệp vụ.
+
+```typescript
+// src/services/reports.service.ts
+import { Injectable } from '@nestjs/common';
+import { QueryEngineService } from '../query/query-engine.service';
+import { GenericRepository } from '../repository/generic.repository';
+import { PermissionService } from '../common/permissions/permission.service';
+
+@Injectable()
+export class ReportsService {
+  constructor(
+    private readonly queryEngine: QueryEngineService,
+    private readonly repository: GenericRepository,
+    private readonly permissionService: PermissionService,
+  ) {}
+
+  async getActiveUsers(query: any) {
+    // 1. Luôn kiểm tra quyền trước tiên
+    this.permissionService.assert('reports', 'generate');
+
+    // 2. Tái sử dụng QueryEngine để phân tích các tham số từ client (filter, sort...)
+    const options = await this.queryEngine.parseAndCompile({
+      collection: 'user',
+      query: query,
+    });
+
+    // 3. Thêm logic nghiệp vụ tùy chỉnh
+    // Ví dụ: chỉ lấy user hoạt động trong 30 ngày gần nhất
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    options.where = {
+      $and: [
+        options.where, // Giữ lại các filter từ client
+        { status: 'active' },
+        { lastLoginAt: { $gte: thirtyDaysAgo } },
+      ],
+    };
+
+    // 4. Thực thi truy vấn qua GenericRepository
+    return this.repository.find('user', options);
+  }
+}
+```
+
+**3. Đăng ký vào Module**:
+Đăng ký `ReportsController` và `ReportsService` vào một module (ví dụ `AppModule` hoặc một `ReportsModule` riêng).
+
+### Những điều BẮT BUỘC và KHÔNG ĐƯỢC làm
+
+- ✅ **Luôn** gọi `permissionService.assert()` ở đầu mỗi phương thức service.
+- ✅ **Luôn** tái sử dụng `queryEngine.parseAndCompile()` để hỗ trợ các tham số truy vấn từ client.
+- ✅ **Luôn** thực thi truy vấn qua `GenericRepository`.
+- ❌ **KHÔNG BAO GIỜ** truy cập trực tiếp vào `MikroORM` hay `EntityManager` từ controller hoặc service.
+- ❌ **KHÔNG BAO GIỜ** đặt logic nghiệp vụ trong controller.
+
+### Chuyên biệt hóa Endpoint với DTO (Quy trình được khuyến khích)
+
+Khi bạn muốn thêm validation chặt chẽ cho các thao tác `create` và `update` trên một resource, thay vì tạo một custom endpoint hoàn toàn mới, bạn có thể "chuyên biệt hóa" (specialize) endpoint chung `/items/:collection`. Hệ thống cung cấp một script để tự động hóa quy trình này.
+
+#### **Tự động tạo Controller và DTO với `generate-resource.sh`**
+
+Script này giúp tạo nhanh các file cần thiết để áp dụng Data Transfer Objects (DTOs) cho việc validation.
+
+**1. Mục đích**
+
+Để nhanh chóng tạo validation cho body của request `POST` (create) và `PATCH` (update) trên một resource, đảm bảo dữ liệu đầu vào luôn đúng định dạng bạn mong muốn.
+
+**2. Cách sử dụng**
+
+Chạy script từ thư mục gốc của dự án với tên resource ở dạng `PascalCase` (số ít).
+
+```bash
+bash generate-resource.sh Product
+```
+
+**3. Các file được tạo**
+
+Script sẽ tạo ra các file sau cho resource `Product`:
+
+- `src/controllers/products.controller.ts`: Controller chuyên biệt.
+- `src/dto/product/create-product.dto.ts`: DTO cho việc tạo mới.
+- `src/dto/product/update-product.dto.ts`: DTO cho việc cập nhật.
+
+**4. Luồng hoạt động**
+
+- Controller mới (`ProductsController`) sẽ "ghi đè" các route `POST /items/product` và `PATCH /items/product/:id`.
+- Khi một request `POST` hoặc `PATCH` đến các route này, NestJS sẽ dùng controller chuyên biệt này thay vì `ItemsController` chung.
+- Nhờ đó, `ValidationPipe` của NestJS sẽ tự động được áp dụng lên body của request, sử dụng các quy tắc bạn định nghĩa trong `CreateProductDto` và `UpdateProductDto`.
+- Các request `GET` và `DELETE` vẫn sẽ được xử lý bởi `ItemsController` chung như bình thường.
+
+**5. Các bước tiếp theo (Rất quan trọng)**
+
+Sau khi chạy script, bạn cần làm những việc sau:
+
+1.  **Định nghĩa DTO**: Mở file `src/dto/product/create-product.dto.ts` và thêm các thuộc tính cùng với các decorator validation từ `class-validator` (ví dụ: `@IsString()`, `@IsNotEmpty()`, `@IsNumber()`).
+2.  **Đăng ký Controller**: Mở file `app.module.ts` (hoặc module tương ứng) và **thêm `ProductsController` vào mảng `controllers`**. Nếu không có bước này, controller mới sẽ không hoạt động.
+
+    ```typescript
+    // app.module.ts
+    import { ProductsController } from './controllers/products.controller';
+    // ... các controller khác
+
+    @Module({
+      imports: [
+        // ...
+      ],
+      controllers: [AppController, ProductsController, ItemsController, ...] // <--- Thêm vào đây lưu ý thứ tự controller chuyên biệt phải đứng trước controller chung
+      providers: [
+        // ...
+      ],
+    })
+    export class AppModule {}
+    ```
+
+---
+
+## 7. Mở Rộng Chức Năng Cốt Lõi
+
+### 7.1. Thêm một Entity mới
+
+1.  **Tạo file Entity**:
+
+    ```typescript
+    // src/database/entities/product.entity.ts
+    import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
+
+    @Entity()
+    export class Product {
+      @PrimaryKey()
+      id!: number;
+
+      @Property()
+      name!: string;
+    }
+    ```
+
+2.  **Đăng ký vào `mikro-orm.config.ts`**:
+
+    ```typescript
+    // mikro-orm.config.ts
+    import { Product } from './entities/product.entity';
+
+    export default defineConfig({
+      entities: [User, Post, ..., Product], // Thêm vào đây
+    });
+    ```
+
+3.  **Hoàn tất!** Hệ thống sẽ tự động tạo ra các endpoint `/items/product` cho bạn.
+
+--- Tính năng định mở rộng --
+
+### 7.2. Thêm Toán Tử Lọc Mới (ví dụ: `_between`)
+
+1.  **Cập nhật `query.ast.ts`**:
+    ```typescript
+    // src/query/ast/query.ast.ts
+    export type FilterOperator =
+      | '_eq' | '_neq' | ...
+      | '_between'; // Thêm toán tử mới
+    ```
+2.  **Cập nhật `where.compiler.ts`**:
+    Thêm logic biên dịch cho toán tử mới.
+    ```typescript
+    // src/query/compiler/where.compiler.ts
+    // trong hàm compileOperators
+    switch (op as FilterOperator) {
+      // ... các case khác
+      case '_between':
+        result['$gte'] = val[0];
+        result['$lte'] = val[1];
+        break;
+    }
+    ```
+3.  **Sử dụng**:
+    `GET /items/product?filter={"price":{"_between":[10,100]}}`
+
+### 7.3. Thêm Tham Số Truy Vấn Mới (ví dụ: `search`)
+
+1.  **Tạo một Parser mới**: `src/query/parser/search.parser.ts`.
+2.  **Cập nhật `QueryEngineService`**: Tích hợp parser mới và thêm logic để áp dụng tham số `search` vào mệnh đề `where` của truy vấn (ví dụ: tìm kiếm trên nhiều trường `title`, `content`...).
+3.  **Đăng ký Parser mới** vào `QueryModule`.
+4.  **Sử dụng**: `GET /items/post?search=nestjs&sort=-createdAt`
+
+---
+
+## 8. Module: Configuration
+
+Quản lý toàn bộ cấu hình ứng dụng qua các biến môi trường (`.env`).
+
+- **KHÔNG BAO GIỜ** hardcode các giá trị nhạy cảm (secrets, passwords, keys) trong code.
+- Sử dụng `ConfigService` để truy cập cấu hình một cách an toàn.
+- Tham khảo file `.env.example` để biết tất cả các biến môi trường cần thiết cho dự án.
+````
+
+## File: src/audit/audit-log.interceptor.ts
 ````typescript
-import { Controller, Post, Get, Body, UseGuards } from '@nestjs/common';
-import { AuthService } from './auth.service';
-import { LoginDto } from './dto/login.dto';
-import { ResetPasswordDto } from './dto/reset-password.dto';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import { CurrentUser } from './decorators/current-user.decorator';
+import {
+  Injectable,
+  NestInterceptor,
+  ExecutionContext,
+  CallHandler,
+  Logger,
+  Scope,
+} from '@nestjs/common';
+import { Observable } from 'rxjs';
+import { tap, catchError } from 'rxjs/operators';
+import { AuditLogService } from './audit.service';
+import { RequestContext } from '../common/context/request.context';
 
 /**
- * AuthController - Handles authentication endpoints.
+ * AuditLogInterceptor - Tự động ghi log cho các thao tác CUD
  * 
- * Endpoints:
- * - POST /auth/login - Login with email/password
- * - POST /auth/refresh - Rotate refresh token
- * - POST /auth/logout - Revoke refresh token
- * - POST /auth/reset-password-request - Request password reset token
- * - POST /auth/reset-password - Reset password with token
- * - GET /auth/me - Get current user info (requires JWT)
+ * Phân loại logs:
+ * 1. DEV LOGS (Console/Logger): Chi tiết kỹ thuật, response time, errors
+ * 2. USER LOGS (Database): Audit trail cho business - ai làm gì, lúc nào
+ * 
+ * Chỉ ghi User Log cho các thao tác thay đổi dữ liệu (POST, PATCH, PUT, DELETE)
+ * GET requests chỉ ghi Dev Log
  */
-@Controller('auth')
-export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+@Injectable({ scope: Scope.REQUEST })
+export class AuditLogInterceptor implements NestInterceptor {
+  private readonly logger = new Logger('AuditLog');
 
-  @Post('login')
-  async login(@Body() dto: LoginDto) {
-    const { accessToken, refreshToken } = await this.authService.login(
-      dto.email,
-      dto.password
+  constructor(
+    private readonly auditLogService: AuditLogService,
+    private readonly requestContext: RequestContext,
+  ) {}
+
+  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+    const request = context.switchToHttp().getRequest();
+    const { method, url, body, params, ip, headers } = request;
+    const userAgent = headers['user-agent'] || 'Unknown';
+    const startTime = Date.now();
+
+    // Extract collection and id from params (for /items/:collection/:id routes)
+    const collection = params.collection || this.extractCollectionFromUrl(url);
+    const targetId = params.id || null;
+
+    // Get user from context
+    const user = this.requestContext.user;
+    const userId = user?.id || 'anonymous';
+
+    // ========== DEV LOG: Request Start ==========
+    this.logger.log(
+      `📥 [${method}] ${url} | User: ${userId} | IP: ${ip}`,
     );
 
-    return {
-      accessToken,
-      refreshToken,
+    if (method !== 'GET' && body && Object.keys(body).length > 0) {
+      // Mask sensitive fields in dev log
+      const sanitizedBody = this.sanitizeForDevLog(body);
+      this.logger.debug(`   Body: ${JSON.stringify(sanitizedBody)}`);
+    }
+
+    return next.handle().pipe(
+      tap(async (response) => {
+        const duration = Date.now() - startTime;
+
+        // ========== DEV LOG: Request Success ==========
+        this.logger.log(
+          `✅ [${method}] ${url} | ${duration}ms | User: ${userId}`,
+        );
+
+        // ========== USER LOG: Only for CUD operations ==========
+        if (this.shouldLogToDatabase(method)) {
+          await this.logUserAction({
+            userId,
+            method,
+            collection,
+            targetId: targetId || this.extractIdFromResponse(response),
+            action: this.mapMethodToAction(method),
+            success: true,
+            ip,
+            userAgent,
+            // Don't log full body to DB - only essential info
+            details: this.sanitizeForUserLog(body, response),
+          });
+        }
+      }),
+      catchError(async (error) => {
+        const duration = Date.now() - startTime;
+
+        // ========== DEV LOG: Request Error ==========
+        this.logger.error(
+          `❌ [${method}] ${url} | ${duration}ms | User: ${userId} | Error: ${error.message}`,
+        );
+        this.logger.debug(`   Stack: ${error.stack}`);
+
+        // ========== USER LOG: Failed CUD operations ==========
+        if (this.shouldLogToDatabase(method)) {
+          await this.logUserAction({
+            userId,
+            method,
+            collection,
+            targetId,
+            action: this.mapMethodToAction(method),
+            success: false,
+            ip,
+            userAgent,
+            details: {
+              error: error.message,
+              errorCode: error.status || 500,
+            },
+          });
+        }
+
+        throw error;
+      }),
+    );
+  }
+
+  /**
+   * Xác định có nên ghi vào database không
+   * Chỉ ghi cho các thao tác thay đổi dữ liệu
+   */
+  private shouldLogToDatabase(method: string): boolean {
+    return ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase());
+  }
+
+  /**
+   * Map HTTP method sang action name cho User Log
+   */
+  private mapMethodToAction(method: string): string {
+    const actionMap: Record<string, string> = {
+      POST: 'create',
+      PATCH: 'update',
+      PUT: 'update',
+      DELETE: 'delete',
     };
+    return actionMap[method.toUpperCase()] || method.toLowerCase();
   }
 
-  @Post('refresh')
-  @UseGuards(JwtAuthGuard)
-  async refresh(@Body('refreshToken') refreshToken: string) {
-    const tokens = await this.authService.rotateRefreshToken(refreshToken);
-    return tokens;
+  /**
+   * Extract collection name from URL nếu không có trong params
+   * Ví dụ: /items/posts/1 -> posts, /auth/login -> auth
+   */
+  private extractCollectionFromUrl(url: string): string {
+    const parts = url.split('/').filter(Boolean);
+    // Remove query params
+    const cleanParts = parts.map(p => p.split('?')[0]);
+    
+    // If URL starts with /items/, the collection is the next part
+    if (cleanParts[0] === 'items' && cleanParts[1]) {
+      return cleanParts[1];
+    }
+    
+    // Otherwise use the first part as collection (e.g., /auth/login -> auth)
+    return cleanParts[0] || 'unknown';
   }
 
-  @Post('logout')
-  @UseGuards(JwtAuthGuard)
-  async logout(@Body('refreshToken') refreshToken: string) {
-    await this.authService.revokeRefreshToken(refreshToken);
-    return { message: 'Đăng xuất thành công !' };
+  /**
+   * Extract ID từ response nếu là create operation
+   */
+  private extractIdFromResponse(response: any): string | null {
+    if (response && typeof response === 'object') {
+      return String(response.id || response.data?.id || null);
+    }
+    return null;
   }
 
-  @Post('reset-password-request')
-  async requestPasswordReset(@Body('email') email: string) {
-    // TODO: Find user by email and create reset token
-    // For now, this is a placeholder
-    return { message: 'Yêu cầu thay đổi mật khẩu đã được gửi !' };
+  /**
+   * Sanitize body cho DEV LOG - ẩn sensitive fields
+   */
+  private sanitizeForDevLog(body: any): any {
+    if (!body || typeof body !== 'object') return body;
+
+    const sensitiveFields = ['password', 'token', 'refreshToken', 'secret', 'apiKey', 'accessToken'];
+    const sanitized = { ...body };
+
+    for (const field of sensitiveFields) {
+      if (sanitized[field]) {
+        sanitized[field] = '***HIDDEN***';
+      }
+    }
+
+    return sanitized;
   }
 
-  @Post('reset-password')
-  async resetPassword(@Body() dto: ResetPasswordDto) {
-    await this.authService.resetPassword(dto.token, dto.newPassword);
-    return { message: 'Mật khẩu đã được thay đổi !' };
+  /**
+   * Sanitize data cho USER LOG - chỉ giữ thông tin cần thiết
+   * Không lưu passwords, tokens, hoặc data quá lớn
+   */
+  private sanitizeForUserLog(body: any, response: any): Record<string, any> {
+    const details: Record<string, any> = {};
+
+    // Chỉ log các fields quan trọng, không log sensitive data
+    if (body && typeof body === 'object') {
+      const allowedFields = ['title', 'name', 'email', 'status', 'role', 'collection'];
+      for (const field of allowedFields) {
+        if (body[field] !== undefined) {
+          details[`input_${field}`] = body[field];
+        }
+      }
+    }
+
+    // Log result ID nếu có
+    if (response?.id) {
+      details.resultId = response.id;
+    }
+
+    return Object.keys(details).length > 0 ? details : {};
   }
 
-  @Get('me')
-  @UseGuards(JwtAuthGuard)
-  async getMe(@CurrentUser() user: { id: number; email: string }) {
-    return this.authService.getMe(user.id);
+  /**
+   * Ghi User Log vào database
+   */
+  private async logUserAction(data: {
+    userId: string | number;
+    method: string;
+    collection: string;
+    targetId: string | null;
+    action: string;
+    success: boolean;
+    ip: string;
+    userAgent: string;
+    details?: Record<string, any>;
+  }): Promise<void> {
+    try {
+      await this.auditLogService.logAction(
+        data.userId !== 'anonymous' ? { id: data.userId } as any : null,
+        data.action,
+        data.collection,
+        data.targetId || 'new',
+        {
+          ...data.details,
+          success: data.success,
+          ip: data.ip,
+          userAgent: data.userAgent,
+        },
+      );
+    } catch (error) {
+      // Không để audit log failure làm fail request chính
+      this.logger.error(`Failed to save audit log: ${error.message}`);
+    }
   }
 }
 ````
 
-## File: src/auth/auth.module.ts
+## File: src/audit/audit.service.ts
 ````typescript
-import { Module } from '@nestjs/common';
-import { JwtModule } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
-import { PassportModule } from '@nestjs/passport';
-import { MikroOrmModule } from '@mikro-orm/nestjs';
-import { AuthService } from './auth.service';
-import { AuthController } from './auth.controller';
-import { JwtStrategy } from './strategies/jwt.strategy';
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectRepository } from '@mikro-orm/nestjs';
+import { EntityRepository, EntityManager, FilterQuery } from '@mikro-orm/core';
+import { AuditLog } from '../database/entities/audit-log.entity';
 import { User } from '../database/entities/user.entity';
-import { RefreshToken } from '../database/entities/refresh-token.entity';
-import { ResetPasswordToken } from '../database/entities/reset-password-token.entity';
-import { CommonModule } from '../common/common.module';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
-@Module({
-  imports: [
-    CommonModule,
-    PassportModule.register({defaultStrategy: 'jwt'}),
-    JwtModule.registerAsync({
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET') || 'your-secret-key-change-in-production',
-        signOptions: {
-          expiresIn: configService.get<any>('JWT_EXPIRES_IN') || '15m',
-        },
-      }),
-    }),
-    MikroOrmModule.forFeature([User, RefreshToken, ResetPasswordToken]),
-  ],
-  providers: [AuthService, JwtStrategy,JwtAuthGuard],
-  controllers: [AuthController],
-  exports: [AuthService, JwtStrategy, PassportModule,JwtModule,JwtAuthGuard],
-})
-export class AuthModule {}
+/**
+ * AuditLogService - Quản lý User Logs (Business Audit Trail)
+ * 
+ * User Logs được lưu vào database để:
+ * - Tracking ai đã làm gì, lúc nào
+ * - Compliance và security audit
+ * - Rollback/debugging khi cần
+ */
+@Injectable()
+export class AuditLogService {
+  private readonly logger = new Logger('AuditLogService');
+
+  constructor(
+    @InjectRepository(AuditLog)
+    private readonly auditLogRepository: EntityRepository<AuditLog>,
+    private readonly em: EntityManager,
+  ) {}
+
+  /**
+   * Ghi một User Log entry vào database
+   * 
+   * @param user - User object hoặc { id } object, null nếu anonymous
+   * @param action - Hành động: 'create', 'update', 'delete', 'login', 'logout', etc.
+   * @param collection - Collection/entity bị ảnh hưởng
+   * @param targetId - ID của record bị ảnh hưởng
+   * @param details - Chi tiết bổ sung (không chứa sensitive data)
+   */
+  async logAction(
+    user: User | { id: string | number } | null,
+    action: string,
+    collection: string,
+    targetId: string,
+    details?: Record<string, any>,
+  ): Promise<void> {
+    try {
+      const logEntry = this.em.create(AuditLog, {
+        user: user ? { id: String((user as any).id) } as User : undefined,
+        action,
+        collection,
+        targetId: String(targetId),
+        details,
+        timestamp: new Date(),
+      });
+
+      await this.em.persistAndFlush(logEntry);
+      
+      this.logger.debug(
+        `📝 Audit: [${action}] ${collection}/${targetId} by user ${(user as any)?.id || 'anonymous'}`,
+      );
+    } catch (error) {
+      // Log error but don't throw - audit should not break main flow
+      this.logger.error(`Failed to save audit log: ${error.message}`);
+    }
+  }
+
+  /**
+   * Ghi log cho authentication events
+   */
+  async logAuth(
+    userId: string | number | null,
+    action: 'login' | 'logout' | 'login_failed' | 'token_refresh' | 'password_reset',
+    details?: Record<string, any>,
+  ): Promise<void> {
+    await this.logAction(
+      userId ? { id: userId } : null,
+      action,
+      'auth',
+      String(userId || 'anonymous'),
+      details,
+    );
+  }
+
+  /**
+   * Query User Logs với filters
+   * Useful cho admin dashboard hoặc compliance reports
+   */
+  async findLogs(options: {
+    userId?: string;
+    collection?: string;
+    action?: string;
+    fromDate?: Date;
+    toDate?: Date;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ data: AuditLog[]; total: number }> {
+    const where: FilterQuery<AuditLog> = {};
+
+    if (options.userId) {
+      where.user = { id: options.userId };
+    }
+    if (options.collection) {
+      where.collection = options.collection;
+    }
+    if (options.action) {
+      where.action = options.action;
+    }
+    if (options.fromDate || options.toDate) {
+      where.timestamp = {};
+      if (options.fromDate) {
+        where.timestamp.$gte = options.fromDate;
+      }
+      if (options.toDate) {
+        where.timestamp.$lte = options.toDate;
+      }
+    }
+
+    const [data, total] = await this.auditLogRepository.findAndCount(where, {
+      orderBy: { timestamp: 'DESC' },
+      limit: options.limit || 50,
+      offset: options.offset || 0,
+      populate: ['user'],
+    });
+
+    return { data, total };
+  }
+
+  /**
+   * Lấy logs của một user cụ thể
+   */
+  async getLogsByUser(userId: string, limit = 20): Promise<AuditLog[]> {
+    return this.auditLogRepository.find(
+      { user: { id: userId } },
+      {
+        orderBy: { timestamp: 'DESC' },
+        limit,
+      },
+    );
+  }
+
+  /**
+   * Lấy logs của một record cụ thể (history của 1 item)
+   */
+  async getLogsByTarget(collection: string, targetId: string): Promise<AuditLog[]> {
+    return this.auditLogRepository.find(
+      { collection, targetId },
+      {
+        orderBy: { timestamp: 'DESC' },
+        populate: ['user'],
+      },
+    );
+  }
+}
 ````
 
 ## File: src/auth/guards/jwt-auth.guard.ts
@@ -5727,30 +4961,6 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     return user;
   }
 }
-````
-
-## File: src/common/common.module.ts
-````typescript
-import { Module, Global } from '@nestjs/common';
-import { RequestContext } from './context/request.context';
-import { PermissionService } from './permissions/permission.service';
-
-import { RequestContextInterceptor } from './interceptors/request-context.interceptor';
-import { APP_INTERCEPTOR } from '@nestjs/core';
-
-@Global()
-@Module({
-  providers: [
-    RequestContext, 
-    PermissionService,
-    {
-      provide: APP_INTERCEPTOR,
-      useClass: RequestContextInterceptor,
-    },
-  ],
-  exports: [RequestContext, PermissionService],
-})
-export class CommonModule {}
 ````
 
 ## File: src/common/context/request.context.ts
@@ -5815,533 +5025,27 @@ export default registerAs('database', () => ({
 }));
 ````
 
-## File: src/controllers/items.controller.ts
+## File: src/exchange/exchange.module.ts
 ````typescript
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query, UseGuards } from '@nestjs/common';
-import { ItemsService } from '../services/items.service';
-import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
-
-@Controller('items')
-@UseGuards(JwtAuthGuard)
-export class ItemsController {
-  constructor(private readonly itemsService: ItemsService) {}
-
-  @Get(':collection')
-  async findMany(@Param('collection') collection: string, @Query() query: any) {
-    return this.itemsService.findMany(collection, query);
-  }
-
-  @Get(':collection/:id')
-  async findOne(
-      @Param('collection') collection: string, 
-      @Param('id') id: string,
-      @Query() query: any
-  ) {
-    // Attempt parse ID as number if possible, or keep string
-    const parsedId = !isNaN(Number(id)) ? Number(id) : id;
-    return this.itemsService.findOne(collection, parsedId, query);
-  }
-
-  @Post(':collection')
-  async create(@Param('collection') collection: string, @Body() body: any) {
-    return this.itemsService.create(collection, body);
-  }
-
-  @Patch(':collection/:id')
-  async update(
-      @Param('collection') collection: string, 
-      @Param('id') id: string, 
-      @Body() body: any
-  ) {
-    const parsedId = !isNaN(Number(id)) ? Number(id) : id;
-    return this.itemsService.update(collection, parsedId, body);
-  }
-
-  @Delete(':collection/:id')
-  async delete(
-      @Param('collection') collection: string, 
-      @Param('id') id: string
-  ) {
-    const parsedId = !isNaN(Number(id)) ? Number(id) : id;
-    return this.itemsService.delete(collection, parsedId);
-  }
-}
-````
-
-## File: src/database/entities/comment.entity.ts
-````typescript
-import { Entity, PrimaryKey, Property, ManyToOne } from '@mikro-orm/core';
-import { User } from './user.entity';
-import { Post } from './post.entity';
-
-@Entity({ tableName: 'comments' })
-export class Comment {
-  @PrimaryKey()
-  id!: number;
-
-  @Property({ type: 'text' })
-  body!: string;
-
-  @Property({ onCreate: () => new Date() })
-  createdAt = new Date();
-
-  @ManyToOne(() => User)
-  author!: User;
-
-  @ManyToOne(() => Post)
-  post!: Post;
-}
-````
-
-## File: src/database/entities/permission.entity.ts
-````typescript
-import {
-  Entity,
-  PrimaryKey,
-  Property,
-  ManyToMany,
-  Collection,
-  Index,
-} from '@mikro-orm/core';
-import { Role } from './role.entity';
-
-/**
- * Permission entity for RBAC system.
- * 
- * Permissions are defined by (collection, action) pairs:
- * - collection: The entity/resource scope (e.g., 'post', 'user', 'report')
- * - action: The operation allowed (e.g., 'read', 'create', 'delete', 'export', 'publish')
- * 
- * WHY (collection + action)?
- * This design provides flexibility and extensibility:
- * 1. Collections map to entities or logical scopes (not just database tables)
- * 2. Actions are extensible strings, not limited to CRUD operations
- * 3. Custom actions can be added without schema changes (e.g., 'export', 'publish', 'approve')
- * 4. Supports virtual collections for cross-entity operations (e.g., 'reports', 'analytics')
- * 
- * WHY actions are strings?
- * - Extensible: Add new actions without modifying the schema
- * - Flexible: Support domain-specific actions beyond CRUD
- * - Simple: Easy to understand and query
- * 
- * Examples:
- * - ('post', 'read') - Can read posts
- * - ('post', 'publish') - Can publish posts (custom action)
- * - ('user', 'delete') - Can delete users
- * - ('reports', 'export') - Can export reports (virtual collection)
- */
-@Entity({ tableName: 'permissions' })
-@Index({ properties: ['collection', 'action'] }) // Composite index for efficient permission lookups
-export class Permission {
-  @PrimaryKey()
-  id!: number;
-
-  /**
-   * The entity or logical scope this permission applies to.
-   * Examples: 'post', 'user', 'comment', 'reports', 'analytics'
-   * Can be entity names or virtual scopes for grouped operations.
-   */
-  @Property()
-  collection!: string;
-
-  /**
-   * The action/operation allowed on the collection.
-   * Extensible string - not limited to CRUD operations.
-   * Examples: 'read', 'create', 'update', 'delete', 'publish', 'export', 'approve'
-   */
-  @Property()
-  action!: string;
-
-  /**
-   * Optional human-readable description of what this permission grants
-   */
-  @Property({ nullable: true })
-  description?: string;
-
-  /**
-   * Roles that have this permission (many-to-many)
-   * Managed via roles_permissions join table
-   */
-  @ManyToMany(() => Role, (role) => role.permissions)
-  roles = new Collection<Role>(this);
-}
-````
-
-## File: src/database/entities/post.entity.ts
-````typescript
-import { Entity, PrimaryKey, Property, ManyToOne, OneToMany, Collection, Enum } from '@mikro-orm/core';
-import { User } from './user.entity';
-import { Comment } from './comment.entity';
-
-@Entity({ tableName: 'posts' })
-export class Post {
-  @PrimaryKey()
-  id!: number;
-
-  @Property()
-  title!: string;
-
-  @Property({ type: 'text' })
-  content!: string;
-
-  @Property()
-  status: string = 'draft';
-
-  @Property({ onCreate: () => new Date() })
-  createdAt = new Date();
-
-  @Property({ onUpdate: () => new Date() })
-  updatedAt = new Date();
-
-  @ManyToOne(() => User)
-  author!: User;
-
-  @OneToMany(() => Comment, comment => comment.post)
-  comments = new Collection<Comment>(this);
-}
-````
-
-## File: src/database/entities/refresh-token.entity.ts
-````typescript
-import {
-  Entity,
-  PrimaryKey,
-  Property,
-  ManyToOne,
-  Index,
-} from '@mikro-orm/core';
-import { User } from './user.entity';
-
-/**
- * Refresh Token entity for split-token authentication.
- * 
- * Token format: <token_id>.<token_secret>
- * - token_id: ULID stored in plaintext, indexed for O(1) lookup
- * - token_secret: Random bytes, hashed with argon2 before storage
- * 
- * Security: Never query by secret_hash. Always lookup by token_id first.
- */
-@Entity({ tableName: 'refresh_tokens' })
-export class RefreshToken {
-  @PrimaryKey()
-  id!: number;
-
-  /**
-   * Token identifier (ULID format, 26 characters)
-   * - Stored in plaintext
-   * - Indexed for O(1) lookup
-   * - Unique constraint prevents collisions
-   */
-  @Property({ unique: true, length: 26 })
-  @Index()
-  tokenId!: string;
-
-  /**
-   * Hashed token secret (argon2)
-   * - Never stored in plaintext
-   * - Used only for verification after lookup by tokenId
-   * - NOT indexed (never queried directly)
-   */
-  @Property()
-  secretHash!: string;
-
-  @ManyToOne(() => User)
-  user!: User;
-
-  @Property()
-  expiresAt!: Date;
-
-  /**
-   * Revocation timestamp
-   * - NULL = active token
-   * - timestamp = revoked token (cannot be used)
-   */
-  @Property({ nullable: true })
-  revokedAt?: Date;
-
-  @Property({ onCreate: () => new Date() })
-  createdAt?: Date
-}
-````
-
-## File: src/database/entities/reset-password-token.entity.ts
-````typescript
-import {
-  Entity,
-  PrimaryKey,
-  Property,
-  ManyToOne,
-  Index,
-} from '@mikro-orm/core';
-import { User } from './user.entity';
-
-/**
- * Reset Password Token entity for split-token password reset flow.
- * 
- * Token format: <token_id>.<token_secret>
- * - token_id: ULID stored in plaintext, indexed for O(1) lookup
- * - token_secret: Random bytes, hashed with argon2 before storage
- * 
- * Security: One-time use only. Old tokens invalidated when new one is created.
- */
-@Entity({ tableName: 'reset_password_tokens' })
-export class ResetPasswordToken {
-  @PrimaryKey()
-  id!: number;
-
-  /**
-   * Token identifier (ULID format, 26 characters)
-   * - Stored in plaintext
-   * - Indexed for O(1) lookup
-   * - Unique constraint prevents collisions
-   */
-  @Property({ unique: true, length: 26 })
-  @Index()
-  tokenId!: string;
-
-  /**
-   * Hashed token secret (argon2)
-   * - Never stored in plaintext
-   * - Used only for verification after lookup by tokenId
-   * - NOT indexed (never queried directly)
-   */
-  @Property()
-  secretHash!: string;
-
-  @ManyToOne(() => User)
-  user!: User;
-
-  @Property()
-  expiresAt!: Date;
-
-  /**
-   * One-time use tracking
-   * - NULL = unused token
-   * - timestamp = token has been used (cannot be reused)
-   */
-  @Property({ nullable: true })
-  usedAt?: Date;
-
-  @Property({ onCreate: () => new Date() })
-  createdAt?: Date;
-}
-````
-
-## File: src/database/entities/role.entity.ts
-````typescript
-import {
-  Entity,
-  PrimaryKey,
-  Property,
-  ManyToMany,
-  Collection,
-} from '@mikro-orm/core';
-import { User } from './user.entity';
-import { Permission } from './permission.entity';
-
-/**
- * Role entity for RBAC system.
- * Roles group permissions and are assigned to users.
- * Examples: 'admin', 'editor', 'viewer', 'custom_role'
- */
-@Entity({ tableName: 'roles' })
-export class Role {
-  @PrimaryKey()
-  id!: number;
-
-  /**
-   * Unique role name (e.g., 'admin', 'editor')
-   * Used for role identification and assignment
-   */
-  @Property({ unique: true })
-  name!: string;
-
-  /**
-   * Optional human-readable description of the role's purpose
-   */
-  @Property({ nullable: true })
-  description?: string;
-
-  /**
-   * Users assigned to this role (many-to-many)
-   * Managed via users_roles join table
-   */
-  @ManyToMany(() => User, (user) => user.roles)
-  users = new Collection<User>(this);
-
-  /**
-   * Permissions granted by this role (many-to-many)
-   * Managed via roles_permissions join table
-   */
-  @ManyToMany(() => Permission, (permission) => permission.roles, {
-    owner: true,
-  })
-  permissions = new Collection<Permission>(this);
-}
-````
-
-## File: src/main.ts
-````typescript
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
-import {
-  BadRequestException,
-  INestApplication,
-  ValidationPipe,
-} from '@nestjs/common';
-import { EntityManager as MikroOrmEntityManager } from '@mikro-orm/core'; // Import generic EM
-import { Role } from './database/entities/role.entity';
-import { Permission } from './database/entities/permission.entity';
-import { User } from './database/entities/user.entity';
-import * as argon from 'argon2'; // Use 'argon' as a common alias
-
-async function seedPermissionsAndRoles(app: INestApplication) {
-  const em = app.get(MikroOrmEntityManager);
-
-  // Define Permissions
-  const postActions = ['create', 'read', 'update', 'delete'];
-  const permissionsToCreate = [] as Pick<Permission, 'collection' | 'action'>[];
-  for (const action of postActions) {
-    permissionsToCreate.push({ collection: 'post', action });
-  }
-
-  const createdPermissions: Permission[] = [];
-  for (const permData of permissionsToCreate) {
-    let permission = await em.findOne(Permission, permData);
-    if (!permission) {
-      permission = em.create(Permission, permData);
-      await em.persistAndFlush(permission);
-      console.log(
-        `Created permission: ${permData.collection}.${permData.action}`,
-      );
-    } else {
-      console.log(
-        `Permission already exists: ${permData.collection}.${permData.action}`,
-      );
-    }
-    createdPermissions.push(permission);
-  }
-
-  // Find specific permissions for roles
-  const postReadPermission = createdPermissions.find(
-    (p) => p.collection === 'post' && p.action === 'read',
-  );
-  const allPostPermissions = createdPermissions.filter(
-    (p) => p.collection === 'post',
-  );
-
-  // Create Roles
-  let adminRole = await em.findOne(Role, { name: 'admin' });
-  if (!adminRole) {
-    adminRole = em.create(Role, {
-      name: 'admin',
-      description: 'Administrator with full access to posts',
-    });
-    for (const perm of allPostPermissions) {
-      adminRole.permissions.add(perm);
-    }
-    await em.persistAndFlush(adminRole);
-    console.log('Created role: admin');
-  } else {
-    // Ensure admin role has all permissions if it already existed but might have been incomplete
-    for (const perm of allPostPermissions) {
-      if (!adminRole.permissions.contains(perm)) {
-        adminRole.permissions.add(perm);
-      }
-    }
-    await em.persistAndFlush(adminRole);
-    console.log('Role already exists: admin (permissions updated)');
-  }
-
-  let publicRole = await em.findOne(Role, { name: 'public' });
-  if (!publicRole) {
-    publicRole = em.create(Role, {
-      name: 'public',
-      description: 'Public user with read-only access to posts',
-    });
-    if (postReadPermission) {
-      publicRole.permissions.add(postReadPermission);
-    }
-    await em.persistAndFlush(publicRole);
-    console.log('Created role: public');
-  } else {
-    // Ensure public role has read permission if it already existed but might have been incomplete
-    if (
-      postReadPermission &&
-      !publicRole.permissions.contains(postReadPermission)
-    ) {
-      publicRole.permissions.add(postReadPermission);
-    }
-    await em.persistAndFlush(publicRole);
-    console.log('Role already exists: public (permissions updated)');
-  }
-
-  // Create Admin User
-  let adminUser = await em.findOne(User, { email: 'admin@example.com' });
-  if (!adminUser) {
-    const hashedPassword = await argon.hash('adminpassword123'); // IMPORTANT: Change this in production!
-    adminUser = em.create(User, {
-      name: 'Admin User',
-      email: 'admin@example.com',
-      password: hashedPassword,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-    adminUser.roles.add(adminRole);
-    await em.persistAndFlush(adminUser);
-    console.log('Created admin user: admin@example.com');
-  } else {
-    // Ensure admin user has admin role if it already existed but might have been incomplete
-    if (!adminUser.roles.contains(adminRole)) {
-      adminUser.roles.add(adminRole);
-      await em.persistAndFlush(adminUser);
-      console.log(
-        'Admin user already exists: admin@example.com (role updated)',
-      );
-    } else {
-      console.log('Admin user already exists: admin@example.com');
-    }
-  }
-
-  console.log('RBAC Seeding complete!');
-}
-
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      transform: true,
-      stopAtFirstError: true,
-      exceptionFactory: (validationErrors) => {
-        const errors = {};
-
-        for (const err of validationErrors) {
-          const field = err.property;
-          const messages = Object.values(err.constraints || {});
-          errors[field] = messages.length === 1 ? messages[0] : messages;
-        }
-
-        return new BadRequestException({
-          errors,
-        });
-      },
-    }),
-  );
-
-  // Only run seeding in development or when explicitly enabled
-  // IMPORTANT: Remove or secure this in production environments!
-  if (
-    process.env.NODE_ENV !== 'production' ||
-    process.env.RUN_SEEDING === 'true'
-  ) {
-    // await seedPermissionsAndRoles(app);
-  }
-
-  await app.listen(process.env.PORT ?? 3000);
-}
-bootstrap();
+import { Module } from '@nestjs/common';
+import { ExchangeController } from './controllers/exchange.controller';
+import { ExchangeAuthService } from './services/exchange-auth.service';
+import { CacheModule } from '../common/cache/cache.module';
+import { CommonModule } from '../common/common.module';
+import { MailService } from './services/mail.service';
+import { ImapMailProvider } from './services/imap-mail.provider';
+
+@Module({
+  imports: [CacheModule, CommonModule],
+  controllers: [ExchangeController],
+  providers: [
+    ExchangeAuthService,
+    ImapMailProvider,
+    MailService,
+  ],
+  exports: [MailService],
+})
+export class ExchangeModule {}
 ````
 
 ## File: src/meta/entity-registry.service.ts
@@ -6397,185 +5101,6 @@ export class EntityRegistryService implements OnModuleInit {
     return this.collectionMap.has(collection);
   }
 }
-````
-
-## File: src/query/ast/query.ast.ts
-````typescript
-// AST Definitions
-
-export type FilterOperator = 
-  | '_eq' | '_neq' | '_gt' | '_gte' | '_lt' | '_lte'
-  | '_in' | '_nin' | '_contains' | '_starts_with'
-  | '_null' | '_nnull' | '_empty' | '_nempty';
-
-export type LogicalOperator = '_and' | '_or';
-
-export interface FilterNode {
-  [key: string]: any; // Recursive structure
-}
-
-export interface SortNode {
-  field: string;
-  direction: 'asc' | 'desc';
-}
-
-export interface PaginationNode {
-  limit?: number;
-  offset?: number;
-  page?: number;
-}
-
-export interface DeepNode {
-  [relation: string]: {
-    _filter?: FilterNode;
-    _sort?: SortNode[];
-    _limit?: number;
-    _offset?: number;
-  };
-}
-
-export type MetaField = 'filter_count' | 'total_count';
-
-export interface MetaNode {
-  filter_count?: boolean;
-  total_count?: boolean;
-}
-
-export interface QueryContext {
-  collection: string;
-  query: Record<string, any>; // Raw query params
-}
-
-export interface ParsedQuery {
-  filter: FilterNode;
-  sort: SortNode[];
-  pagination: PaginationNode;
-  fields: string[]; // List of fields to select/populate
-  deep: DeepNode;
-  meta: MetaNode;
-  // TODO: Aggregation
-  aggregate?: {
-    count?: string[]; // Fields to count, or ['*']
-  };
-}
-````
-
-## File: src/repository/generic.repository.ts
-````typescript
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { MikroORM, QueryOrderMap } from '@mikro-orm/core';
-import { EntityRegistryService } from '../meta/entity-registry.service';
-
-@Injectable()
-export class GenericRepository {
-  constructor(
-    private readonly orm: MikroORM,
-    private readonly registry: EntityRegistryService,
-  ) {}
-
-  private getRepo(collection: string) {
-    const entityName = this.registry.getEntityName(collection);
-    return this.orm.em.getRepository(entityName);
-  }
-
-  async find(collection: string, options: { 
-      where: any, 
-      orderBy?: QueryOrderMap<any>, 
-      limit?: number, 
-      offset?: number, 
-      populate?: string[] 
-  }) {
-    const repo = this.getRepo(collection);
-    return repo.find(options.where, {
-      orderBy: options.orderBy,
-      limit: options.limit,
-      offset: options.offset,
-      populate: options.populate as any,
-    });
-  }
-
-  /**
-   * Optimized method for queries with meta requirements.
-   * Uses MikroORM's findAndCount to get data + count in a single query.
-   * 
-   * @returns [data[], count] tuple
-   */
-  async findAndCount(collection: string, options: { 
-      where: any, 
-      orderBy?: QueryOrderMap<any>, 
-      limit?: number, 
-      offset?: number, 
-      populate?: string[] 
-  }): Promise<[any[], number]> {
-    const repo = this.getRepo(collection);
-    return repo.findAndCount(options.where, {
-      orderBy: options.orderBy,
-      limit: options.limit,
-      offset: options.offset,
-      populate: options.populate as any,
-    });
-  }
-
-  async findOne(collection: string, id: string | number, options: { populate?: string[] } = {}) {
-    const repo = this.getRepo(collection);
-    const item = await repo.findOne(id, { populate: options.populate as any });
-    if (!item) {
-        throw new NotFoundException(`Item ${id} in ${collection} not found`);
-    }
-    return item;
-  }
-
-  async count(collection: string, where: any): Promise<number> {
-    const repo = this.getRepo(collection);
-    return repo.count(where);
-  }
-
-  // WRITE - Uses EntityManager
-  async create(collection: string, data: any): Promise<any> {
-    const entityName = this.registry.getEntityName(collection);
-    const entity = this.orm.em.create(entityName, data);
-    await this.orm.em.persistAndFlush(entity);
-    return entity;
-  }
-
-  async update(collection: string, id: string | number, data: any): Promise<any> {
-    const repo = this.getRepo(collection);
-    const item = await repo.findOne(id);
-    if (!item) {
-      throw new NotFoundException();
-    }
-    this.orm.em.assign(item, data);
-    await this.orm.em.persistAndFlush(item);
-    return item;
-  }
-
-  async delete(collection: string, id: string | number): Promise<void> {
-    const repo = this.getRepo(collection);
-    const item = await repo.getReference(id);
-    await this.orm.em.removeAndFlush(item);
-  }
-}
-````
-
-## File: src/services/services.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { ItemsService } from './items.service'; // Adjust path if needed or just export provider
-import { CommonModule } from '../common/common.module';
-import { QueryModule } from '../query/query.module';
-import { RepositoryModule } from '../repository/repository.module';
-import { MetaModule } from '../meta/meta.module';
-import { ItemsController } from '../controllers/items.controller';
-import { PostsController } from '../controllers/post.controller';
-import { AuthModule } from '../auth/auth.module';
-
-@Module({
-  imports: [CommonModule, QueryModule, RepositoryModule, MetaModule, AuthModule],
-  controllers: [PostsController,ItemsController],
-  providers: [ItemsService],
-  exports: [ItemsService],
-})
-export class ServicesModule {}
 ````
 
 ## File: src/storage/local-storage.adapter.ts
@@ -6793,631 +5318,1388 @@ export interface IStorageAdapter {
 }
 ````
 
-## File: src/auth/auth.service.ts
+## File: src/auth/auth.controller.ts
 ````typescript
-import { Injectable, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
-import { EntityManager } from '@mikro-orm/core';
-import * as argon2 from 'argon2';
-import { randomBytes } from 'crypto';
-import { ulid } from 'ulid';
-import { User } from '../database/entities/user.entity';
-import { RefreshToken } from '../database/entities/refresh-token.entity';
-import { ResetPasswordToken } from '../database/entities/reset-password-token.entity';
+import { Controller, Post, Get, Body, UseGuards } from '@nestjs/common';
+import { AuthService } from './auth.service';
+import { LoginDto } from './dto/login.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { CurrentUser } from './decorators/current-user.decorator';
 
 /**
- * AuthService - Handles authentication with split-token refresh mechanism.
+ * AuthController - Handles authentication endpoints.
  * 
- * Token Strategy:
- * - Access tokens: JWT, short-lived (15 min)
- * - Refresh tokens: Split-token format <token_id>.<token_secret>
- *   - token_id: ULID, stored in plaintext, indexed for O(1) lookup
- *   - token_secret: Random bytes, hashed with argon2
- * 
- * Security: All token verification uses O(1) indexed lookup by token_id.
+ * Endpoints:
+ * - POST /auth/login - Login with email/password
+ * - POST /auth/refresh - Rotate refresh token
+ * - POST /auth/logout - Revoke refresh token
+ * - POST /auth/reset-password-request - Request password reset token
+ * - POST /auth/reset-password - Reset password with token
+ * - GET /auth/me - Get current user info (requires JWT)
  */
-@Injectable()
-export class AuthService {
-  private readonly logger = new Logger(AuthService.name);
-  private readonly logLevel: string;
+@Controller('auth')
+export class AuthController {
+  constructor(private readonly authService: AuthService) {}
 
-  constructor(
-    private readonly jwtService: JwtService,
-    private readonly em: EntityManager,
-    private readonly configService: ConfigService,
-  ) {
-      this.logLevel = this.configService.get<string>('auth.logLevel', 'basic');
-  }
-
-  /**
-   * Issue both access and refresh tokens for a user.
-   * 
-   * @param userId - User ID to issue tokens for
-   * @returns Object with accessToken (JWT) and refreshToken (split-token)
-   */
-  async issueTokens(userId: number): Promise<{
-    accessToken: string;
-    refreshToken: string;
-  }> {
-    // 1. Generate JWT access token
-    const accessToken = this.jwtService.sign({ sub: userId });
-
-    // 2. Generate split refresh token
-    const tokenId = ulid();
-    const tokenSecret = randomBytes(32).toString('base64url');
-    const secretHash = await argon2.hash(tokenSecret);
-
-    // 3. Store in database
-    const refreshTokenEntity = this.em.create(RefreshToken, {
-      tokenId,
-      secretHash,
-      user: userId,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
-    });
-    await this.em.persistAndFlush(refreshTokenEntity);
-
-    // 4. Return combined token to client
-    const refreshToken = `${tokenId}.${tokenSecret}`;
-
-    return { accessToken, refreshToken };
-  }
-
-  /**
-   * Rotate refresh token - verify old token and issue new tokens.
-   * 
-   * Security: O(1) lookup by token_id, then constant-time verification.
-   * Old token is immediately revoked.
-   * 
-   * @param fullToken - Full refresh token in format <token_id>.<token_secret>
-   * @returns New access and refresh tokens
-   */
-  async rotateRefreshToken(fullToken: string): Promise<{
-    accessToken: string;
-    refreshToken: string;
-  }> {
-    // 1. Parse token into components
-    const [tokenId, tokenSecret] = fullToken.split('.');
-    
-        if (!tokenId || !tokenSecret) {
-          this.logAuthEvent('Refresh Failed', 'Invalid token format');
-          throw new UnauthorizedException('Token không hợp lệ !');
-        }
-    
-        // 2. O(1) lookup by token_id (SINGLE ROW QUERY)
-        const storedToken = await this.em.findOne(RefreshToken, {
-          tokenId,
-          revokedAt: null,
-          expiresAt: { $gt: new Date() },
-        });
-    
-        if (!storedToken) {
-           this.logAuthEvent('Refresh Failed', `Token not found or expired: ${tokenId}`);
-          throw new UnauthorizedException('Token không hợp lệ !');
-        }
-    
-        // 3. Verify secret using constant-time comparison
-        const isValid = await argon2.verify(storedToken.secretHash, tokenSecret);
-    
-        if (!isValid) {
-          this.logAuthEvent('Refresh Failed', `Invalid secret for token: ${tokenId}`);
-          throw new UnauthorizedException('Token không hợp lệ !');
-        }
-    
-        // 4. Revoke old token immediately
-        storedToken.revokedAt = new Date();
-        this.logAuthEvent('Token Rotated', `User: ${storedToken.user.id}, Old Token: ${tokenId}`);
-    
-        // 5. Issue new tokens
-        const newTokens = await this.issueTokens(storedToken.user.id);
-    
-        await this.em.flush();
-    
-        return newTokens;
-  }
-
-  /**
-   * Revoke a refresh token (used for logout).
-   * 
-   * @param fullToken - Full refresh token to revoke
-   */
-  async revokeRefreshToken(fullToken: string): Promise<void> {
-    const [tokenId, tokenSecret] = fullToken.split('.');
-
-    if (!tokenId || !tokenSecret) {
-      return; // Silent fail for logout
-    }
-
-    // O(1) lookup
-    const storedToken = await this.em.findOne(RefreshToken, {
-      tokenId,
-      revokedAt: null,
-    });
-
-    if (!storedToken) {
-      return; // Already revoked or doesn't exist
-    }
-
-    // Verify secret
-    const isValid = await argon2.verify(storedToken.secretHash, tokenSecret);
-
-    if (!isValid) {
-      return; // Invalid token, nothing to revoke
-    }
-
-    // Revoke
-    storedToken.revokedAt = new Date();
-    await this.em.flush();
-  }
-
-  /**
-   * Create a reset password token for a user.
-   * Invalidates any existing reset tokens for this user.
-   * 
-   * @param userId - User ID to create reset token for
-   * @returns Reset token in format <token_id>.<token_secret>
-   */
-  async createResetPasswordToken(userId: number): Promise<string> {
-    // 1. Invalidate any existing reset tokens for this user
-    await this.em.nativeUpdate(
-      ResetPasswordToken,
-      { user: userId, usedAt: null },
-      { usedAt: new Date() }
-    );
-
-    // 2. Generate split token
-    const tokenId = ulid();
-    const tokenSecret = randomBytes(32).toString('base64url');
-    const secretHash = await argon2.hash(tokenSecret);
-
-    // 3. Store in database
-    const resetTokenEntity = this.em.create(ResetPasswordToken, {
-      tokenId,
-      secretHash,
-      user: userId,
-      expiresAt: new Date(Date.now() + 1 * 60 * 60 * 1000), // 1 hour
-    });
-    await this.em.persistAndFlush(resetTokenEntity);
-
-    // 4. Return combined token
-    return `${tokenId}.${tokenSecret}`;
-  }
-
-  /**
-   * Reset user password using a reset token.
-   * Token is one-time use only.
-   * 
-   * @param fullToken - Reset token in format <token_id>.<token_secret>
-   * @param newPassword - New password (will be hashed)
-   */
-  async resetPassword(fullToken: string, newPassword: string): Promise<void> {
-    // 1. Parse token
-    const [tokenId, tokenSecret] = fullToken.split('.');
-
-    if (!tokenId || !tokenSecret) {
-      throw new BadRequestException('Token không hợp lệ !');
-    }
-
-    // 2. O(1) lookup
-    const storedToken = await this.em.findOne(ResetPasswordToken, {
-      tokenId,
-      usedAt: null,
-      expiresAt: { $gt: new Date() },
-    });
-
-    if (!storedToken) {
-      throw new BadRequestException('Token không hợp lệ !');
-    }
-
-    // 3. Verify secret
-    const isValid = await argon2.verify(storedToken.secretHash, tokenSecret);
-
-    if (!isValid) {
-      throw new BadRequestException('Token không hợp lệ !');
-    }
-
-    // 4. Mark as used (one-time use)
-    storedToken.usedAt = new Date();
-
-    // 5. Update password
-    const passwordHash = await argon2.hash(newPassword);
-    await this.em.nativeUpdate(
-      User,
-      { id: storedToken.user.id },
-      { password: passwordHash }
-    );
-
-    await this.em.flush();
-  }
-
-  /**
-   * Login user with email and password.
-   * 
-   * @param email - User email
-   * @param password - User password (plaintext)
-   * @returns Access and refresh tokens
-   */
-  async login(email: string, password: string): Promise<{
-    accessToken: string;
-    refreshToken: string;
-  }> {
-    const user = await this.em.findOne(User, { email });
-
-    if (!user || !user.password) {
-      this.logAuthEvent('Login Failed', `Invalid credentials for email: ${email}`);
-      throw new UnauthorizedException('Sai tài khoản hoặc mật khẩu !');
-    }
-
-    const isValid = await argon2.verify(user.password, password);
-
-    if (!isValid) {
-      this.logAuthEvent('Login Failed', `Invalid password for email: ${email}`);
-      throw new UnauthorizedException('Sai tài khoản hoặc mật khẩu !');
-    }
-
-    this.logAuthEvent('Login Success', `User: ${user.id}`);
-    return this.issueTokens(user.id);
-  }
-
-  /**
-   * Get user by ID (for /auth/me endpoint).
-   * 
-   * @param userId - User ID
-   * @returns User object
-   */
-  async getMe(userId: number): Promise<User> {
-    const user = await this.em.findOne(User, { id: userId });
-
-    if (!user) {
-      throw new UnauthorizedException('Người dùng không tồn tại !');
-    }
-
-    return user;
-  }
-
-  private logAuthEvent(event: string, details: string) {
-      if (this.logLevel === 'verbose' || event.includes('Failed') || event.includes('Reset')) {
-          this.logger.log(`[${event}] ${details}`);
-      }
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  async getMe(@CurrentUser() user: { id: string; email: string }) {
+    return this.authService.getMe(user.id);
   }
 }
 ````
 
-## File: src/common/permissions/permission.service.ts
+## File: src/common/cache/dragonfly.service.ts
 ````typescript
-import { Injectable, ForbiddenException } from '@nestjs/common';
-import { EntityManager } from '@mikro-orm/core';
-import { RequestContext } from '../context/request.context';
-import { User } from '../../database/entities/user.entity';
-import { Permission } from '../../database/entities/permission.entity';
-import { actionTranslations, collectionTranslations } from '../localization/vi';
+import { Injectable, OnModuleDestroy, Logger, Inject } from '@nestjs/common';
+import Redis from 'ioredis';
+import dragonflyConfig from '../../config/dragonfly.config';
 
 @Injectable()
-export class PermissionService {
+export class DragonflyService implements OnModuleDestroy {
+  private readonly logger = new Logger(DragonflyService.name);
+  private client: Redis | null = null;
+  private isConnected = false;
+
   constructor(
-    private readonly context: RequestContext,
-    private readonly em: EntityManager,
+    @Inject(dragonflyConfig.KEY)
+    private readonly config: any,
+  ) {
+    if (this.config.enabled) {
+      this.initClient();
+    }
+  }
+
+  private initClient() {
+    this.logger.log(`Initializing DragonflyDB connection to ${this.config.host}:${this.config.port}`);
+    
+    this.client = new Redis({
+      host: this.config.host,
+      port: this.config.port,
+      password: this.config.password,
+      // Retry strategy: keep trying to reconnect but don't block
+      retryStrategy: (times) => {
+        const delay = Math.min(times * 50, 2000);
+        return delay;
+      },
+      // Don't crash on connection error
+      enableOfflineQueue: false, 
+      lazyConnect: true, // Don't connect immediately in constructor
+    });
+
+    this.client.connect().catch(err => {
+        this.logger.error(`Failed to connect to DragonflyDB initialy: ${err.message}`);
+    });
+
+    this.client.on('connect', () => {
+      this.logger.log('✅ Connected to DragonflyDB');
+      this.isConnected = true;
+    });
+
+    this.client.on('error', (err) => {
+      this.logger.error(`❌ DragonflyDB Error: ${err.message}`);
+      this.isConnected = false;
+    });
+    
+    this.client.on('close', () => {
+       if (this.isConnected) {
+           this.logger.warn('DragonflyDB connection closed');
+           this.isConnected = false;
+       }
+    });
+  }
+
+  async onModuleDestroy() {
+    if (this.client) {
+      await this.client.quit();
+    }
+  }
+
+  get enabled(): boolean {
+    return this.config.enabled && this.isConnected && !!this.client;
+  }
+
+  /**
+   * Get value from cache safely. Returns null if error or miss.
+   */
+  async get<T>(key: string): Promise<T | null> {
+    if (!this.enabled || !this.client) return null;
+
+    try {
+      const data = await this.client.get(key);
+      if (!data) return null;
+      return JSON.parse(data) as T;
+    } catch (error) {
+      this.logger.warn(`Failed to get cache key ${key}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Set value to cache safely.
+   */
+  async set(key: string, value: any, ttl?: number): Promise<void> {
+    if (!this.enabled || !this.client) return;
+
+    try {
+      const serialized = JSON.stringify(value);
+      const effectiveTTL = ttl || this.config.ttl;
+      
+      if (effectiveTTL > 0) {
+        await this.client.set(key, serialized, 'EX', effectiveTTL);
+      } else {
+        await this.client.set(key, serialized);
+      }
+    } catch (error) {
+      this.logger.warn(`Failed to set cache key ${key}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Delete key from cache safely
+   */
+  async del(key: string): Promise<void> {
+     if (!this.enabled || !this.client) return;
+     try {
+         await this.client.del(key);
+     } catch (error) {
+         this.logger.warn(`Failed to del cache key ${key}: ${error.message}`);
+     }
+  }
+  /**
+   * Check if a key exists in cache
+   * @param key - The cache key to check
+   * @returns true if key exists, false otherwise
+   */
+  async exists(key: string): Promise<boolean> {
+    if (!this.enabled || !this.client) return false;
+
+    try {
+      const result = await this.client.exists(key);
+      return result === 1; // Redis EXISTS returns number of keys that exist (1 or 0 for single key)
+    } catch (error) {
+      this.logger.warn(`Failed to check existence of key ${key}: ${error.message}`);
+      return false;
+    }
+  }
+   /**
+   * Set expiration time for a key (in seconds)
+   * @param key - The cache key
+   * @param ttl - Time to live in seconds
+   * @returns true if expiration was set, false otherwise
+   */
+  async expire(key: string, ttl: number): Promise<boolean> {
+    if (!this.enabled || !this.client) return false;
+
+    try {
+      const result = await this.client.expire(key, ttl);
+      return result === 1; // Redis EXPIRE returns 1 if successful, 0 if key doesn't exist
+    } catch (error) {
+      this.logger.warn(`Failed to set expiration for key ${key}: ${error.message}`);
+      return false;
+    }
+  }
+  /**
+   * Set value ONLY if it does not exist (SET NX).
+   * @returns true if set, false if already exists
+   */
+  async setIfNotExist(key: string, value: any, ttlSeconds: number): Promise<boolean> {
+    if (!this.enabled || !this.client) return false;
+
+    try {
+      const serialized = JSON.stringify(value);
+      const result = await this.client.set(key, serialized, 'EX', ttlSeconds, 'NX');
+      return result === 'OK';
+    } catch (error) {
+      this.logger.warn(`Failed to set NX cache key ${key}: ${error.message}`);
+      return false;
+    }
+  }
+}
+````
+
+## File: src/common/common.module.ts
+````typescript
+import { Module, Global } from '@nestjs/common';
+import { RequestContext } from './context/request.context';
+import { RequestContextInterceptor } from './interceptors/request-context.interceptor';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { DragonflyService } from './cache/dragonfly.service';
+import { CacheModule } from './cache/cache.module';
+
+@Global()
+@Module({
+  imports: [CacheModule],
+  providers: [
+    RequestContext, 
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: RequestContextInterceptor,
+    },
+  ],
+  exports: [RequestContext, CacheModule],
+})
+export class CommonModule {}
+````
+
+## File: src/database/migrations/.snapshot-postgres.json
+````json
+{
+  "namespaces": [
+    "public"
+  ],
+  "name": "public",
+  "tables": [
+    {
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "default": "gen_random_uuid()",
+          "mappedType": "uuid"
+        },
+        "original_name": {
+          "name": "original_name",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "stored_name": {
+          "name": "stored_name",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "mime_type": {
+          "name": "mime_type",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "size": {
+          "name": "size",
+          "type": "bigint",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "mappedType": "bigint"
+        },
+        "storage_path": {
+          "name": "storage_path",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "default": "'TEMP'",
+          "enumItems": [
+            "TEMP",
+            "ACTIVE",
+            "DELETED"
+          ],
+          "mappedType": "enum"
+        },
+        "custom_metadata": {
+          "name": "custom_metadata",
+          "type": "jsonb",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "mappedType": "json"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        }
+      },
+      "name": "files",
+      "schema": "public",
+      "indexes": [
+        {
+          "columnNames": [
+            "status"
+          ],
+          "composite": false,
+          "keyName": "files_status_index",
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "keyName": "files_pkey",
+          "columnNames": [
+            "id"
+          ],
+          "composite": false,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {},
+      "nativeEnums": {}
+    },
+    {
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "email": {
+          "name": "email",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "default": "true",
+          "mappedType": "boolean"
+        },
+        "mailbox_initialized": {
+          "name": "mailbox_initialized",
+          "type": "boolean",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "default": "false",
+          "mappedType": "boolean"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        }
+      },
+      "name": "users",
+      "schema": "public",
+      "indexes": [
+        {
+          "columnNames": [
+            "email"
+          ],
+          "composite": false,
+          "keyName": "users_email_unique",
+          "constraint": true,
+          "primary": false,
+          "unique": true
+        },
+        {
+          "keyName": "users_pkey",
+          "columnNames": [
+            "id"
+          ],
+          "composite": false,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {},
+      "nativeEnums": {}
+    },
+    {
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "unsigned": false,
+          "autoincrement": true,
+          "primary": true,
+          "nullable": false,
+          "mappedType": "bigint"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "collection": {
+          "name": "collection",
+          "type": "varchar(100)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 100,
+          "mappedType": "string"
+        },
+        "action": {
+          "name": "action",
+          "type": "varchar(50)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 50,
+          "mappedType": "string"
+        },
+        "target_id": {
+          "name": "target_id",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "details": {
+          "name": "details",
+          "type": "jsonb",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "mappedType": "json"
+        },
+        "timestamp": {
+          "name": "timestamp",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        }
+      },
+      "name": "audit_logs",
+      "schema": "public",
+      "indexes": [
+        {
+          "columnNames": [
+            "user_id"
+          ],
+          "composite": false,
+          "keyName": "audit_log_user_id_index",
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "columnNames": [
+            "collection"
+          ],
+          "composite": false,
+          "keyName": "audit_log_collection_index",
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "columnNames": [
+            "target_id"
+          ],
+          "composite": false,
+          "keyName": "audit_log_target_id_index",
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "keyName": "audit_logs_collection_target_id_index",
+          "columnNames": [
+            "collection",
+            "target_id"
+          ],
+          "composite": true,
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "keyName": "audit_logs_pkey",
+          "columnNames": [
+            "id"
+          ],
+          "composite": false,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {
+        "audit_logs_user_id_foreign": {
+          "constraintName": "audit_logs_user_id_foreign",
+          "columnNames": [
+            "user_id"
+          ],
+          "localTableName": "public.audit_logs",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "referencedTableName": "public.users",
+          "deleteRule": "set null",
+          "updateRule": "cascade"
+        }
+      },
+      "nativeEnums": {}
+    }
+  ],
+  "nativeEnums": {}
+}
+````
+
+## File: src/exchange/services/exchange-auth.service.ts
+````typescript
+import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { DragonflyService } from 'src/common/cache/dragonfly.service';
+import { ulid } from 'ulid';
+import * as crypto from 'crypto';
+import * as argon2 from 'argon2';
+
+// exchange-auth.service.ts
+@Injectable()
+export class ExchangeAuthService {
+  private readonly logger = new Logger(ExchangeAuthService.name);
+  private readonly SESSION_TTL = 3600; // 1 hour
+  private readonly REFRESH_TTL = 7 * 24 * 3600; // 7 days
+
+  constructor(
+    private readonly cache: DragonflyService,
+    private readonly configService: ConfigService,
   ) {}
 
   /**
-   * Assert that the user has permission to perform action(s) on collection.
-   * Throws ForbiddenException if denied.
-   *
-   * @param collection - Collection or virtual scope name
-   * @param action - Single action or array of actions (ALL must pass)
+   * Generate secure session token
    */
-  async assert(collection: string, action: string | string[]): Promise<void> {
-    const actions = Array.isArray(action) ? action : [action];
+  private generateSessionToken(): string {
+    return ulid(); // or crypto.randomBytes(32).toString('hex')
+  }
 
-    for (const act of actions) {
-      const result = await this.can(collection, act);
+  /**
+   * Derive encryption key from session token
+   */
+  private async deriveKey(sessionToken: string): Promise<Buffer> {
+    const secret = this.configService.get<string>('EXCHANGE_CRED_SECRET');
+    if (!secret) {
+      throw new Error('EXCHANGE_CRED_SECRET is not configured');
+    }
+    
+    const hash = await argon2.hash(secret, {
+      salt: Buffer.from(sessionToken.slice(0, 16)), // Use part of token as salt
+      raw: true,
+      hashLength: 32,
+      timeCost: 3,
+      memoryCost: 65536, // 64 MB
+      parallelism: 1,
+      type: argon2.argon2id
+    });
+    
+    return hash;
+  }
 
-      // If can() returns false or throws, deny
-      if (result === false) {
-        const translatedCollection =
-          collectionTranslations[collection] || collection;
-        const translatedAction = actionTranslations[act] || act;
-        throw new ForbiddenException(
-          `Bạn không có quyền ${translatedAction} trên ${translatedCollection}`,
-        );
-      }
+  private encrypt(text: string, key: Buffer): string {
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    const authTag = cipher.getAuthTag().toString('hex');
+    return `${iv.toString('hex')}:${authTag}:${encrypted}`;
+  }
 
-      // If can() returns a filter object with constraints, we can't enforce it here
-      // (assert is for boolean checks, not filter-based row-level security)
-      // For now, we allow it if it returns an object (truthy)
+  private decrypt(encryptedText: string, key: Buffer): string {
+    const [ivHex, authTagHex, contentHex] = encryptedText.split(':');
+    if (!ivHex || !authTagHex || !contentHex) {
+      throw new Error('Invalid encrypted format');
+    }
+
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'));
+    decipher.setAuthTag(Buffer.from(authTagHex, 'hex'));
+    let decrypted = decipher.update(contentHex, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+  }
+
+  /**
+   * Login and return access and refresh tokens
+   */
+  async login(email: string, password: string): Promise<{ accessToken: string, refreshToken: string }> {
+    // 1. Verify credentials against Exchange/IMAP
+    await this.verifyExchangeCredentials(email, password);
+
+    // 2. Issue tokens
+    return this.issueTokens(email, password);
+  }
+
+  /**
+   * Internal helper to issue both tokens
+   */
+  private async issueTokens(email: string, password: string): Promise<{ accessToken: string, refreshToken: string }> {
+    // A. Issue Access Token (Session)
+    const accessToken = this.generateSessionToken();
+    const accessKey = await this.deriveKey(accessToken);
+    const encryptedEmail = this.encrypt(email, accessKey);
+    const encryptedPass = this.encrypt(password, accessKey);
+
+    await this.cache.set(
+      `exchange:session:${accessToken}`, 
+      { e: encryptedEmail, p: encryptedPass, createdAt: Date.now() }, 
+      this.SESSION_TTL
+    );
+
+    // B. Issue Refresh Token
+    const tokenId = ulid();
+    const tokenSecret = crypto.randomBytes(32).toString('base64url');
+    const secretHash = await argon2.hash(tokenSecret);
+    
+    // We encrypt credentials for the refresh token record too, using tokenId as salt basis
+    const refreshKey = await this.deriveKey(tokenId);
+    const re = this.encrypt(email, refreshKey);
+    const rp = this.encrypt(password, refreshKey);
+
+    await this.cache.set(
+      `exchange:refresh:${tokenId}`,
+      { h: secretHash, e: re, p: rp },
+      this.REFRESH_TTL
+    );
+
+    return { 
+      accessToken, 
+      refreshToken: `${tokenId}.${tokenSecret}` 
+    };
+  }
+
+  /**
+   * Rotate refresh token
+   */
+  async rotateRefreshToken(fullToken: string): Promise<{ accessToken: string, refreshToken: string }> {
+    const [tokenId, tokenSecret] = fullToken.split('.');
+    
+    if (!tokenId || !tokenSecret) {
+      throw new UnauthorizedException('Token không hợp lệ !');
+    }
+
+    const stored = await this.cache.get<{ h: string, e: string, p: string }>(
+      `exchange:refresh:${tokenId}`
+    );
+
+    if (!stored) {
+      throw new UnauthorizedException('Token đã hết hạn hoặc không tồn tại !');
+    }
+
+    // Verify secret
+    const isValid = await argon2.verify(stored.h, tokenSecret);
+    if (!isValid) {
+      throw new UnauthorizedException('Token không hợp lệ !');
+    }
+
+    // Decrypt credentials from refresh record
+    try {
+      const key = await this.deriveKey(tokenId);
+      const email = this.decrypt(stored.e, key);
+      const password = this.decrypt(stored.p, key);
+
+      // Revoke old refresh token
+      await this.cache.del(`exchange:refresh:${tokenId}`);
+
+      // Issue new tokens
+      this.logger.log(`Exchange tokens rotated for ${email}`);
+      return this.issueTokens(email, password);
+    } catch (error) {
+      this.logger.error(`Failed to rotate exchange token: ${error.message}`);
+      throw new UnauthorizedException('Không thể làm mới token !');
     }
   }
 
   /**
-   * Check if the current user has permission to perform action on collection.
-   * 
-   * This method resolves the permission chain:
-   * 1. Get current user from RequestContext
-   * 2. Load user's roles (via users_roles join table)
-   * 3. Load permissions for those roles (via roles_permissions join table)
-   * 4. Check if any permission matches (collection, action) pair
-   * 
-   * Returns:
-   * - {} (empty object) = allowed with no row-level filters
-   * - { filter } = allowed with row-level constraints (future enhancement)
-   * - false = denied
-   * 
-   * @param collection - Collection or virtual scope name (e.g., 'post', 'user', 'reports')
-   * @param action - Arbitrary action string (e.g., 'read', 'create', 'export', 'publish')
-   * 
-   * NOTE: Actions are extensible strings, not limited to CRUD operations.
-   * This allows domain-specific permissions like 'publish', 'approve', 'export', etc.
+   * Verify Exchange credentials
    */
-  async can(collection: string, action: string): Promise<any> {
-    const user = this.context.user;
+  private async verifyExchangeCredentials(email: string, password: string): Promise<void> {
+    const host = this.configService.get<string>('IMAP_HOST');
+    const port = this.configService.get<number>('IMAP_PORT', 993);
+    const secure = this.configService.get<boolean>('IMAP_SECURE', true);
     
-    // TODO: Add caching layer here to avoid repeated database queries
-    // Extension point: Implement Redis/in-memory cache for user permissions
-    // Cache key: `user:${userId}:permissions` with TTL
-    
-    // Public/anonymous access - no user in context
-    if (!user || !user.id) {
-      // For demo: allow read on certain collections for public users
-      // In production, check for a "public" or "anonymous" role in the database
-      if (action === 'read' && ['post', 'comment'].includes(collection)) {
-        if (collection === 'post') return { status: 'published' };
-        return {};
-      }
-      return false; // Deny by default
+    if (!host) {
+      throw new Error('IMAP_HOST is not configured');
     }
 
-    // Load user with roles and permissions from database
-    // This performs the RBAC resolution: user → roles → permissions
-    const userWithRoles = await this.em.findOne(
-      User,
-      { id: Number(user.id) },
-      {
-        populate: ['roles', 'roles.permissions'],
-      }
-    );
+    const { ImapFlow } = await import('imapflow');
+    const client = new ImapFlow({
+      host,
+      port,
+      secure,
+      auth: {
+        user: email,
+        pass: password,
+      },
+      tls: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: false
+      },
+      logger: false,
+    });
 
-    if (!userWithRoles) {
-      return false; // User not found
+    try {
+      await client.connect();
+      await client.logout();
+      this.logger.log(`Exchange authentication successful for ${email}`);
+    } catch (error) {
+      this.logger.warn(`Exchange authentication failed for ${email}: ${error.message}`);
+      throw new UnauthorizedException('Invalid Exchange credentials');
     }
-
-    // Check if user has a role with the required permission
-    // Iterate through all roles assigned to the user
-    for (const role of userWithRoles.roles) {
-      // Check if this role has a permission matching (collection, action)
-      const hasPermission = role.permissions.getItems().some(
-        (permission: Permission) =>
-          permission.collection === collection && permission.action === action
-      );
-
-      if (hasPermission) {
-        // Permission granted - return empty object (no row-level filters)
-        // TODO: Future enhancement - return filter constraints for row-level security
-        // Example: return { authorId: user.id } to limit to user's own records
-        return {};
-      }
-    }
-
-    // No matching permission found - deny access
-    return false;
   }
 
   /**
-   * Helper method to check if user has a specific role by name.
-   * Useful for simple role-based checks without full permission resolution.
-   * 
-   * @param roleName - Name of the role to check (e.g., 'admin', 'editor')
+   * Get credentials by session token
    */
-  async hasRole(roleName: string): Promise<boolean> {
-    const user = this.context.user;
-    
-    if (!user || !user.id) {
-      return false;
-    }
-
-    const userWithRoles = await this.em.findOne(
-      User,
-      { id: Number(user.id) },
-      {
-        populate: ['roles'],
-      }
+  async getCredentials(sessionToken: string): Promise<{email: string, password: string} | null> {
+    const session = await this.cache.get<{e: string, p: string, createdAt: number}>(
+      `exchange:session:${sessionToken}`
     );
-
-    if (!userWithRoles) {
-      return false;
+    
+    if (!session) {
+      return null;
     }
 
-    return userWithRoles.roles.getItems().some(role => role.name === roleName);
+    try {
+      const key = await this.deriveKey(sessionToken);
+      const email = this.decrypt(session.e, key);
+      const password = this.decrypt(session.p, key);
+      
+      return { email, password };
+    } catch (error) {
+      this.logger.error(`Failed to decrypt credentials for session ${sessionToken}`);
+      await this.logout(sessionToken); // Clean up corrupted session
+      return null;
+    }
+  }
+
+  /**
+   * Refresh session TTL
+   */
+  async refreshSession(sessionToken: string): Promise<boolean> {
+    const session = await this.cache.get(`exchange:session:${sessionToken}`);
+    if (!session) {
+      return false;
+    }
+    
+    await this.cache.expire(`exchange:session:${sessionToken}`, this.SESSION_TTL);
+    return true;
+  }
+
+  /**
+   * Logout and clear session
+   */
+  async logout(sessionToken: string): Promise<void> {
+    await this.cache.del(`exchange:session:${sessionToken}`);
+    this.logger.log(`Session ${sessionToken} terminated`);
+  }
+
+  /**
+   * Validate session exists and is valid
+   */
+  async validateSession(sessionToken: string): Promise<boolean> {
+    const exists = await this.cache.exists(`exchange:session:${sessionToken}`);
+    return exists;
   }
 }
+````
+
+## File: src/auth/auth.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { JwtModule } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
+import { PassportModule } from '@nestjs/passport';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
+import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
+import { JwtStrategy } from './strategies/jwt.strategy';
+import { User } from '../database/entities/user.entity';
+import { CommonModule } from '../common/common.module';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { AuditLogModule } from '../audit/audit.module';
+
+@Module({
+  imports: [
+    CommonModule,
+    AuditLogModule,
+    PassportModule.register({defaultStrategy: 'jwt'}),
+    JwtModule.registerAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        secret: configService.get<string>('JWT_SECRET') || 'your-secret-key-change-in-production',
+        signOptions: {
+          expiresIn: configService.get<any>('JWT_EXPIRES_IN') || '15m',
+        },
+      }),
+    }),
+    MikroOrmModule.forFeature([User]),
+  ],
+  providers: [AuthService, JwtStrategy,JwtAuthGuard],
+  controllers: [AuthController],
+  exports: [AuthService, JwtStrategy, PassportModule,JwtModule,JwtAuthGuard],
+})
+export class AuthModule {}
 ````
 
 ## File: src/database/entities/user.entity.ts
 ````typescript
-import { Entity, PrimaryKey, Property, OneToMany, ManyToMany, Collection, Cascade } from '@mikro-orm/core';
-import { Post } from './post.entity';
-import { Comment } from './comment.entity';
-import { Role } from './role.entity';
+import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
+import { ulid } from 'ulid';
 
 @Entity({ tableName: 'users' })
 export class User {
   @PrimaryKey()
-  id!: number;
-
-  @Property()
-  name!: string;
+  id: string = ulid();
 
   @Property({ unique: true })
   email!: string;
 
-  /**
-   * Hashed password for authentication
-   * Should be hashed using bcrypt or similar before storage
-   */
-  @Property({ hidden: true }) // Hidden from serialization by default
-  password!: string;
+  @Property({ default: true })
+  isActive: boolean = true;
+
+  @Property({ default: false })
+  mailboxInitialized: boolean = false;
 
   @Property({ onCreate: () => new Date() })
   createdAt = new Date();
 
   @Property({ onUpdate: () => new Date() })
   updatedAt = new Date();
-
-  @OneToMany(() => Post, post => post.author, { cascade: [Cascade.ALL] })
-  posts = new Collection<Post>(this);
-
-  @OneToMany(() => Comment, comment => comment.author)
-  comments = new Collection<Comment>(this);
-
-  /**
-   * Roles assigned to this user (many-to-many)
-   * Managed via users_roles join table
-   */
-  @ManyToMany(() => Role, (role) => role.users, { owner: true })
-  roles = new Collection<Role>(this);
 }
 ````
 
-## File: src/query/query.module.ts
+## File: src/exchange/controllers/exchange.controller.ts
 ````typescript
-import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-import { FilterParser } from './parser/filter.parser';
-import { SortParser } from './parser/sort.parser';
-import { PaginationParser } from './parser/pagination.parser';
-import { FieldsParser } from './parser/fields.parser';
-import { DeepParser } from './parser/deep.parser';
-import { MetaParser } from './parser/meta.parser';
-import { WhereCompiler } from './compiler/where.compiler';
-import { OrderCompiler } from './compiler/order.compiler';
-import { FieldsCompiler } from './compiler/fields.compiler';
-import { QueryEngineService } from './query-engine.service';
-import { CommonModule } from '../common/common.module';
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  UseGuards,
+  Query,
+  Param,
+  UseInterceptors,
+  Req,
+  Res,
+} from '@nestjs/common';
+import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
+import { ExchangeAuthService } from '../services/exchange-auth.service';
+import { MailService } from '../services/mail.service';
+import { ExchangeLoginDto, SendMailDto, MoveMailDto } from '../dto/exchange.dto';
+import { ExchangeErrorInterceptor } from '../interceptors/exchange-error.interceptor';
+import type { Request, Response } from 'express'; // Import từ express
+import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
 
-@Module({
-  imports: [CommonModule, ConfigModule],
-  providers: [
-    FilterParser, SortParser, PaginationParser, FieldsParser, DeepParser, MetaParser,
-    WhereCompiler, OrderCompiler, FieldsCompiler,
-    QueryEngineService
-  ],
-  exports: [QueryEngineService],
-})
-export class QueryModule {}
-````
-
-## File: src/services/items.service.ts
-````typescript
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
-import { GenericRepository } from '../repository/generic.repository';
-import { QueryEngineService } from '../query/query-engine.service';
-import { PermissionService } from '../common/permissions/permission.service';
-import { EntityRegistryService } from '../meta/entity-registry.service';
-
-@Injectable()
-export class ItemsService {
+@Controller('webmail')
+@UseInterceptors(ExchangeErrorInterceptor)
+export class ExchangeController {
   constructor(
-    private readonly repository: GenericRepository,
-    private readonly queryEngine: QueryEngineService,
-    private readonly permissionService: PermissionService,
-    private readonly registry: EntityRegistryService,
+    private readonly authService: ExchangeAuthService,
+    private readonly mailService: MailService,
   ) {}
 
-  private validateCollection(collection: string) {
-    if (!this.registry.hasCollection(collection)) {
-      throw new BadRequestException(`Collection ${collection} does not exist`);
-    }
-  }
+  @Post('auth/login')
+  async login(
+    @Body() dto: ExchangeLoginDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { accessToken, refreshToken } = await this.authService.login(dto.email, dto.password);
 
-  async findMany(collection: string, query: any) {
-     this.validateCollection(collection);
-    
-    const options = await this.queryEngine.parseAndCompile({
-      collection,
-      query,
+    // Maintain cookie for legacy support if needed, but return in body as well
+    res.cookie('exchange_session', accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 3600000,
     });
-    // Check if meta is requested
-    const hasMeta = options.meta && (options.meta.filter_count || options.meta.total_count);
-    if (!hasMeta) {
-      // No meta requested - return data directly (backward compatible)
-      const data = await this.repository.find(collection, options);
-      return data;
-    }
-    // Optimize: Use findAndCount when filter_count is needed
-    // This gets both data and filter_count in a single query
-    let data: any[];
-    let filterCount: number | undefined;
-    if (options.meta.filter_count) {
-      // Single optimized query for data + filter_count
-      [data, filterCount] = await this.repository.findAndCount(collection, options);
-    } else {
-      // Only total_count needed, use regular find
-      data = await this.repository.find(collection, options);
-    }
-    // Build meta object with only requested fields
-    const meta: any = {};
-    if (options.meta.filter_count) {
-      meta.filter_count = filterCount;
-    }
-    if (options.meta.total_count) {
-      // Separate query for total count (no filters)
-      meta.total_count = await this.repository.count(collection, {});
-    }
-    // Return structured response
+
     return {
-      data,
-      meta,
+      success: true,
+      accessToken,
+      refreshToken,
     };
   }
 
-  async findOne(collection: string, id: string | number, query: any) {
-    this.validateCollection(collection);
-    
-    // The query engine is responsible for applying 'read' permission filters (row-level security)
-    // into the compiled 'where' clause.
-    const options = await this.queryEngine.parseAndCompile({
-        collection,
-        query,
+  @Post('auth/refresh')
+  async refresh(
+    @Body('refreshToken') refreshToken: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const tokens = await this.authService.rotateRefreshToken(refreshToken);
+
+    res.cookie('exchange_session', tokens.accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 3600000,
     });
+
+    return tokens;
+  }
+
+  @Post('auth/logout')
+  async logout(
+    @Body('refreshToken') refreshToken: string,
+    @Req() req: Request, 
+    @Res({ passthrough: true }) res: Response
+  ) {
+    const sessionToken = req.cookies['exchange_session'];
+
+    if (sessionToken) {
+      await this.authService.logout(sessionToken);
+    }
     
-    // Combine the query engine's WHERE clause (which includes permission filters) 
-    // with the ID filter for this specific item.
-    options.where = {
-      $and: [options.where, { id }]
-    };
-
-    // Use find() with limit: 1 to ensure all filters (including permissions) are respected.
-    const results = await this.repository.find(collection, { ...options, limit: 1 });
-
-    if (results.length === 0) {
-      // Using NotFoundException is standard. It prevents leaking information about
-      // whether the resource exists but is forbidden, or truly does not exist.
-      throw new NotFoundException(
-        `Item ${id} in ${collection} not found or permission denied`,
-      );
+    // Revoke refresh token as well if provided
+    if (refreshToken) {
+        const [tokenId] = refreshToken.split('.');
+        if (tokenId) {
+            await (this.authService as any).cache.del(`exchange:refresh:${tokenId}`);
+        }
     }
 
-    return results[0];
+    res.clearCookie('exchange_session');
+    return { success: true, message: 'Đăng xuất thành công' };
   }
 
-  async create(collection: string, data: any) {
-     this.validateCollection(collection);
-    await this.permissionService.assert(collection, 'create');
-    return this.repository.create(collection, data);
+  @UseGuards(ExchangeAuthGuard)
+  @Get('folders')
+  async getFolders() {
+    return this.mailService.getFolders();
   }
 
-  async update(collection: string, id: string | number, data: any) {
-     this.validateCollection(collection);
-    await this.permissionService.assert(collection, 'update');
-    // TODO: Row-level update permissions check?
-    // Usually requires fetching the item first and checking if it meets criteria.
-    return this.repository.update(collection, id, data);
+  @UseGuards(ExchangeAuthGuard)
+  @Get('mail')
+  async list(
+    @Query('folder') folder: string = 'inbox',
+    @Query('page') page: number = 1,
+    @Query('pageSize') pageSize: number = 20,
+  ) {
+    return this.mailService.getMessages(folder, Number(page), Number(pageSize));
   }
 
-  async delete(collection: string, id: string | number) {
-    this.validateCollection(collection);
-    await this.permissionService.assert(collection, 'delete');
-    return this.repository.delete(collection, id);
+  @UseGuards(ExchangeAuthGuard)
+  @Get('mail/search')
+  async search(@Query('q') q: string, @Query('page') page: number = 1) {
+    return this.mailService.searchMessages(q, Number(page));
   }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Get('mail/:id')
+  async check(@Param('id') id: string) {
+    return this.mailService.getMessage(id);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/send')
+  async send(@Body() dto: SendMailDto) {
+    return this.mailService.sendMessage(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/move')
+  async move(@Body() dto: MoveMailDto) {
+    return this.mailService.moveMessage(dto.messageId, dto.targetFolder);
+  }
+}
+````
+
+## File: src/exchange/services/mail.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { ImapMailProvider } from './imap-mail.provider';
+import { MailMessage } from '../interfaces/mail-provider.interface';
+import { SendMailDto } from '../dto/exchange.dto';
+
+@Injectable()
+export class MailService {
+  private readonly logger = new Logger(MailService.name);
+
+  constructor(private readonly provider: ImapMailProvider) {}
+
+  private async withProvider<T>(operation: () => Promise<T>): Promise<T> {
+      try {
+          await this.provider.connect();
+          return await operation();
+      } catch (error) {
+          this.logger.error(`Mail operation failed: ${error.message}`, error.stack);
+          throw error;
+      } finally {
+          await this.provider.disconnect();
+      }
+  }
+
+  async getFolders() {
+      return this.withProvider(() => this.provider.getFolders());
+  }
+
+  async getMessages(folderType: string, page: number = 1, pageSize: number = 20) {
+      // Map folderType to ID if needed, but provider expects ID.
+      // Our provider "getFolders" returns IDs like 'INBOX', 'Sent Items'.
+      // The frontend calls with 'inbox', 'sent', 'drafts', 'trash'.
+      // We need to map these to the provider IDs.
+      
+      let folderId = 'INBOX';
+      switch(folderType.toLowerCase()) {
+          case 'inbox': folderId = 'INBOX'; break;
+          case 'sent': folderId = 'Sent Items'; break;
+          case 'drafts': folderId = 'Drafts'; break;
+          case 'trash': folderId = 'Deleted Items'; break;
+          case 'spam': folderId = 'Spam'; break;
+          default: folderId = 'INBOX'; // Default fallthrough or specific handling
+      }
+
+      return this.withProvider(() => this.provider.getMessages(folderId, page, pageSize));
+  }
+
+  async getMessage(id: string) {
+      return this.withProvider(() => this.provider.getMessage(id));
+  }
+
+  async sendMessage(dto: SendMailDto) {
+      return this.withProvider(() => this.provider.sendMessage(dto));
+  }
+  
+  async searchMessages(query: string, page: number = 1, pageSize: number = 20) {
+      return this.withProvider(() => this.provider.search(query, page, pageSize));
+  }
+
+  async moveMessage(messageId: string, targetFolderType: string) {
+      // Map folder type to actual folder ID
+      let targetFolderId = 'INBOX';
+      switch(targetFolderType.toLowerCase()) {
+          case 'inbox': targetFolderId = 'INBOX'; break;
+          case 'sent': targetFolderId = 'Sent Items'; break;
+          case 'drafts': targetFolderId = 'Drafts'; break;
+          case 'trash': targetFolderId = 'Deleted Items'; break;
+          case 'spam': targetFolderId = 'Spam'; break;
+          default: targetFolderId = targetFolderType; // Allow direct folder ID
+      }
+
+      return this.withProvider(() => this.provider.moveMessage(messageId, targetFolderId));
+  }
+}
+````
+
+## File: src/main.ts
+````typescript
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import {
+  BadRequestException,
+  ValidationPipe,
+} from '@nestjs/common';
+import cookieParser from 'cookie-parser';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      stopAtFirstError: true,
+      exceptionFactory: (validationErrors) => {
+        const errors = {};
+
+        for (const err of validationErrors) {
+          const field = err.property;
+          const messages = Object.values(err.constraints || {});
+          errors[field] = messages.length === 1 ? messages[0] : messages;
+        }
+        console.log('Validation Errors:', JSON.stringify(validationErrors, null, 2));
+        return new BadRequestException({
+          errors,
+        });
+      },
+    }),
+  );
+
+  app.use(cookieParser());
+
+  await app.listen(process.env.PORT ?? 3000);
+}
+bootstrap();
+````
+
+## File: src/auth/auth.service.ts
+````typescript
+import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { EntityManager } from '@mikro-orm/core';
+import { User } from '../database/entities/user.entity';
+import { AuditLogService } from '../audit/audit.service';
+
+@Injectable()
+export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly em: EntityManager,
+    private readonly auditLogService: AuditLogService,
+  ) {}
+
+  async getMe(userId: string): Promise<User> {
+    const user = await this.em.findOne(User, { id: userId });
+    if (!user) {
+      throw new UnauthorizedException('Người dùng không tồn tại !');
+    }
+    return user;
+  }
+}
+````
+
+## File: src/exchange/dto/exchange.dto.ts
+````typescript
+import { IsString, IsEmail, IsNotEmpty, IsOptional, IsArray } from 'class-validator';
+
+export class ExchangeLoginDto {
+  @IsString()
+  @IsNotEmpty()
+  email!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  password!: string;
+}
+
+export class AttachmentDto {
+    @IsString()
+    @IsNotEmpty()
+    filename!: string;
+
+    @IsString()
+    @IsOptional()
+    contentType?: string;
+
+    @IsString()
+    @IsNotEmpty()
+    content!: string; // Base64 encoded content
+}
+
+export class SendMailDto {
+    @IsArray()
+    @IsEmail({}, { 
+        each: true,
+        message: 'Thông tin người nhận không hợp lệ!'
+    })
+    to!: string[];
+
+    @IsArray()
+    @IsOptional()
+    @IsEmail({}, { each: true, message: 'Thông tin CC không hợp lệ!' })
+    cc?: string[];
+
+    @IsArray()
+    @IsOptional()
+    @IsEmail({}, { each: true, message: 'Thông tin BCC không hợp lệ!' })
+    bcc?: string[];
+
+    @IsArray()
+    @IsOptional()
+    @IsEmail({}, { each: true, message: 'Thông tin Reply-To không hợp lệ!' })
+    replyTo?: string[];
+
+    @IsString()
+    @IsNotEmpty({ message: 'Tiêu đề email không được để trống!' })
+    subject!: string;
+
+    @IsString()
+    @IsOptional()
+    text?: string; // Plain text version
+
+    @IsString()
+    @IsOptional()
+    html?: string; // HTML version
+
+    @IsArray()
+    @IsOptional()
+    attachments?: AttachmentDto[];
+}
+
+export class MoveMailDto {
+    @IsString()
+    @IsNotEmpty()
+    messageId!: string;
+
+    @IsString()
+    @IsNotEmpty()
+    targetFolder!: string;
+}
+````
+
+## File: src/exchange/interfaces/mail-provider.interface.ts
+````typescript
+export interface MailMessage {
+  id: string; // Composite ID: Base64(folder:uid)
+  subject: string;
+  from: { name: string; email: string };
+  to: { name: string; email: string }[];
+  cc: { name: string; email: string }[];
+  receivedAt: Date;
+  body: string;
+  isHtml: boolean;
+  hasAttachments: boolean;
+  isRead: boolean;
+  preview: string;
+  importance?: string;
+}
+
+export interface MailFolder {
+  id: string; // e.g., 'INBOX', 'Sent', 'Drafts'
+  name: string;
+}
+
+export interface Attachment {
+  filename: string;
+  contentType?: string;
+  content: string; // Base64 encoded
+}
+
+export interface SendMailOptions {
+  from?: string;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  replyTo?: string[];
+  subject: string;
+  text?: string; // Plain text version
+  html?: string; // HTML version
+  attachments?: Attachment[];
+}
+
+export interface IMailProvider {
+  /**
+   * Connect to the mail server
+   */
+  connect(): Promise<void>;
+
+  /**
+   * Disconnect from the mail server
+   */
+  disconnect(): Promise<void>;
+
+  /**
+   * Get list of standard folders
+   */
+  getFolders(): Promise<MailFolder[]>;
+
+  /**
+   * Get messages from a folder with pagination
+   */
+  getMessages(
+    folderId: string,
+    page: number,
+    limit: number,
+  ): Promise<{ items: Partial<MailMessage>[]; total: number }>;
+
+  /**
+   * Get a single message by its composite ID
+   */
+  getMessage(id: string): Promise<MailMessage>;
+
+  /**
+   * Send an email
+   */
+  sendMessage(
+    options: SendMailOptions,
+  ): Promise<{ success: boolean; messageId?: string }>;
+
+  /**
+   * Search messages
+   */
+  search(
+    query: string,
+    page: number,
+    limit: number,
+  ): Promise<{ items: Partial<MailMessage>[]; total: number }>;
+
+  /**
+   * Move message to another folder
+   */
+  moveMessage(
+    messageId: string,
+    targetFolder: string,
+  ): Promise<{ success: boolean }>;
 }
 ````
 
@@ -7426,16 +6708,11 @@ export class ItemsService {
 import 'dotenv/config'; // Ensure .env is loaded for CLI
 import { defineConfig } from '@mikro-orm/postgresql';
 import { User } from './src/database/entities/user.entity';
-import { Post } from './src/database/entities/post.entity';
-import { Comment } from './src/database/entities/comment.entity';
-import { Role } from './src/database/entities/role.entity';
-import { Permission } from './src/database/entities/permission.entity';
-import { RefreshToken } from './src/database/entities/refresh-token.entity';
-import { ResetPasswordToken } from './src/database/entities/reset-password-token.entity';
 import { File } from './src/database/entities/file.entity';
+import { AuditLog } from './src/database/entities/audit-log.entity';
 
 export default defineConfig({
-  entities: [User, Post, Comment, Role, Permission, RefreshToken, ResetPasswordToken, File],
+  entities: [User, File, AuditLog],
   dbName: process.env.DB_NAME || 'postgres',
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT || '5432', 10),
@@ -7448,6 +6725,630 @@ export default defineConfig({
     pathTs: './src/database/migrations',
   },
 });
+````
+
+## File: src/exchange/services/imap-mail.provider.ts
+````typescript
+import {
+  Injectable,
+  Scope,
+  Inject,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { REQUEST } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
+import { ImapFlow } from 'imapflow';
+import * as nodemailer from 'nodemailer';
+import * as mailparser from 'mailparser';
+import {
+  IMailProvider,
+  MailFolder,
+  MailMessage,
+  SendMailOptions,
+} from '../interfaces/mail-provider.interface';
+import { ExchangeAuthService } from './exchange-auth.service';
+import { safeStringify } from '../utils/json.helper';
+
+@Injectable({ scope: Scope.REQUEST })
+export class ImapMailProvider implements IMailProvider {
+  private readonly logger = new Logger(ImapMailProvider.name);
+  private client: ImapFlow;
+  private transporter: nodemailer.Transporter;
+  private credentials: { email: string; password: string };
+  private sessionToken: string;
+
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly authService: ExchangeAuthService,
+    @Inject(REQUEST) private readonly request: any,
+  ) {}
+
+  private getImapConfig() {
+    const host = this.configService.get<string>(
+      'IMAP_HOST',
+      'outlook.office365.com',
+    );
+    const port = this.configService.get<number>('IMAP_PORT', 993);
+    const secure = this.configService.get<boolean>('IMAP_SECURE', true);
+
+    return {
+      host,
+      port,
+      secure,
+      auth: {
+        user: this.credentials.email,
+        pass: this.credentials.password,
+      },
+      tls: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: false,
+      },
+      logger: false,
+    };
+  }
+
+  private getSmtpConfig() {
+    const host = this.configService.get<string>(
+      'SMTP_HOST',
+      'smtp.office365.com',
+    );
+    const port = this.configService.get<number>('SMTP_PORT', 587);
+    const secure = this.configService.get<boolean>('SMTP_SECURE', false);
+    return {
+      host,
+      port,
+      secure: false,
+      requireTLS: true, // ⬅️ ĐỔI: Không bắt buộc TLS
+      auth: {
+        user: this.credentials.email,
+        pass: this.credentials.password,
+      },
+      tls: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: false,
+      },
+      debug: true,
+      logger: true,
+    };
+  }
+
+  async connect(): Promise<void> {
+    // Lấy session token từ cookie
+    this.sessionToken = this.request.cookies?.['exchange_session'];
+
+    if (!this.sessionToken) {
+      throw new UnauthorizedException(
+        'No session token provided. Please login first.',
+      );
+    }
+
+    // Lấy credentials từ session
+    const creds = await this.authService.getCredentials(this.sessionToken);
+
+    if (!creds) {
+      throw new UnauthorizedException(
+        'Session expired or invalid. Please login again.',
+      );
+    }
+
+    this.credentials = creds;
+
+    // Kết nối IMAP
+    this.client = new ImapFlow(this.getImapConfig() as any);
+    await this.client.connect();
+    this.logger.log(`IMAP connected for ${this.credentials.email}`);
+
+    // Khởi tạo SMTP transporter
+    this.transporter = nodemailer.createTransport(this.getSmtpConfig() as any);
+    try {
+      await this.transporter.verify();
+      this.logger.log(`SMTP verified for ${this.credentials.email}`);
+    } catch (error) {
+      this.logger.error(`SMTP verification failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    if (this.client) {
+      try {
+        await this.client.logout();
+        this.logger.log('IMAP disconnected');
+      } catch (error) {
+        this.logger.warn(`Error disconnecting IMAP: ${error.message}`);
+      }
+    }
+  }
+
+  private encodeId(folder: string, uid: string): string {
+    return Buffer.from(`${folder}:${uid}`).toString('base64');
+  }
+
+  private decodeId(id: string): { folder: string; uid: string } {
+    const decoded = Buffer.from(id, 'base64').toString('utf8');
+    const [folder, uid] = decoded.split(':');
+    return { folder, uid };
+  }
+
+  async getFolders(): Promise<MailFolder[]> {
+    if (!this.client) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+
+    try {
+      const list = await this.client.list();
+
+      // Map standard folders
+      const folderMap: Record<string, string> = {
+        INBOX: 'Hộp thư đến',
+        'Sent Items': 'Đã gửi',
+        Drafts: 'Thư nháp',
+        Spam: 'Thùng rác',
+        'Junk Email': 'Thư rác',
+      };
+
+      const standardFolders = ['INBOX', 'Sent Items', 'Drafts', 'Spam'];
+      const folders: MailFolder[] = [];
+
+      for (const folderName of standardFolders) {
+        const exists = list.some(
+          (f) =>
+            f.path === folderName ||
+            f.path.toLowerCase() === folderName.toLowerCase(),
+        );
+
+        if (exists) {
+          folders.push({
+            id: folderName,
+            name: folderMap[folderName] || folderName,
+          });
+        }
+      }
+
+      return folders;
+    } catch (error) {
+      this.logger.error(`Error fetching folders: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async getMessages(
+    folderId: string,
+    page: number,
+    limit: number,
+  ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
+    if (!this.client) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+
+    const lock = await this.client.getMailboxLock(folderId);
+    try {
+      const status = await this.client.status(folderId, { messages: true });
+      const total = status.messages || 0;
+
+      if (total === 0) {
+        return { items: [], total: 0 };
+      }
+
+      // Tính toán range cho pagination (newest first)
+      const to = Math.max(1, total - (page - 1) * limit);
+      const from = Math.max(1, to - limit + 1);
+
+      if (to < 1) {
+        return { items: [], total };
+      }
+
+      const seqRange = `${from}:${to}`;
+
+      // Fetch messages
+      const messages: any[] = [];
+      for await (const msg of this.client.fetch(seqRange, {
+        envelope: true,
+        internalDate: true,
+        bodyStructure: true,
+        flags: true,
+        uid: true,
+      })) {
+        messages.push(msg);
+      }
+
+      // Reverse để hiển thị mới nhất trước
+      messages.reverse();
+
+      const items = messages.map((msg) => ({
+        id: this.encodeId(folderId, msg.uid.toString()),
+        subject: msg.envelope.subject || '(No Subject)',
+        from: msg.envelope.from
+          ? this.mapAddress(msg.envelope.from[0])
+          : { name: '', email: '' },
+        receivedAt: msg.internalDate,
+        isRead: msg.flags.has('\\Seen'),
+        hasAttachments: this.checkAttachments(msg.bodyStructure),
+        preview: '', // Skip preview for performance
+      }));
+
+      return { items, total };
+    } catch (error) {
+      this.logger.error(
+        `Error fetching messages from ${folderId}: ${error.message}`,
+      );
+      throw error;
+    } finally {
+      lock.release();
+    }
+  }
+
+  private mapAddress(addr: any): { name: string; email: string } {
+    return {
+      name: addr.name || '',
+      email: addr.address || '',
+    };
+  }
+
+  private checkAttachments(struct: any): boolean {
+    if (!struct) return false;
+
+    if (struct.childNodes) {
+      return struct.childNodes.some(
+        (node: any) =>
+          node.disposition === 'attachment' ||
+          (node.parameters && node.parameters.name),
+      );
+    }
+
+    return false;
+  }
+
+  async getMessage(id: string): Promise<MailMessage> {
+    if (!this.client) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+
+    const { folder, uid } = this.decodeId(id);
+    const lock = await this.client.getMailboxLock(folder);
+
+    try {
+      // Fetch message
+      const msg = await this.client.fetchOne(
+        uid,
+        { source: true, flags: true, uid: true },
+        { uid: true },
+      );
+
+      if (!msg) {
+        throw new Error('Message not found');
+      }
+
+      // Mark as read if not already
+      if (msg.flags && !msg.flags.has('\\Seen')) {
+        await this.client.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
+      }
+
+      if (!msg.source) {
+        throw new Error('Message source not available');
+      }
+
+      // Parse email
+      const parsed: any = await mailparser.simpleParser(msg.source);
+
+      return {
+        id: id,
+        subject: parsed.subject || '(No Subject)',
+        from: parsed.from?.value?.[0]
+          ? {
+              name: parsed.from.value[0].name || '',
+              email: parsed.from.value[0].address || '',
+            }
+          : { name: '', email: '' },
+        to: this.parseAddressList(parsed.to),
+        cc: this.parseAddressList(parsed.cc),
+        receivedAt: parsed.date || new Date(),
+        body: parsed.html || parsed.textAsHtml || parsed.text || '',
+        isHtml: !!parsed.html,
+        hasAttachments: parsed.attachments && parsed.attachments.length > 0,
+        isRead: true,
+        preview: parsed.text ? parsed.text.substring(0, 100) : '',
+      };
+    } catch (error) {
+      this.logger.error(`Error fetching message ${id}: ${error.message}`);
+      throw error;
+    } finally {
+      lock.release();
+    }
+  }
+
+  private parseAddressList(
+    addressData: any,
+  ): { name: string; email: string }[] {
+    if (!addressData) return [];
+
+    if (Array.isArray(addressData)) {
+      return addressData.map((addr: any) => ({
+        name: addr.name || '',
+        email: addr.address || '',
+      }));
+    }
+
+    if (addressData.value && Array.isArray(addressData.value)) {
+      return addressData.value.map((addr: any) => ({
+        name: addr.name || '',
+        email: addr.address || '',
+      }));
+    }
+
+    return [];
+  }
+
+  async sendMessage(
+    options: SendMailOptions,
+  ): Promise<{ success: boolean; messageId?: string }> {
+    if (!this.transporter) {
+      throw new Error('Transporter not initialized. Call connect() first.');
+    }
+
+    if (!this.client) {
+      throw new Error('IMAP client not connected. Call connect() first.');
+    }
+
+    try {
+      // Build attachments array if provided
+      const attachments = options.attachments?.map((att) => ({
+        filename: att.filename,
+        contentType: att.contentType,
+        content: Buffer.from(att.content, 'base64'),
+      }));
+
+      const mailOptions = {
+        from: this.credentials.email,
+        to: options.to,
+        cc: options.cc,
+        bcc: options.bcc,
+        replyTo: options.replyTo,
+        subject: options.subject,
+        text: options.text,
+        html: options.html,
+        attachments,
+      };
+
+      // Send email via SMTP
+      const info = await this.transporter.sendMail(mailOptions);
+
+      this.logger.log(`Email sent successfully. MessageId: ${info.messageId}`);
+
+      // Append to Sent Items folder using IMAP
+      this.appendToSentFolder(mailOptions,info.messageId)
+        .then(() => {
+          this.logger.log(`Email appended to Sent Items folder`);
+        })
+        .catch((err) => {
+          this.logger.warn(
+            `Failed to append email to Sent Items: ${err.message}`,
+          );
+        });
+
+      return {
+        success: !!info.messageId,
+        messageId: info.messageId,
+      };
+    } catch (error) {
+      this.logger.error(`Error sending email: ${error.message}`);
+      throw error;
+    }
+  }
+
+    private buildRFC822Message(mailOptions: any, messageId: string): string {
+    const lines: string[] = [];
+
+    // Headers
+    lines.push(`Message-ID: ${messageId}`);
+    lines.push(`Date: ${new Date().toUTCString()}`);
+    lines.push(`From: ${mailOptions.from}`);
+    
+    if (mailOptions.to) {
+      const toAddresses = Array.isArray(mailOptions.to)
+        ? mailOptions.to.join(', ')
+        : mailOptions.to;
+      lines.push(`To: ${toAddresses}`);
+    }
+
+    if (mailOptions.cc) {
+      const ccAddresses = Array.isArray(mailOptions.cc)
+        ? mailOptions.cc.join(', ')
+        : mailOptions.cc;
+      lines.push(`Cc: ${ccAddresses}`);
+    }
+
+    if (mailOptions.replyTo) {
+      lines.push(`Reply-To: ${mailOptions.replyTo}`);
+    }
+
+    lines.push(`Subject: ${mailOptions.subject || '(No Subject)'}`);
+    lines.push(`MIME-Version: 1.0`);
+
+    // Handle multipart message (HTML + text or with attachments)
+    if (mailOptions.attachments && mailOptions.attachments.length > 0) {
+      const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      lines.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+      lines.push('');
+      
+      // Text/HTML part
+      lines.push(`--${boundary}`);
+      if (mailOptions.html) {
+        lines.push(`Content-Type: text/html; charset=utf-8`);
+        lines.push(`Content-Transfer-Encoding: quoted-printable`);
+        lines.push('');
+        lines.push(mailOptions.html);
+      } else if (mailOptions.text) {
+        lines.push(`Content-Type: text/plain; charset=utf-8`);
+        lines.push(`Content-Transfer-Encoding: quoted-printable`);
+        lines.push('');
+        lines.push(mailOptions.text);
+      }
+
+      // Attachments
+      for (const att of mailOptions.attachments) {
+        lines.push(`--${boundary}`);
+        lines.push(`Content-Type: ${att.contentType || 'application/octet-stream'}`);
+        lines.push(`Content-Transfer-Encoding: base64`);
+        lines.push(`Content-Disposition: attachment; filename="${att.filename}"`);
+        lines.push('');
+        lines.push(att.content.toString('base64'));
+      }
+
+      lines.push(`--${boundary}--`);
+    } else if (mailOptions.html) {
+      // HTML only
+      lines.push(`Content-Type: text/html; charset=utf-8`);
+      lines.push(`Content-Transfer-Encoding: quoted-printable`);
+      lines.push('');
+      lines.push(mailOptions.html);
+    } else {
+      // Plain text only
+      lines.push(`Content-Type: text/plain; charset=utf-8`);
+      lines.push(`Content-Transfer-Encoding: quoted-printable`);
+      lines.push('');
+      lines.push(mailOptions.text || '');
+    }
+
+    return lines.join('\r\n');
+  }
+
+  /**
+   * Append sent email to Sent Items folder using IMAP APPEND
+   */
+  private async appendToSentFolder(mailOptions: any, messageId: string): Promise<void> {
+    // Find the Sent Items folder
+    const sentData = this.buildRFC822Message(mailOptions, messageId);
+    const sentFolder = 'Sent Items';
+
+    try {
+      // Append message to Sent Items
+      await this.client.append(sentFolder, sentData, ['\Seen'], new Date());
+      this.logger.log(`Successfully appended message to ${sentFolder}`);
+    } catch (error) {
+      this.logger.error(`Error appending to ${sentFolder}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async search(
+    query: string,
+    page: number,
+    limit: number,
+  ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
+    if (!this.client) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+
+    const folderId = 'INBOX';
+    const lock = await this.client.getMailboxLock(folderId);
+
+    try {
+      // IMAP SEARCH
+      const searchCriteria = {
+        or: [
+          { header: { key: 'subject', value: query } },
+          { header: { key: 'from', value: query } },
+          { body: query },
+        ],
+      };
+
+      const uids = await this.client.search(searchCriteria, { uid: true });
+
+      if (!uids || uids.length === 0) {
+        return { items: [], total: 0 };
+      }
+
+      const total = uids.length;
+
+      // Pagination (newest first)
+      uids.reverse();
+      const slicedUids = uids.slice((page - 1) * limit, page * limit);
+
+      if (slicedUids.length === 0) {
+        return { items: [], total };
+      }
+
+      // Fetch messages
+      const messages: any[] = [];
+      const uidSet = slicedUids.join(',');
+
+      for await (const msg of this.client.fetch(
+        uidSet,
+        { envelope: true, internalDate: true, uid: true, flags: true },
+        { uid: true },
+      )) {
+        messages.push(msg);
+      }
+
+      const items = messages.map((msg) => ({
+        id: this.encodeId(folderId, msg.uid.toString()),
+        subject: msg.envelope.subject || '(No Subject)',
+        from: msg.envelope.from
+          ? this.mapAddress(msg.envelope.from[0])
+          : { name: '', email: '' },
+        receivedAt: msg.internalDate,
+        isRead: msg.flags.has('\\Seen'),
+        hasAttachments: false, // Skip for search results performance
+      }));
+
+      // Sort by date descending
+      items.sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime());
+
+      return { items, total };
+    } catch (error) {
+      this.logger.error(`Error searching messages: ${error.message}`);
+      throw error;
+    } finally {
+      lock.release();
+    }
+  }
+
+  /**
+   * Move message to another folder using IMAP MOVE
+   */
+  async moveMessage(
+    messageId: string,
+    targetFolder: string,
+  ): Promise<{ success: boolean }> {
+    if (!this.client) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+
+    try {
+      // Decode message ID to get source folder and UID
+      const { folder: sourceFolder, uid } = this.decodeId(messageId);
+
+      this.logger.log(
+        `Moving message UID ${uid} from ${sourceFolder} to ${targetFolder}`,
+      );
+
+      // Get lock on source folder
+      const lock = await this.client.getMailboxLock(sourceFolder);
+
+      try {
+        // Use native IMAP MOVE command
+        const result = await this.client.messageMove(
+          uid,
+          targetFolder,
+          { uid: true },
+        );
+
+        this.logger.log(
+          `Successfully moved message to ${targetFolder}. Result: ${safeStringify(result)}`,
+        );
+
+        return { success: true };
+      } finally {
+        lock.release();
+      }
+    } catch (error) {
+      this.logger.error(`Error moving message: ${error.message}`);
+      throw error;
+    }
+  }
+}
 ````
 
 ## File: package.json
@@ -7491,6 +7392,11 @@ export default defineConfig({
     "argon2": "^0.44.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.3",
+    "cookie-parser": "^1.4.7",
+    "imapflow": "^1.2.8",
+    "ioredis": "^5.9.2",
+    "mailparser": "^3.9.3",
+    "nodemailer": "^7.0.13",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "reflect-metadata": "^0.2.2",
@@ -7505,10 +7411,13 @@ export default defineConfig({
     "@nestjs/cli": "^11.0.0",
     "@nestjs/schematics": "^11.0.0",
     "@nestjs/testing": "^11.0.1",
+    "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.0",
     "@types/jest": "^30.0.0",
+    "@types/mailparser": "^3.4.6",
     "@types/multer": "^2.0.0",
     "@types/node": "^22.10.7",
+    "@types/nodemailer": "^7.0.9",
     "@types/passport-jwt": "^4.0.1",
     "@types/supertest": "^6.0.2",
     "eslint": "^9.18.0",
@@ -7546,135 +7455,6 @@ export default defineConfig({
 }
 ````
 
-## File: src/query/query-engine.service.ts
-````typescript
-import { Injectable, BadRequestException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { FilterParser } from './parser/filter.parser';
-import { SortParser } from './parser/sort.parser';
-import { PaginationParser } from './parser/pagination.parser';
-import { FieldsParser } from './parser/fields.parser';
-import { DeepParser } from './parser/deep.parser';
-import { MetaParser } from './parser/meta.parser';
-import { WhereCompiler } from './compiler/where.compiler';
-import { OrderCompiler } from './compiler/order.compiler';
-import { FieldsCompiler } from './compiler/fields.compiler';
-import { ParsedQuery, QueryContext } from './ast/query.ast';
-import { PermissionService } from '../common/permissions/permission.service';
-
-@Injectable()
-export class QueryEngineService {
-  constructor(
-    private readonly filterParser: FilterParser,
-    private readonly sortParser: SortParser,
-    private readonly paginationParser: PaginationParser,
-    private readonly fieldsParser: FieldsParser,
-    private readonly deepParser: DeepParser,
-    private readonly metaParser: MetaParser,
-    private readonly whereCompiler: WhereCompiler,
-    private readonly orderCompiler: OrderCompiler,
-    private readonly fieldsCompiler: FieldsCompiler,
-    private readonly permissionService: PermissionService,
-    private readonly configService: ConfigService,
-  ) {}
-
-  async parseAndCompile(context: QueryContext): Promise<any> {
-    const { collection, query } = context;
-
-    // 0. Safety Checks (Hardening)
-    const maxDepth = this.configService.get<number>('query.maxDepth', 3);
-    const maxConditions = this.configService.get<number>('query.maxConditions', 20);
-    const maxSortFields = this.configService.get<number>('query.maxSortFields', 3);
-    const allowRegex = this.configService.get<boolean>('query.allowRegex', false);
-
-    // Check Sort Fields Limit
-    if (query.sort) {
-        const sortKeys = Object.keys(query.sort);
-        if (sortKeys.length > maxSortFields) {
-            throw new BadRequestException(`Exceeded maximum sort fields limit of ${maxSortFields}`);
-        }
-    }
-
-    // Check Regex Safety
-    if (!allowRegex) {
-        // Simple recursive check or check stringified query for regex operators if feasible 
-        // For now, checks will happen in parsers/compilers ideally, but here is a high level guard
-        const queryStr = JSON.stringify(query.filter ?? {});
-        if (queryStr.includes('"$regex"') || queryStr.includes('"$iregex"')) {
-             throw new BadRequestException('Regex queries are disabled by configuration');
-        }
-    }
-
-    // 1. Permissions (Pre-flight check)
-    // Get mandatory filters from permission service
-    const permissionFilter = this.permissionService.can(collection, 'read');
-
-    // 2. Parse Standard Params
-    const parsed: ParsedQuery = {
-      filter: this.filterParser.parse(query.filter) || {},
-      sort: this.sortParser.parse(query.sort),
-      pagination: this.paginationParser.parse(query),
-      fields: this.fieldsParser.parse(query.fields),
-      deep: this.deepParser.parse(query.deep),
-      meta: this.metaParser.parse(query.meta),
-    };
-
-    // 3. Compile
-    // Merge permission filter into user filter with AND
-    const finalFilter = {
-      _and: [
-        parsed.filter,
-        permissionFilter
-      ]
-    };
-    
-    // Clean up empty objects
-    if (Object.keys(parsed.filter).length === 0 && Object.keys(permissionFilter).length === 0) {
-        // If both empty, just {}
-    }
-
-    const where = this.whereCompiler.compile(finalFilter);
-
-    // Validate Condition Count (Heuristic based on keys in compiled where)
-    // This is rough approximation. For accurate count, we'd need to walk the 'where' object.
-    const conditionCount = this.countConditions(where);
-    if (conditionCount > maxConditions) {
-        throw new BadRequestException(`Exceeded maximum query conditions limit of ${maxConditions}`);
-    }
-
-    const orderBy = this.orderCompiler.compile(parsed.sort);
-    const populate = this.fieldsCompiler.compile(parsed.fields);
-
-    // Deep merge deep params into populate?
-    // For now, simpler implementation:
-    // If we have deep params, we might need a specific populate strategy or loading strategy.
-    
-    return {
-      where,
-      orderBy,
-      limit: parsed.pagination.limit,
-      offset: parsed.pagination.offset,
-      populate, // Basic population based on fields
-      meta: parsed.meta, // Pass meta requirements to service layer
-    };
-  }
-
-  private countConditions(where: any): number {
-      if (!where || typeof where !== 'object') return 0;
-      if (Array.isArray(where)) return where.reduce((acc, curr) => acc + this.countConditions(curr), 0);
-      
-      let count = 0;
-      for (const key in where) {
-          if (key.startsWith('$')) { // Operator
-              count++;
-          }
-           count += this.countConditions(where[key]);
-      }
-      return count + (Object.keys(where).length > 0 ? 1 : 0); // Count specific field matches too
-  }
-}
-````
-
 ## File: src/app.module.ts
 ````typescript
 import { Module } from '@nestjs/common';
@@ -7686,21 +7466,13 @@ import queryConfig from './config/query.config';
 import storageConfig from './config/storage.config';
 import { MetaModule } from './meta/meta.module';
 import { CommonModule } from './common/common.module';
-import { QueryModule } from './query/query.module';
-import { RepositoryModule } from './repository/repository.module';
-import { ServicesModule } from './services/services.module';
-import { ReportsController } from './controllers/reports.controller';
-import { ReportsService } from './services/reports.service';
 import { AuthModule } from './auth/auth.module';
 import { FilesModule } from './files/files.module';
 import { User } from './database/entities/user.entity';
-import { Post } from './database/entities/post.entity';
-import { Comment } from './database/entities/comment.entity';
-import { Role } from './database/entities/role.entity';
-import { Permission } from './database/entities/permission.entity';
-import { RefreshToken } from './database/entities/refresh-token.entity';
-import { ResetPasswordToken } from './database/entities/reset-password-token.entity';
 import { File } from './database/entities/file.entity';
+import { AuditLog } from './database/entities/audit-log.entity';
+import { AuditLogModule } from './audit/audit.module';
+import { ExchangeModule } from './exchange/exchange.module';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 
 @Module({
@@ -7713,7 +7485,7 @@ import { PostgreSqlDriver } from '@mikro-orm/postgresql';
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
         driver: PostgreSqlDriver,
-        entities: [User, Post, Comment, Role, Permission, RefreshToken, ResetPasswordToken, File],
+        entities: [User, File, AuditLog],
         dbName: configService.get<string>('database.name'),
         host: configService.get<string>('database.host'),
         port: configService.get<number>('database.port'),
@@ -7730,14 +7502,13 @@ import { PostgreSqlDriver } from '@mikro-orm/postgresql';
     }),
     MetaModule,
     CommonModule,
-    QueryModule,
-    RepositoryModule,
-    ServicesModule,
     AuthModule,
     FilesModule,
+    AuditLogModule,
+    ExchangeModule,
   ],
-  controllers: [ReportsController],
-  providers: [ReportsService],
+  controllers: [],
+  providers: [],
 })
 export class AppModule {}
 ````

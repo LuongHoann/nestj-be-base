@@ -182,6 +182,35 @@ export class ImapMailProvider implements IMailProvider {
     }
   }
 
+  async getFolderCounts(): Promise<Record<string, { total: number; unread: number }>> {
+    if (!this.client) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+
+    const standardFolders = ['INBOX', 'Sent Items', 'Drafts', 'Spam', 'Junk Email'];
+    const counts: Record<string, { total: number; unread: number }> = {};
+
+    for (const folder of standardFolders) {
+      try {
+        const lock = await this.client.getMailboxLock(folder);
+        try {
+          const status = await this.client.status(folder, { messages: true, unseen: true });
+          counts[folder] = {
+            total: status.messages || 0,
+            unread: status.unseen || 0,
+          };
+        } finally {
+          lock.release();
+        }
+      } catch (error) {
+        // If folder doesn't exist or error, just set to 0
+        counts[folder] = { total: 0, unread: 0 };
+      }
+    }
+    
+    return counts;
+  }
+
   async getMessages(
     folderId: string,
     page: number,
@@ -218,6 +247,9 @@ export class ImapMailProvider implements IMailProvider {
         bodyStructure: true,
         flags: true,
         uid: true,
+        source: {
+          maxLength: 1024,
+        },
       })) {
         messages.push(msg);
       }
@@ -225,17 +257,39 @@ export class ImapMailProvider implements IMailProvider {
       // Reverse để hiển thị mới nhất trước
       messages.reverse();
 
-      const items = messages.map((msg) => ({
-        id: this.encodeId(folderId, msg.uid.toString()),
-        subject: msg.envelope.subject || '(No Subject)',
-        from: msg.envelope.from
-          ? this.mapAddress(msg.envelope.from[0])
-          : { name: '', email: '' },
-        receivedAt: msg.internalDate,
-        isRead: msg.flags.has('\\Seen'),
-        hasAttachments: this.checkAttachments(msg.bodyStructure),
-        preview: '', // Skip preview for performance
-      }));
+      const items = await Promise.all(
+        messages.map(async (msg) => {
+          let preview = '';
+          if (msg.source) {
+            try {
+              const parsed = await mailparser.simpleParser(msg.source);
+              if (parsed.text) {
+                preview = parsed.text;
+              } else if (parsed.html) {
+                preview = parsed.html.replace(/<[^>]*>?/gm, ' ');
+              }
+
+              if (preview) {
+                preview = preview.replace(/\s+/g, ' ').trim().substring(0, 200);
+              }
+            } catch (error) {
+              // Ignore
+            }
+          }
+
+          return {
+            id: this.encodeId(folderId, msg.uid.toString()),
+            subject: msg.envelope.subject || '(No Subject)',
+            from: msg.envelope.from
+              ? this.mapAddress(msg.envelope.from[0])
+              : { name: '', email: '' },
+            receivedAt: msg.internalDate,
+            isRead: msg.flags.has('\\Seen'),
+            hasAttachments: this.checkAttachments(msg.bodyStructure),
+            preview,
+          };
+        }),
+      );
 
       return { items, total };
     } catch (error) {
@@ -615,6 +669,63 @@ export class ImapMailProvider implements IMailProvider {
     } catch (error) {
       this.logger.error(`Error moving message: ${error.message}`);
       throw error;
+    }
+  }
+
+  async markMessages(ids: string[], isRead: boolean): Promise<void> {
+    if (!this.client) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+
+    // Group by folder
+    const groups: Record<string, string[]> = {};
+    for (const id of ids) {
+      const { folder, uid } = this.decodeId(id);
+      if (!groups[folder]) groups[folder] = [];
+      groups[folder].push(uid);
+    }
+
+    // Process each folder
+    for (const [folder, uids] of Object.entries(groups)) {
+      const lock = await this.client.getMailboxLock(folder);
+      try {
+        const uidSet = uids.join(',');
+        if (isRead) {
+          await this.client.messageFlagsAdd(uidSet, ['\\Seen'], { uid: true });
+        } else {
+          await this.client.messageFlagsRemove(uidSet, ['\\Seen'], {
+            uid: true,
+          });
+        }
+      } catch (error) {
+        this.logger.error(
+          `Error marking messages in ${folder}: ${error.message}`,
+        );
+      } finally {
+        lock.release();
+      }
+    }
+  }
+
+  async markAllMessages(folder: string, isRead: boolean): Promise<void> {
+    if (!this.client) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+
+    const lock = await this.client.getMailboxLock(folder);
+    try {
+      if (isRead) {
+        await this.client.messageFlagsAdd('1:*', ['\\Seen']);
+      } else {
+        await this.client.messageFlagsRemove('1:*', ['\\Seen']);
+      }
+    } catch (error) {
+      this.logger.error(
+        `Error marking all messages in ${folder}: ${error.message}`,
+      );
+      throw error;
+    } finally {
+      lock.release();
     }
   }
 }

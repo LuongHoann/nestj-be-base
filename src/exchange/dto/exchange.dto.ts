@@ -73,3 +73,20 @@ export class MoveMailDto {
     @IsNotEmpty()
     targetFolder!: string;
 }
+
+export class MarkReadDto {
+    @IsArray()
+    @IsOptional()
+    @IsString({ each: true })
+    ids?: string[];
+
+    @IsOptional()
+    all?: boolean;
+
+    @IsNotEmpty()
+    isRead!: boolean;
+
+    @IsString()
+    @IsOptional()
+    folder?: string;
+}

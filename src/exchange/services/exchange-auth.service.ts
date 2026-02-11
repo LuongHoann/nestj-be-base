@@ -71,7 +71,7 @@ export class ExchangeAuthService {
   /**
    * Login and return access and refresh tokens
    */
-  async login(email: string, password: string): Promise<{ accessToken: string, refreshToken: string }> {
+  async login(email: string, password: string): Promise<{ accessToken: string, refreshToken: string ,email: string}> {
     // 1. Verify credentials against Exchange/IMAP
     await this.verifyExchangeCredentials(email, password);
 
@@ -82,7 +82,7 @@ export class ExchangeAuthService {
   /**
    * Internal helper to issue both tokens
    */
-  private async issueTokens(email: string, password: string): Promise<{ accessToken: string, refreshToken: string }> {
+  private async issueTokens(email: string, password: string): Promise<{ accessToken: string, refreshToken: string ,email: string}> {
     // A. Issue Access Token (Session)
     const accessToken = this.generateSessionToken();
     const accessKey = await this.deriveKey(accessToken);
@@ -112,6 +112,7 @@ export class ExchangeAuthService {
     );
 
     return { 
+      email,
       accessToken, 
       refreshToken: `${tokenId}.${tokenSecret}` 
     };
