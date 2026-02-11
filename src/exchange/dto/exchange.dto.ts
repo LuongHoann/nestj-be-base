@@ -90,3 +90,21 @@ export class MarkReadDto {
     @IsOptional()
     folder?: string;
 }
+
+export class MoveBatchDto {
+    @IsArray()
+    @IsOptional()
+    @IsString({ each: true })
+    ids?: string[];
+
+    @IsOptional()
+    all?: boolean;
+
+    @IsString()
+    @IsOptional()
+    sourceFolder?: string;
+
+    @IsString()
+    @IsNotEmpty()
+    targetFolder!: string;
+}

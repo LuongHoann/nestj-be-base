@@ -728,4 +728,64 @@ export class ImapMailProvider implements IMailProvider {
       lock.release();
     }
   }
+
+  async moveMessagesBatch(ids: string[], targetFolder: string): Promise<void> {
+    if (!this.client) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+
+    // Group by source folder
+    const groups: Record<string, string[]> = {};
+    for (const id of ids) {
+      const { folder, uid } = this.decodeId(id);
+      if (!groups[folder]) groups[folder] = [];
+      groups[folder].push(uid);
+    }
+
+    // Process each source folder
+    for (const [sourceFolder, uids] of Object.entries(groups)) {
+      if (sourceFolder === targetFolder) continue; // Skip if same folder
+
+      const lock = await this.client.getMailboxLock(sourceFolder);
+      try {
+        const uidSet = uids.join(',');
+        await this.client.messageMove(uidSet, targetFolder, { uid: true });
+        this.logger.log(
+          `Moved ${uids.length} messages from ${sourceFolder} to ${targetFolder}`,
+        );
+      } catch (error) {
+        this.logger.error(
+          `Error moving messages from ${sourceFolder}: ${error.message}`,
+        );
+      } finally {
+        lock.release();
+      }
+    }
+  }
+
+  async moveAllMessages(
+    sourceFolder: string,
+    targetFolder: string,
+  ): Promise<void> {
+    if (!this.client) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+
+    if (sourceFolder === targetFolder) return;
+
+    const lock = await this.client.getMailboxLock(sourceFolder);
+    try {
+      await this.client.messageMove('1:*', targetFolder);
+      this.logger.log(
+        `Moved all messages from ${sourceFolder} to ${targetFolder}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Error moving all messages from ${sourceFolder}: ${error.message}`,
+      );
+      throw error;
+    } finally {
+      lock.release();
+    }
+  }
 }

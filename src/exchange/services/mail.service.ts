@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger, Scope } from '@nestjs/common';
 import { REQUEST } from '@nestjs/core';
 import { ImapMailProvider } from './imap-mail.provider';
 import { MailMessage } from '../interfaces/mail-provider.interface';
-import { SendMailDto, MarkReadDto } from '../dto/exchange.dto';
+import { SendMailDto, MarkReadDto, MoveBatchDto } from '../dto/exchange.dto';
 import { DragonflyService } from '../../common/cache/dragonfly.service';
 import { ExchangeAuthService } from './exchange-auth.service';
 
@@ -215,6 +215,58 @@ export class MailService {
     });
 
     // Refresh cache completely to ensure accurate counts
+    if (email) {
+      await this.getFolderCounts();
+    }
+
+    return { success: true };
+  }
+
+  async moveMessagesBatch(dto: MoveBatchDto) {
+    const email = await this.getEmailFromSession();
+    const targetFolderId = this.mapFolderTypeToId(
+      dto.targetFolder,
+      dto.targetFolder,
+    );
+
+    await this.withProvider(async () => {
+      if (dto.all && dto.sourceFolder) {
+        const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder);
+        await this.provider.moveAllMessages(sourceFolderId, targetFolderId);
+
+        // Invalidate cache for source and target
+        if (email && this.dragonfly.enabled) {
+          await this.dragonfly.del(
+            `exchange:count:${email}:${sourceFolderId}`,
+          );
+          await this.dragonfly.del(
+            `exchange:count:${email}:${targetFolderId}`,
+          );
+        }
+      } else if (dto.ids && dto.ids.length > 0) {
+        await this.provider.moveMessagesBatch(dto.ids, targetFolderId);
+
+        // Invalidate affected folders
+        if (email && this.dragonfly.enabled) {
+          const folders = new Set<string>();
+          folders.add(targetFolderId);
+
+          for (const id of dto.ids) {
+            try {
+              const decoded = Buffer.from(id, 'base64').toString('utf8');
+              const [folder] = decoded.split(':');
+              if (folder) folders.add(folder);
+            } catch (e) {}
+          }
+
+          for (const folder of folders) {
+            const key = `exchange:count:${email}:${folder}`;
+            await this.dragonfly.del(key);
+          }
+        }
+      }
+    });
+
     if (email) {
       await this.getFolderCounts();
     }
