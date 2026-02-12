@@ -9,7 +9,13 @@ export class ExchangeAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
-    const sessionToken = request.cookies?.['exchange_session'];
+    const cookieToken = request.cookies?.['exchange_session'];
+    const authHeader = request.headers?.authorization;
+    const bearerToken =
+      authHeader && authHeader.startsWith('Bearer ')
+        ? authHeader.slice('Bearer '.length).trim()
+        : undefined;
+    const sessionToken = cookieToken || bearerToken;
 
     if (!sessionToken) {
       throw new UnauthorizedException('No session token provided');

@@ -108,3 +108,21 @@ export class MoveBatchDto {
     @IsNotEmpty()
     targetFolder!: string;
 }
+
+export class PermanentDeleteMailDto {
+    @IsString()
+    @IsOptional()
+    messageId?: string;
+
+    @IsArray()
+    @IsOptional()
+    @IsString({ each: true })
+    ids?: string[];
+
+    @IsOptional()
+    all?: boolean;
+
+    @IsString()
+    @IsOptional()
+    sourceFolder?: string;
+}

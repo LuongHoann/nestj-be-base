@@ -14,7 +14,7 @@ export interface MailMessage {
 }
 
 export interface MailFolder {
-  id: string; // e.g., 'INBOX', 'Sent', 'Drafts'
+  id: string; // e.g., 'INBOX', 'Sent Items', 'Starred', 'Drafts', 'Spam', 'Trash'
   name: string;
 }
 

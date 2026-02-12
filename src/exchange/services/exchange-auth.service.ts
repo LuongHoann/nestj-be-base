@@ -1,9 +1,16 @@
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EntityManager } from '@mikro-orm/core';
+import { User } from 'src/database/entities/user.entity';
 import { DragonflyService } from 'src/common/cache/dragonfly.service';
 import { ulid } from 'ulid';
 import * as crypto from 'crypto';
 import * as argon2 from 'argon2';
+import {
+  getFolderAliases,
+  MAIL_FOLDERS,
+  resolveFolderId,
+} from '../constants/mail-folders.constant';
 
 // exchange-auth.service.ts
 @Injectable()
@@ -15,6 +22,7 @@ export class ExchangeAuthService {
   constructor(
     private readonly cache: DragonflyService,
     private readonly configService: ConfigService,
+    private readonly em: EntityManager,
   ) {}
 
   /**
@@ -75,7 +83,10 @@ export class ExchangeAuthService {
     // 1. Verify credentials against Exchange/IMAP
     await this.verifyExchangeCredentials(email, password);
 
-    // 2. Issue tokens
+    // 2. Ensure mailbox folders are initialized once per account
+    await this.initializeMailboxIfNeeded(email, password);
+
+    // 3. Issue tokens
     return this.issueTokens(email, password);
   }
 
@@ -164,29 +175,7 @@ export class ExchangeAuthService {
    * Verify Exchange credentials
    */
   private async verifyExchangeCredentials(email: string, password: string): Promise<void> {
-    const host = this.configService.get<string>('IMAP_HOST');
-    const port = this.configService.get<number>('IMAP_PORT', 993);
-    const secure = this.configService.get<boolean>('IMAP_SECURE', true);
-    
-    if (!host) {
-      throw new Error('IMAP_HOST is not configured');
-    }
-
-    const { ImapFlow } = await import('imapflow');
-    const client = new ImapFlow({
-      host,
-      port,
-      secure,
-      auth: {
-        user: email,
-        pass: password,
-      },
-      tls: {
-        minVersion: 'TLSv1.2',
-        rejectUnauthorized: false
-      },
-      logger: false,
-    });
+    const client = await this.createImapClient(email, password);
 
     try {
       await client.connect();
@@ -196,6 +185,97 @@ export class ExchangeAuthService {
       this.logger.warn(`Exchange authentication failed for ${email}: ${error.message}`);
       throw new UnauthorizedException('Invalid Exchange credentials');
     }
+  }
+
+  private async initializeMailboxIfNeeded(email: string, password: string): Promise<void> {
+    let user = await this.em.findOne(User, { email });
+
+    if (!user) {
+      const now = new Date();
+      user = this.em.create(User, {
+        email,
+        isActive: true,
+        mailboxInitialized: false,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await this.em.persistAndFlush(user);
+    }
+
+    if (user.mailboxInitialized) {
+      return;
+    }
+
+    const client = await this.createImapClient(email, password);
+    let initializedSuccessfully = true;
+
+    try {
+      await client.connect();
+      const existing = await client.list();
+      const existingSet = new Set(existing.map((m) => m.path.toLowerCase()));
+
+      for (const folder of MAIL_FOLDERS) {
+        if (folder.id === 'INBOX' || folder.id === 'Starred') {
+          continue;
+        }
+
+        const canonicalId = resolveFolderId(folder.id, folder.id);
+        const aliases = getFolderAliases(folder.id).map((alias) =>
+          alias.toLowerCase(),
+        );
+        const folderExists = aliases.some((alias) => existingSet.has(alias));
+
+        if (folderExists) {
+          continue;
+        }
+
+        try {
+          await client.mailboxCreate(canonicalId);
+          this.logger.log(`Created mailbox folder ${canonicalId} for ${email}`);
+          existingSet.add(canonicalId.toLowerCase());
+        } catch (error) {
+          initializedSuccessfully = false;
+          this.logger.warn(
+            `Failed to create mailbox folder ${canonicalId} for ${email}: ${error.message}`,
+          );
+        }
+      }
+    } finally {
+      try {
+        await client.logout();
+      } catch {
+        // Ignore logout failure after provisioning
+      }
+    }
+
+    user.mailboxInitialized = initializedSuccessfully;
+    await this.em.persistAndFlush(user);
+  }
+
+  private async createImapClient(email: string, password: string) {
+    const host = this.configService.get<string>('IMAP_HOST');
+    const port = this.configService.get<number>('IMAP_PORT', 993);
+    const secure = this.configService.get<boolean>('IMAP_SECURE', true);
+
+    if (!host) {
+      throw new Error('IMAP_HOST is not configured');
+    }
+
+    const { ImapFlow } = await import('imapflow');
+    return new ImapFlow({
+      host,
+      port,
+      secure,
+      auth: {
+        user: email,
+        pass: password,
+      },
+      tls: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: false,
+      },
+      logger: false,
+    });
   }
 
   /**

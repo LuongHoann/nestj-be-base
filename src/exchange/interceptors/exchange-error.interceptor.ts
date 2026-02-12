@@ -7,11 +7,20 @@ export class ExchangeErrorInterceptor implements NestInterceptor {
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
     return next.handle().pipe(
       catchError(err => {
+        if (err instanceof HttpException) {
+          return throwError(() => err);
+        }
+
         // Map EWS errors to HTTP Status
         // err.name or err.message often contains the code
         const msg = err.message || '';
         
-        if (msg.includes('ErrorInvalidCredentials') || msg.includes('401')) {
+        if (
+            msg.includes('ErrorInvalidCredentials') ||
+            msg.includes('401') ||
+            msg.includes('No session token') ||
+            msg.includes('Session expired or invalid')
+        ) {
             return throwError(() => new HttpException('Sai thông tin đăng nhập Exchange', 401));
         }
         if (msg.includes('AccountIsLocked') || msg.includes('ErrorImpersonationDenied')) {

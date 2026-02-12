@@ -27,7 +27,7 @@ Exchange Webmail Module cung cấp một bộ RESTful APIs hoàn chỉnh để x
 
 - ✅ **Authentication** với JWT tokens và refresh tokens
 - ✅ **Email Management** - Đọc, gửi, tìm kiếm, di chuyển email
-- ✅ **Folder Management** - Quản lý các thư mục (Inbox, Sent, Drafts, Trash, Spam)
+- ✅ **Folder Management** - Quản lý các thư mục (Inbox, Sent, Starred, Drafts, Spam, Trash)
 - ✅ **Attachment Support** - Gửi và nhận file đính kèm
 - ✅ **Search Functionality** - Tìm kiếm email theo subject, from, body
 - ✅ **Auto-save Sent Items** - Tự động lưu email đã gửi vào Sent folder
@@ -372,7 +372,7 @@ Lấy danh sách các thư mục email.
 
 ```typescript
 Array<{
-  id: string; // e.g., "INBOX", "Sent Items", "Drafts"
+  id: string; // e.g., "INBOX", "Sent Items", "Starred", "Drafts", "Spam", "Trash"
   name: string; // Tên hiển thị tiếng Việt
 }>;
 ```
@@ -390,8 +390,10 @@ curl -X GET http://localhost:3000/webmail/folders \
 [
   { "id": "INBOX", "name": "Hộp thư đến" },
   { "id": "Sent Items", "name": "Đã gửi" },
+  { "id": "Starred", "name": "Có gắn dấu sao" },
   { "id": "Drafts", "name": "Thư nháp" },
-  { "id": "Spam", "name": "Thùng rác" }
+  { "id": "Spam", "name": "Thư rác" },
+  { "id": "Trash", "name": "Thùng rác" }
 ]
 ```
 
@@ -423,7 +425,7 @@ Lấy danh sách email từ một folder với phân trang.
 
 ```typescript
 {
-  folder?: string;    // Default: "inbox" (inbox, sent, drafts, trash, spam)
+  folder?: string;    // Default: "inbox" (inbox, sent, starred, drafts, spam, trash)
   page?: number;      // Default: 1
   pageSize?: number;  // Default: 20
 }
@@ -484,7 +486,7 @@ curl -X GET "http://localhost:3000/webmail/mail?folder=sent&page=1" \
 
 ```typescript
 interface EmailListParams {
-  folder?: 'inbox' | 'sent' | 'drafts' | 'trash' | 'spam';
+  folder?: 'inbox' | 'sent' | 'starred' | 'drafts' | 'spam' | 'trash';
   page?: number;
   pageSize?: number;
 }
@@ -781,7 +783,7 @@ Di chuyển email từ folder này sang folder khác.
 ```typescript
 {
   messageId: string; // Email ID to move
-  targetFolder: string; // Target folder (inbox, sent, drafts, trash, spam)
+  targetFolder: string; // Target folder (inbox, sent, starred, drafts, spam, trash)
 }
 ```
 
@@ -848,8 +850,9 @@ await moveEmail('SU5CT1g6MTIzNDU=', 'inbox'); // Restore from trash
 
 - `inbox` → `INBOX`
 - `sent` → `Sent Items`
+- `starred` → `Starred`
 - `drafts` → `Drafts`
-- `trash` → `Deleted Items`
+- `trash` → `Trash`
 - `spam` → `Spam`
 
 ---
@@ -1417,9 +1420,10 @@ pm.test("Email sent", function() {
 | ---------- | -------------- | --------------- |
 | inbox      | INBOX          | Hộp thư đến     |
 | sent       | Sent Items     | Đã gửi          |
+| starred    | Starred        | Có gắn dấu sao  |
 | drafts     | Drafts         | Thư nháp        |
-| trash      | Deleted Items  | Thùng rác       |
 | spam       | Spam           | Thư rác         |
+| trash      | Trash          | Thùng rác       |
 
 ### Message ID Format
 

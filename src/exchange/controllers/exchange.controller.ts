@@ -13,7 +13,14 @@ import {
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { ExchangeAuthService } from '../services/exchange-auth.service';
 import { MailService } from '../services/mail.service';
-import { ExchangeLoginDto, SendMailDto, MoveMailDto, MarkReadDto, MoveBatchDto } from '../dto/exchange.dto';
+import {
+  ExchangeLoginDto,
+  SendMailDto,
+  MoveMailDto,
+  MarkReadDto,
+  MoveBatchDto,
+  PermanentDeleteMailDto,
+} from '../dto/exchange.dto';
 import { ExchangeErrorInterceptor } from '../interceptors/exchange-error.interceptor';
 import type { Request, Response } from 'express'; // Import từ express
 import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
@@ -146,5 +153,11 @@ export class ExchangeController {
   @Post('mail/move-batch')
   async moveBatch(@Body() dto: MoveBatchDto) {
     return this.mailService.moveMessagesBatch(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/permanent-delete')
+  async permanentDelete(@Body() dto: PermanentDeleteMailDto) {
+    return this.mailService.permanentDelete(dto);
   }
 }

@@ -8,7 +8,6 @@ import {
 import { REQUEST } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { ImapFlow } from 'imapflow';
-import * as nodemailer from 'nodemailer';
 import * as mailparser from 'mailparser';
 import {
   IMailProvider,
@@ -16,20 +15,26 @@ import {
   MailMessage,
   SendMailOptions,
 } from '../interfaces/mail-provider.interface';
+import {
+  getFolderAliases,
+  MAIL_FOLDERS,
+  resolveFolderId,
+} from '../constants/mail-folders.constant';
 import { ExchangeAuthService } from './exchange-auth.service';
+import { SmtpSenderService } from './smtp-sender.service';
 import { safeStringify } from '../utils/json.helper';
 
 @Injectable({ scope: Scope.REQUEST })
 export class ImapMailProvider implements IMailProvider {
   private readonly logger = new Logger(ImapMailProvider.name);
   private client: ImapFlow;
-  private transporter: nodemailer.Transporter;
   private credentials: { email: string; password: string };
   private sessionToken: string;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly authService: ExchangeAuthService,
+    private readonly smtpSenderService: SmtpSenderService,
     @Inject(REQUEST) private readonly request: any,
   ) {}
 
@@ -57,33 +62,9 @@ export class ImapMailProvider implements IMailProvider {
     };
   }
 
-  private getSmtpConfig() {
-    const host = this.configService.get<string>(
-      'SMTP_HOST',
-      'smtp.office365.com',
-    );
-    const port = this.configService.get<number>('SMTP_PORT', 587);
-    const secure = this.configService.get<boolean>('SMTP_SECURE', false);
-    return {
-      host,
-      port,
-      secure: false,
-      requireTLS: true, // ⬅️ ĐỔI: Không bắt buộc TLS
-      auth: {
-        user: this.credentials.email,
-        pass: this.credentials.password,
-      },
-      tls: {
-        minVersion: 'TLSv1.2',
-        rejectUnauthorized: false,
-      },
-      debug: true,
-      logger: true,
-    };
-  }
 
   async connect(): Promise<void> {
-    // Lấy session token từ cookie
+    // Get session token from cookie
     this.sessionToken = this.request.cookies?.['exchange_session'];
 
     if (!this.sessionToken) {
@@ -92,7 +73,7 @@ export class ImapMailProvider implements IMailProvider {
       );
     }
 
-    // Lấy credentials từ session
+    // Get credentials from session
     const creds = await this.authService.getCredentials(this.sessionToken);
 
     if (!creds) {
@@ -103,20 +84,11 @@ export class ImapMailProvider implements IMailProvider {
 
     this.credentials = creds;
 
-    // Kết nối IMAP
+    // IMAP
     this.client = new ImapFlow(this.getImapConfig() as any);
     await this.client.connect();
     this.logger.log(`IMAP connected for ${this.credentials.email}`);
 
-    // Khởi tạo SMTP transporter
-    this.transporter = nodemailer.createTransport(this.getSmtpConfig() as any);
-    try {
-      await this.transporter.verify();
-      this.logger.log(`SMTP verified for ${this.credentials.email}`);
-    } catch (error) {
-      this.logger.error(`SMTP verification failed: ${error.message}`);
-      throw error;
-    }
   }
 
   async disconnect(): Promise<void> {
@@ -140,46 +112,161 @@ export class ImapMailProvider implements IMailProvider {
     return { folder, uid };
   }
 
+  private normalizeFolderName(folder: string): string {
+    return folder.trim().toLowerCase();
+  }
+
+  private getSpecialUseHints(folder: string): string[] {
+    const canonicalFolder = resolveFolderId(folder, folder);
+
+    switch (canonicalFolder) {
+      case 'INBOX':
+        return ['\\Inbox'];
+      case 'Sent Items':
+        return ['\\Sent'];
+      case 'Drafts':
+        return ['\\Drafts'];
+      case 'Spam':
+        return ['\\Junk'];
+      case 'Trash':
+        return ['\\Trash'];
+      default:
+        return [];
+    }
+  }
+
+  private async getMailboxPathMap(): Promise<Map<string, string>> {
+    const list = await this.client.list();
+    const mailboxMap = new Map<string, string>();
+    for (const mailbox of list) {
+      mailboxMap.set(this.normalizeFolderName(mailbox.path), mailbox.path);
+    }
+    return mailboxMap;
+  }
+
+  private async resolveMailboxPath(folder: string): Promise<string | null> {
+    const mailboxList = await this.client.list();
+    const mailboxMap = new Map<string, string>();
+    for (const mailbox of mailboxList) {
+      mailboxMap.set(this.normalizeFolderName(mailbox.path), mailbox.path);
+    }
+
+    return this.resolveMailboxPathFromMap(folder, mailboxMap, mailboxList);
+  }
+
+  private resolveMailboxPathFromMap(
+    folder: string,
+    mailboxMap: Map<string, string>,
+    mailboxList?: any[],
+  ): string | null {
+    const specialUseHints = this.getSpecialUseHints(folder);
+    if (mailboxList?.length && specialUseHints.length) {
+      for (const mailbox of mailboxList) {
+        const specialUse = mailbox?.specialUse;
+        const flags = mailbox?.flags;
+        const hasSpecialUse =
+          (typeof specialUse === 'string' && specialUseHints.includes(specialUse)) ||
+          (flags && typeof flags.has === 'function' &&
+            specialUseHints.some((hint) => flags.has(hint)));
+
+        if (hasSpecialUse) {
+          return mailbox.path;
+        }
+      }
+    }
+
+    const aliases = getFolderAliases(folder);
+
+    for (const alias of aliases) {
+      const found = mailboxMap.get(this.normalizeFolderName(alias));
+      if (found) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
+  private async getStarredCounts(): Promise<{ total: number; unread: number }> {
+    const mailboxList = await this.client.list();
+    const mailboxMap = new Map<string, string>();
+    for (const mailbox of mailboxList) {
+      mailboxMap.set(this.normalizeFolderName(mailbox.path), mailbox.path);
+    }
+
+    const inboxPath = this.resolveMailboxPathFromMap(
+      'INBOX',
+      mailboxMap,
+      mailboxList,
+    );
+    if (!inboxPath) {
+      return { total: 0, unread: 0 };
+    }
+
+    const lock = await this.client.getMailboxLock(inboxPath);
+    try {
+      const searchResult = await this.client.search(
+        { flagged: true },
+        { uid: true },
+      );
+      const flaggedUids = Array.isArray(searchResult) ? searchResult : [];
+      if (!flaggedUids.length) {
+        return { total: 0, unread: 0 };
+      }
+
+      let unread = 0;
+      const uidSet = flaggedUids.join(',');
+      for await (const msg of this.client.fetch(
+        uidSet,
+        { flags: true, uid: true },
+        { uid: true },
+      )) {
+        if (!msg.flags?.has('\\Seen')) unread++;
+      }
+
+      return { total: flaggedUids.length, unread };
+    } catch (error) {
+      this.logger.warn(`Failed to count Starred messages: ${error.message}`);
+      return { total: 0, unread: 0 };
+    } finally {
+      lock.release();
+    }
+  }
+
   async getFolders(): Promise<MailFolder[]> {
     if (!this.client) {
       throw new Error('Client not connected. Call connect() first.');
     }
 
-    try {
-      const list = await this.client.list();
+    const mailboxList = await this.client.list();
+    const mailboxMap = new Map<string, string>();
+    for (const mailbox of mailboxList) {
+      mailboxMap.set(this.normalizeFolderName(mailbox.path), mailbox.path);
+    }
 
-      // Map standard folders
-      const folderMap: Record<string, string> = {
-        INBOX: 'Hộp thư đến',
-        'Sent Items': 'Đã gửi',
-        Drafts: 'Thư nháp',
-        Spam: 'Thùng rác',
-        'Junk Email': 'Thư rác',
-      };
+    const folders: MailFolder[] = [];
 
-      const standardFolders = ['INBOX', 'Sent Items', 'Drafts', 'Spam'];
-      const folders: MailFolder[] = [];
-
-      for (const folderName of standardFolders) {
-        const exists = list.some(
-          (f) =>
-            f.path === folderName ||
-            f.path.toLowerCase() === folderName.toLowerCase(),
-        );
-
-        if (exists) {
-          folders.push({
-            id: folderName,
-            name: folderMap[folderName] || folderName,
-          });
+    for (const folder of MAIL_FOLDERS) {
+      // Starred is virtual (Flagged in INBOX), show only when INBOX exists.
+      if (folder.id === 'Starred') {
+        if (mailboxMap.has('inbox')) {
+          folders.push({ id: folder.id, name: folder.name });
         }
+        continue;
       }
 
-      return folders;
-    } catch (error) {
-      this.logger.error(`Error fetching folders: ${error.message}`);
-      throw error;
+      const exists = !!this.resolveMailboxPathFromMap(
+        folder.id,
+        mailboxMap,
+        mailboxList,
+      );
+
+      if (exists) {
+        folders.push({ id: folder.id, name: folder.name });
+      }
     }
+
+    return folders;
   }
 
   async getFolderCounts(): Promise<Record<string, { total: number; unread: number }>> {
@@ -187,15 +274,37 @@ export class ImapMailProvider implements IMailProvider {
       throw new Error('Client not connected. Call connect() first.');
     }
 
-    const standardFolders = ['INBOX', 'Sent Items', 'Drafts', 'Spam', 'Junk Email'];
     const counts: Record<string, { total: number; unread: number }> = {};
+    const mailboxList = await this.client.list();
+    const mailboxMap = new Map<string, string>();
+    for (const mailbox of mailboxList) {
+      mailboxMap.set(this.normalizeFolderName(mailbox.path), mailbox.path);
+    }
 
-    for (const folder of standardFolders) {
+    for (const folder of MAIL_FOLDERS) {
       try {
-        const lock = await this.client.getMailboxLock(folder);
+        if (folder.id === 'Starred') {
+          counts[folder.id] = await this.getStarredCounts();
+          continue;
+        }
+
+        const mailboxPath = this.resolveMailboxPathFromMap(
+          folder.id,
+          mailboxMap,
+          mailboxList,
+        );
+        if (!mailboxPath) {
+          counts[folder.id] = { total: 0, unread: 0 };
+          continue;
+        }
+
+        const lock = await this.client.getMailboxLock(mailboxPath);
         try {
-          const status = await this.client.status(folder, { messages: true, unseen: true });
-          counts[folder] = {
+          const status = await this.client.status(mailboxPath, {
+            messages: true,
+            unseen: true,
+          });
+          counts[folder.id] = {
             total: status.messages || 0,
             unread: status.unseen || 0,
           };
@@ -203,11 +312,13 @@ export class ImapMailProvider implements IMailProvider {
           lock.release();
         }
       } catch (error) {
-        // If folder doesn't exist or error, just set to 0
-        counts[folder] = { total: 0, unread: 0 };
+        this.logger.warn(
+          `Failed to get count for folder ${folder.id}: ${error.message}`,
+        );
+        counts[folder.id] = { total: 0, unread: 0 };
       }
     }
-    
+
     return counts;
   }
 
@@ -220,16 +331,26 @@ export class ImapMailProvider implements IMailProvider {
       throw new Error('Client not connected. Call connect() first.');
     }
 
-    const lock = await this.client.getMailboxLock(folderId);
+    const canonicalFolderId = resolveFolderId(folderId, folderId);
+    if (canonicalFolderId === 'Starred') {
+      return this.getStarredMessages(page, limit);
+    }
+
+    const mailboxPath = await this.resolveMailboxPath(canonicalFolderId);
+    if (!mailboxPath) {
+      return { items: [], total: 0 };
+    }
+
+    const lock = await this.client.getMailboxLock(mailboxPath);
     try {
-      const status = await this.client.status(folderId, { messages: true });
+      const status = await this.client.status(mailboxPath, { messages: true });
       const total = status.messages || 0;
 
       if (total === 0) {
         return { items: [], total: 0 };
       }
 
-      // Tính toán range cho pagination (newest first)
+      // TÃ­nh toÃ¡n range cho pagination (newest first)
       const to = Math.max(1, total - (page - 1) * limit);
       const from = Math.max(1, to - limit + 1);
 
@@ -254,7 +375,7 @@ export class ImapMailProvider implements IMailProvider {
         messages.push(msg);
       }
 
-      // Reverse để hiển thị mới nhất trước
+      // Reverse to show newest first
       messages.reverse();
 
       const items = await Promise.all(
@@ -278,7 +399,7 @@ export class ImapMailProvider implements IMailProvider {
           }
 
           return {
-            id: this.encodeId(folderId, msg.uid.toString()),
+            id: this.encodeId(mailboxPath, msg.uid.toString()),
             subject: msg.envelope.subject || '(No Subject)',
             from: msg.envelope.from
               ? this.mapAddress(msg.envelope.from[0])
@@ -297,6 +418,94 @@ export class ImapMailProvider implements IMailProvider {
         `Error fetching messages from ${folderId}: ${error.message}`,
       );
       throw error;
+    } finally {
+      lock.release();
+    }
+  }
+
+  private async getStarredMessages(
+    page: number,
+    limit: number,
+  ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
+    const inboxPath = await this.resolveMailboxPath('INBOX');
+    if (!inboxPath) {
+      return { items: [], total: 0 };
+    }
+
+    const lock = await this.client.getMailboxLock(inboxPath);
+    try {
+      const flaggedUids: number[] = [];
+      for await (const msg of this.client.fetch('1:*', { uid: true, flags: true })) {
+        if (msg.flags?.has('\\Flagged')) {
+          flaggedUids.push(msg.uid);
+        }
+      }
+
+      if (flaggedUids.length === 0) {
+        return { items: [], total: 0 };
+      }
+
+      flaggedUids.sort((a, b) => b - a);
+      const total = flaggedUids.length;
+      const slicedUids = flaggedUids.slice((page - 1) * limit, page * limit);
+
+      if (slicedUids.length === 0) {
+        return { items: [], total };
+      }
+
+      const uidSet = slicedUids.join(',');
+      const messages: any[] = [];
+
+      for await (const msg of this.client.fetch(
+        uidSet,
+        {
+          envelope: true,
+          internalDate: true,
+          bodyStructure: true,
+          flags: true,
+          uid: true,
+          source: { maxLength: 1024 },
+        },
+        { uid: true },
+      )) {
+        messages.push(msg);
+      }
+
+      const items = await Promise.all(
+        messages.map(async (msg) => {
+          let preview = '';
+          if (msg.source) {
+            try {
+              const parsed = await mailparser.simpleParser(msg.source);
+              if (parsed.text) {
+                preview = parsed.text;
+              } else if (parsed.html) {
+                preview = parsed.html.replace(/<[^>]*>?/gm, ' ');
+              }
+
+              if (preview) {
+                preview = preview.replace(/\s+/g, ' ').trim().substring(0, 200);
+              }
+            } catch (error) {
+              // Ignore parsing errors in list preview
+            }
+          }
+
+          return {
+            id: this.encodeId(inboxPath, msg.uid.toString()),
+            subject: msg.envelope.subject || '(No Subject)',
+            from: msg.envelope.from
+              ? this.mapAddress(msg.envelope.from[0])
+              : { name: '', email: '' },
+            receivedAt: msg.internalDate,
+            isRead: msg.flags.has('\\Seen'),
+            hasAttachments: this.checkAttachments(msg.bodyStructure),
+            preview,
+          };
+        }),
+      );
+
+      return { items, total };
     } finally {
       lock.release();
     }
@@ -406,10 +615,6 @@ export class ImapMailProvider implements IMailProvider {
   async sendMessage(
     options: SendMailOptions,
   ): Promise<{ success: boolean; messageId?: string }> {
-    if (!this.transporter) {
-      throw new Error('Transporter not initialized. Call connect() first.');
-    }
-
     if (!this.client) {
       throw new Error('IMAP client not connected. Call connect() first.');
     }
@@ -434,21 +639,27 @@ export class ImapMailProvider implements IMailProvider {
         attachments,
       };
 
-      // Send email via SMTP
-      const info = await this.transporter.sendMail(mailOptions);
+      // Send email via shared SMTP pool (singleton service)
+      const info = await this.smtpSenderService.sendMail(
+        this.credentials,
+        mailOptions,
+      );
 
       this.logger.log(`Email sent successfully. MessageId: ${info.messageId}`);
 
-      // Append to Sent Items folder using IMAP
-      this.appendToSentFolder(mailOptions,info.messageId)
-        .then(() => {
+      // Append to Sent Items while IMAP connection is still alive
+      if (info.messageId) {
+        try {
+          await this.appendToSentFolder(mailOptions, info.messageId);
           this.logger.log(`Email appended to Sent Items folder`);
-        })
-        .catch((err) => {
+        } catch (err) {
           this.logger.warn(
             `Failed to append email to Sent Items: ${err.message}`,
           );
-        });
+        }
+      } else {
+        this.logger.warn('Skip appending to Sent Items because messageId is missing');
+      }
 
       return {
         success: !!info.messageId,
@@ -543,11 +754,11 @@ export class ImapMailProvider implements IMailProvider {
   private async appendToSentFolder(mailOptions: any, messageId: string): Promise<void> {
     // Find the Sent Items folder
     const sentData = this.buildRFC822Message(mailOptions, messageId);
-    const sentFolder = 'Sent Items';
+    const sentFolder = (await this.resolveMailboxPath('Sent Items')) ?? 'Sent Items';
 
     try {
       // Append message to Sent Items
-      await this.client.append(sentFolder, sentData, ['\Seen'], new Date());
+      await this.client.append(sentFolder, sentData, ['\\Seen'], new Date());
       this.logger.log(`Successfully appended message to ${sentFolder}`);
     } catch (error) {
       this.logger.error(`Error appending to ${sentFolder}: ${error.message}`);
@@ -564,7 +775,7 @@ export class ImapMailProvider implements IMailProvider {
       throw new Error('Client not connected. Call connect() first.');
     }
 
-    const folderId = 'INBOX';
+    const folderId = (await this.resolveMailboxPath('INBOX')) ?? 'INBOX';
     const lock = await this.client.getMailboxLock(folderId);
 
     try {
@@ -643,8 +854,11 @@ export class ImapMailProvider implements IMailProvider {
       // Decode message ID to get source folder and UID
       const { folder: sourceFolder, uid } = this.decodeId(messageId);
 
+      const resolvedTargetFolder =
+        (await this.resolveMailboxPath(targetFolder)) ?? targetFolder;
+
       this.logger.log(
-        `Moving message UID ${uid} from ${sourceFolder} to ${targetFolder}`,
+        `Moving message UID ${uid} from ${sourceFolder} to ${resolvedTargetFolder}`,
       );
 
       // Get lock on source folder
@@ -654,12 +868,12 @@ export class ImapMailProvider implements IMailProvider {
         // Use native IMAP MOVE command
         const result = await this.client.messageMove(
           uid,
-          targetFolder,
+          resolvedTargetFolder,
           { uid: true },
         );
 
         this.logger.log(
-          `Successfully moved message to ${targetFolder}. Result: ${safeStringify(result)}`,
+          `Successfully moved message to ${resolvedTargetFolder}. Result: ${safeStringify(result)}`,
         );
 
         return { success: true };
@@ -712,7 +926,8 @@ export class ImapMailProvider implements IMailProvider {
       throw new Error('Client not connected. Call connect() first.');
     }
 
-    const lock = await this.client.getMailboxLock(folder);
+    const resolvedFolder = (await this.resolveMailboxPath(folder)) ?? folder;
+    const lock = await this.client.getMailboxLock(resolvedFolder);
     try {
       if (isRead) {
         await this.client.messageFlagsAdd('1:*', ['\\Seen']);
@@ -721,7 +936,7 @@ export class ImapMailProvider implements IMailProvider {
       }
     } catch (error) {
       this.logger.error(
-        `Error marking all messages in ${folder}: ${error.message}`,
+        `Error marking all messages in ${resolvedFolder}: ${error.message}`,
       );
       throw error;
     } finally {
@@ -734,6 +949,9 @@ export class ImapMailProvider implements IMailProvider {
       throw new Error('Client not connected. Call connect() first.');
     }
 
+    const resolvedTargetFolder =
+      (await this.resolveMailboxPath(targetFolder)) ?? targetFolder;
+
     // Group by source folder
     const groups: Record<string, string[]> = {};
     for (const id of ids) {
@@ -744,14 +962,14 @@ export class ImapMailProvider implements IMailProvider {
 
     // Process each source folder
     for (const [sourceFolder, uids] of Object.entries(groups)) {
-      if (sourceFolder === targetFolder) continue; // Skip if same folder
+      if (sourceFolder === resolvedTargetFolder) continue; // Skip if same folder
 
       const lock = await this.client.getMailboxLock(sourceFolder);
       try {
         const uidSet = uids.join(',');
-        await this.client.messageMove(uidSet, targetFolder, { uid: true });
+        await this.client.messageMove(uidSet, resolvedTargetFolder, { uid: true });
         this.logger.log(
-          `Moved ${uids.length} messages from ${sourceFolder} to ${targetFolder}`,
+          `Moved ${uids.length} messages from ${sourceFolder} to ${resolvedTargetFolder}`,
         );
       } catch (error) {
         this.logger.error(
@@ -771,17 +989,110 @@ export class ImapMailProvider implements IMailProvider {
       throw new Error('Client not connected. Call connect() first.');
     }
 
-    if (sourceFolder === targetFolder) return;
+    const resolvedSourceFolder =
+      (await this.resolveMailboxPath(sourceFolder)) ?? sourceFolder;
+    const resolvedTargetFolder =
+      (await this.resolveMailboxPath(targetFolder)) ?? targetFolder;
 
-    const lock = await this.client.getMailboxLock(sourceFolder);
+    if (resolvedSourceFolder === resolvedTargetFolder) return;
+
+    const lock = await this.client.getMailboxLock(resolvedSourceFolder);
     try {
-      await this.client.messageMove('1:*', targetFolder);
+      await this.client.messageMove('1:*', resolvedTargetFolder);
       this.logger.log(
-        `Moved all messages from ${sourceFolder} to ${targetFolder}`,
+        `Moved all messages from ${resolvedSourceFolder} to ${resolvedTargetFolder}`,
       );
     } catch (error) {
       this.logger.error(
-        `Error moving all messages from ${sourceFolder}: ${error.message}`,
+        `Error moving all messages from ${resolvedSourceFolder}: ${error.message}`,
+      );
+      throw error;
+    } finally {
+      lock.release();
+    }
+  }
+
+  async permanentlyDeleteMessages(ids: string[]): Promise<number> {
+    if (!this.client) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+
+    const groups: Record<string, string[]> = {};
+    for (const id of ids) {
+      const { folder, uid } = this.decodeId(id);
+      if (!groups[folder]) groups[folder] = [];
+      groups[folder].push(uid);
+    }
+
+    let deletedCount = 0;
+
+    for (const [folder, uids] of Object.entries(groups)) {
+      const lock = await this.client.getMailboxLock(folder);
+      try {
+        const uidSet = uids.join(',');
+        await this.client.messageDelete(uidSet, { uid: true });
+        deletedCount += uids.length;
+      } catch (error) {
+        this.logger.error(
+          `Error permanently deleting messages in ${folder}: ${error.message}`,
+        );
+        throw error;
+      } finally {
+        lock.release();
+      }
+    }
+
+    return deletedCount;
+  }
+
+  async permanentlyDeleteAllMessages(folder: string): Promise<number> {
+    if (!this.client) {
+      throw new Error('Client not connected. Call connect() first.');
+    }
+
+    const canonicalFolderId = resolveFolderId(folder, folder);
+
+    if (canonicalFolderId === 'Starred') {
+      const inboxPath = await this.resolveMailboxPath('INBOX');
+      if (!inboxPath) {
+        return 0;
+      }
+
+      const lock = await this.client.getMailboxLock(inboxPath);
+      try {
+        const flaggedUids: number[] = [];
+        for await (const msg of this.client.fetch('1:*', { uid: true, flags: true })) {
+          if (msg.flags?.has('\\Flagged')) {
+            flaggedUids.push(msg.uid);
+          }
+        }
+
+        if (!flaggedUids.length) {
+          return 0;
+        }
+
+        await this.client.messageDelete(flaggedUids.join(','), { uid: true });
+        return flaggedUids.length;
+      } finally {
+        lock.release();
+      }
+    }
+
+    const resolvedFolder = (await this.resolveMailboxPath(canonicalFolderId)) ?? canonicalFolderId;
+    const lock = await this.client.getMailboxLock(resolvedFolder);
+
+    try {
+      const status = await this.client.status(resolvedFolder, { messages: true });
+      const total = status.messages || 0;
+      if (!total) {
+        return 0;
+      }
+
+      await this.client.messageDelete('1:*');
+      return total;
+    } catch (error) {
+      this.logger.error(
+        `Error permanently deleting all messages in ${resolvedFolder}: ${error.message}`,
       );
       throw error;
     } finally {
@@ -789,3 +1100,4 @@ export class ImapMailProvider implements IMailProvider {
     }
   }
 }
+

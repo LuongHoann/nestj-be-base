@@ -1,10 +1,21 @@
-import { Inject, Injectable, Logger, Scope } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, Scope } from '@nestjs/common';
 import { REQUEST } from '@nestjs/core';
 import { ImapMailProvider } from './imap-mail.provider';
 import { MailMessage } from '../interfaces/mail-provider.interface';
-import { SendMailDto, MarkReadDto, MoveBatchDto } from '../dto/exchange.dto';
+import {
+  SendMailDto,
+  MarkReadDto,
+  MoveBatchDto,
+  PermanentDeleteMailDto,
+} from '../dto/exchange.dto';
 import { DragonflyService } from '../../common/cache/dragonfly.service';
 import { ExchangeAuthService } from './exchange-auth.service';
+import {
+  DEFAULT_FOLDER_ID,
+  MAIL_FOLDERS,
+  resolveFolderId,
+  resolveFolderType,
+} from '../constants/mail-folders.constant';
 
 @Injectable({ scope: Scope.REQUEST })
 export class MailService {
@@ -37,37 +48,11 @@ export class MailService {
   }
 
   private mapFolderTypeToId(type: string, defaultValue?: string): string {
-    switch (type.toLowerCase()) {
-      case 'inbox':
-        return 'INBOX';
-      case 'sent':
-        return 'Sent Items';
-      case 'drafts':
-        return 'Drafts';
-      case 'trash':
-        return 'Deleted Items';
-      case 'spam':
-        return 'Spam';
-      default:
-        return defaultValue !== undefined ? defaultValue : 'INBOX';
-    }
+    return resolveFolderId(type, defaultValue ?? DEFAULT_FOLDER_ID);
   }
 
   private mapIdToFolderType(id: string): string {
-    switch (id) {
-      case 'INBOX':
-        return 'inbox';
-      case 'Sent Items':
-        return 'sent';
-      case 'Drafts':
-        return 'drafts';
-      case 'Deleted Items':
-        return 'trash';
-      case 'Spam':
-        return 'spam';
-      default:
-        return id.toLowerCase().replace(/\s+/g, '_');
-    }
+    return resolveFolderType(id);
   }
 
   async getFolderCounts() {
@@ -77,7 +62,7 @@ export class MailService {
       return this.withProvider(() => this.provider.getFolderCounts());
     }
 
-    const standardFolders = ['INBOX', 'Sent Items', 'Drafts', 'Spam', 'Junk Email'];
+    const standardFolders = MAIL_FOLDERS.map((f) => f.id);
     const cacheKeys = standardFolders.map((f) => `exchange:count:${email}:${f}`);
 
     // Check cache
@@ -92,8 +77,6 @@ export class MailService {
       standardFolders.forEach((folder, index) => {
         if (cachedValues[index]) {
           const type = this.mapIdToFolderType(folder);
-          // If multiple IDs map to same type (e.g. Spam/Junk -> spam), we might overwrite/merge?
-          // For now, simpler to just assign. If Spam & Junk both exist, last one wins.
           result[type] = cachedValues[index] as any;
         } else {
           allFound = false;
@@ -148,7 +131,8 @@ export class MailService {
             // Decode ID to get folder
             // id is base64(folder:uid)
             const decoded = Buffer.from(id, 'base64').toString('utf8');
-            const [folder] = decoded.split(':');
+            const [rawFolder] = decoded.split(':');
+            const folder = resolveFolderId(rawFolder, rawFolder);
             
             const key = `exchange:count:${email}:${folder}`;
             const current = await this.dragonfly.get<{ total: number; unread: number }>(key);
@@ -165,7 +149,15 @@ export class MailService {
   }
 
   async sendMessage(dto: SendMailDto) {
-    return this.withProvider(() => this.provider.sendMessage(dto));
+    const result = await this.withProvider(() => this.provider.sendMessage(dto));
+
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
+      await this.dragonfly.del(`exchange:count:${email}:INBOX`);
+    }
+
+    return result;
   }
 
   async searchMessages(query: string, page: number = 1, pageSize: number = 20) {
@@ -201,7 +193,8 @@ export class MailService {
           for (const id of dto.ids) {
             try {
               const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [folder] = decoded.split(':');
+              const [rawFolder] = decoded.split(':');
+              const folder = resolveFolderId(rawFolder, rawFolder);
               if (folder) folders.add(folder);
             } catch (e) {}
           }
@@ -254,7 +247,8 @@ export class MailService {
           for (const id of dto.ids) {
             try {
               const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [folder] = decoded.split(':');
+              const [rawFolder] = decoded.split(':');
+              const folder = resolveFolderId(rawFolder, rawFolder);
               if (folder) folders.add(folder);
             } catch (e) {}
           }
@@ -272,5 +266,79 @@ export class MailService {
     }
 
     return { success: true };
+  }
+
+  async permanentDelete(dto: PermanentDeleteMailDto) {
+    const hasSingle = !!dto.messageId;
+    const hasMany = Array.isArray(dto.ids) && dto.ids.length > 0;
+    const hasDeleteAll = !!dto.all && !!dto.sourceFolder;
+
+    const selectedModes = [hasSingle, hasMany, hasDeleteAll].filter(Boolean).length;
+    if (selectedModes !== 1) {
+      throw new BadRequestException(
+        'Payload khong hop le. Chon dung 1 mode: messageId, ids, hoac all + sourceFolder',
+      );
+    }
+
+    const email = await this.getEmailFromSession();
+    const affectedFolders = new Set<string>();
+
+    const deletedCount = await this.withProvider(async () => {
+      if (hasSingle && dto.messageId) {
+        const decoded = Buffer.from(dto.messageId, 'base64').toString('utf8');
+        const [rawFolder] = decoded.split(':');
+        const folder = resolveFolderId(rawFolder, rawFolder);
+        if (folder) affectedFolders.add(folder);
+        return this.provider.permanentlyDeleteMessages([dto.messageId]);
+      }
+
+      if (hasMany && dto.ids) {
+        for (const id of dto.ids) {
+          try {
+            const decoded = Buffer.from(id, 'base64').toString('utf8');
+            const [rawFolder] = decoded.split(':');
+            const folder = resolveFolderId(rawFolder, rawFolder);
+            if (folder) affectedFolders.add(folder);
+          } catch (e) {}
+        }
+
+        if (dto.sourceFolder) {
+          const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder);
+          const invalidId = dto.ids.find((id) => {
+            try {
+              const decoded = Buffer.from(id, 'base64').toString('utf8');
+              const [rawFolder] = decoded.split(':');
+              return resolveFolderId(rawFolder, rawFolder) !== sourceFolderId;
+            } catch (e) {
+              return true;
+            }
+          });
+
+          if (invalidId) {
+            throw new BadRequestException(
+              'Danh sach ids co mail khong thuoc sourceFolder',
+            );
+          }
+        }
+
+        return this.provider.permanentlyDeleteMessages(dto.ids);
+      }
+
+      const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder!);
+      affectedFolders.add(sourceFolderId);
+      return this.provider.permanentlyDeleteAllMessages(sourceFolderId);
+    });
+
+    if (email && this.dragonfly.enabled) {
+      for (const folder of affectedFolders) {
+        await this.dragonfly.del(`exchange:count:${email}:${folder}`);
+      }
+    }
+
+    if (email) {
+      await this.getFolderCounts();
+    }
+
+    return { success: true, deletedCount };
   }
 }

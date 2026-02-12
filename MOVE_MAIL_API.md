@@ -29,8 +29,9 @@ Bạn có thể sử dụng tên ngắn (sẽ được map tự động):
 
 - `inbox` → `INBOX`
 - `sent` → `Sent Items`
+- `starred` → `Starred`
 - `drafts` → `Drafts`
-- `trash` → `Deleted Items`
+- `trash` → `Trash`
 - `spam` → `Spam`
 
 Hoặc sử dụng tên folder đầy đủ trực tiếp (ví dụ: `Sent Items`, `Drafts`, etc.)
