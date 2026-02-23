@@ -39,6 +39,8 @@ import {
   ConflictResolutionMode,
   ServiceResponseCollection,
   ServiceError,
+  Flag,
+  FlaggedForAction,
 } from 'ews-javascript-api';
 import { XhrApi } from '@ewsjs/xhr';
 import { DragonflyService } from '../../common/cache/dragonfly.service';
@@ -287,46 +289,51 @@ export class EwsMailProvider implements IMailProvider {
   private async getStarredCounts(): Promise<{ total: number; unread: number }> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const view = new ItemView(1, 0);
-    view.Traversal = ItemTraversal.Shallow;
-    const flagProp =
-      (EmailMessageSchema as any).FlagStatus ||
-      (EmailMessageSchema as any).Flag ||
-      (ItemSchema as any).FlagStatus;
+    try {
+      const view = new ItemView(1, 0);
+      view.Traversal = ItemTraversal.Shallow;
+      const flagProp =
+        (EmailMessageSchema as any).FlagStatus ||
+        (EmailMessageSchema as any).Flag ||
+        (ItemSchema as any).FlagStatus;
 
-    if (!flagProp) {
+      if (!flagProp) {
+        return { total: 0, unread: 0 };
+      }
+
+      const filter = new SearchFilter.IsEqualTo(flagProp, 2);
+
+      const result = await this.service.FindItems(
+        WellKnownFolderName.Inbox,
+        filter,
+        view,
+      );
+
+      const total = result.TotalCount || 0;
+      if (!total) return { total: 0, unread: 0 };
+
+      const unreadFilter = new SearchFilter.SearchFilterCollection(
+        LogicalOperator.And,
+        [
+          filter,
+          new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, false),
+        ],
+      );
+
+      const unreadResult = await this.service.FindItems(
+        WellKnownFolderName.Inbox,
+        unreadFilter,
+        view,
+      );
+
+      return {
+        total,
+        unread: unreadResult.TotalCount || 0,
+      };
+    } catch (error) {
+      this.logger.warn(`Starred count not supported: ${error.message}`);
       return { total: 0, unread: 0 };
     }
-
-    const filter = new SearchFilter.IsEqualTo(flagProp, 2);
-
-    const result = await this.service.FindItems(
-      WellKnownFolderName.Inbox,
-      filter,
-      view,
-    );
-
-    const total = result.TotalCount || 0;
-    if (!total) return { total: 0, unread: 0 };
-
-    const unreadFilter = new SearchFilter.SearchFilterCollection(
-      LogicalOperator.And,
-      [
-        filter,
-        new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, false),
-      ],
-    );
-
-    const unreadResult = await this.service.FindItems(
-      WellKnownFolderName.Inbox,
-      unreadFilter,
-      view,
-    );
-
-    return {
-      total,
-      unread: unreadResult.TotalCount || 0,
-    };
   }
 
   async getMessages(
@@ -336,6 +343,7 @@ export class EwsMailProvider implements IMailProvider {
   ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
     if (!this.service) throw new Error('EWS service not connected');
 
+    const resolvedId = resolveFolderId(folderId, folderId);
     const resolvedFolder = this.resolveFolderName(folderId);
     const offset = (page - 1) * limit;
     const view = new ItemView(limit, offset);
@@ -346,19 +354,55 @@ export class EwsMailProvider implements IMailProvider {
       ItemSchema.DateTimeReceived,
       EmailMessageSchema.From,
       EmailMessageSchema.IsRead,
+      EmailMessageSchema.Flag,
       ItemSchema.HasAttachments,
       ItemSchema.Preview,
     );
 
-    const result = await this.service.FindItems(resolvedFolder, view);
+    let result;
+    if (resolvedId === 'Starred') {
+      try {
+        const flagProp =
+          (EmailMessageSchema as any).FlagStatus ||
+          (EmailMessageSchema as any).Flag ||
+          (ItemSchema as any).FlagStatus;
+
+        if (!flagProp) {
+          return { items: [], total: 0 };
+        }
+
+        const filter = new SearchFilter.IsEqualTo(flagProp, 2);
+        result = await this.service.FindItems(
+          WellKnownFolderName.Inbox,
+          filter,
+          view,
+        );
+      } catch (error) {
+        this.logger.warn(`Starred filter not supported: ${error.message}`);
+        return { items: [], total: 0 };
+      }
+    } else {
+      result = await this.service.FindItems(resolvedFolder, view);
+    }
     const items = result.Items.map((item: any) => ({
-      id: this.encodeId(folderId, item.Id!.UniqueId),
+      id: this.encodeId(resolvedId, item.Id!.UniqueId),
       subject: item.Subject || '(No Subject)',
       from: this.getFrom(item),
       receivedAt: this.toJsDate(item.DateTimeReceived),
       isRead: item.IsRead || false,
       hasAttachments: item.HasAttachments || false,
       preview: item.Preview || '',
+      isStarred: (() => {
+        try {
+          return (
+            item.Flag?.FlagStatus === 2 ||
+            item.FlagStatus === 2 ||
+            item.IsFlagged === true
+          );
+        } catch {
+          return false;
+        }
+      })(),
     }));
 
     return { items, total: result.TotalCount || 0 };
@@ -456,6 +500,7 @@ export class EwsMailProvider implements IMailProvider {
       ItemSchema.DateTimeReceived,
       EmailMessageSchema.From,
       EmailMessageSchema.IsRead,
+      EmailMessageSchema.Flag,
       ItemSchema.HasAttachments,
     );
 
@@ -477,6 +522,17 @@ export class EwsMailProvider implements IMailProvider {
       receivedAt: this.toJsDate(item.DateTimeReceived),
       isRead: item.IsRead || false,
       hasAttachments: item.HasAttachments || false,
+      isStarred: (() => {
+        try {
+          return (
+            item.Flag?.FlagStatus === 2 ||
+            item.FlagStatus === 2 ||
+            item.IsFlagged === true
+          );
+        } catch {
+          return false;
+        }
+      })(),
     }));
 
     return { items, total: result.TotalCount || 0 };
@@ -529,6 +585,62 @@ export class EwsMailProvider implements IMailProvider {
           new ItemId(item.Id!.UniqueId),
         );
         (message as any).IsRead = isRead;
+        await message.Update(ConflictResolutionMode.AlwaysOverwrite);
+      }
+
+      offset += result.Items.length;
+      more = result.MoreAvailable || false;
+    }
+  }
+
+  async markMessagesStar(ids: string[], starred: boolean): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    for (const id of ids) {
+      const { itemId } = this.decodeId(id);
+      const message = await EmailMessage.Bind(this.service, new ItemId(itemId));
+      if (starred) {
+        const flag = new Flag();
+        flag.FlagStatus = 2;
+        (message as any).Flag = flag;
+      } else {
+        const flag = new Flag();
+        flag.FlagStatus = 0;
+        (message as any).Flag = flag;
+      }
+      await message.Update(ConflictResolutionMode.AlwaysOverwrite);
+    }
+  }
+
+  async markAllMessagesStar(folder: string, starred: boolean): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const resolved = this.resolveFolderName(folder);
+    const view = new ItemView(200, 0);
+    view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
+
+    let offset = 0;
+    let more = true;
+
+    while (more) {
+      view.Offset = offset;
+      const result = await this.service.FindItems(resolved, view);
+      if (!result.Items.length) break;
+
+      for (const item of result.Items) {
+        const message = await EmailMessage.Bind(
+          this.service,
+          new ItemId(item.Id!.UniqueId),
+        );
+        if (starred) {
+          const flag = new Flag();
+          flag.FlagStatus = 2;
+          (message as any).Flag = flag;
+        } else {
+          const flag = new Flag();
+          flag.FlagStatus = 0;
+          (message as any).Flag = flag;
+        }
         await message.Update(ConflictResolutionMode.AlwaysOverwrite);
       }
 

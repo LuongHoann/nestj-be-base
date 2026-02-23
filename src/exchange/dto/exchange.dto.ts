@@ -150,7 +150,24 @@ export class PermanentDeleteMailDto {
   all?: boolean;
 
   @ApiProperty({ example: 'trash', required: false })
-  @IsString()
-  @IsOptional()
-  sourceFolder?: string;
+    @IsString()
+    @IsOptional()
+    sourceFolder?: string;
+}
+
+export class StarMailDto {
+    @ApiProperty({ example: ['SU5CT1g6MTIzNDU='], required: false })
+    @IsArray()
+    @IsOptional()
+    @IsString({ each: true })
+    ids?: string[];
+
+    @ApiProperty({ example: true, required: false })
+    @IsOptional()
+    all?: boolean;
+
+    @ApiProperty({ example: 'inbox', required: false })
+    @IsString()
+    @IsOptional()
+    folder?: string;
 }

@@ -91,6 +91,32 @@ export class ExchangeAuthService {
    * Login and return access and refresh tokens
    */
   async login(email: string, password: string): Promise<{ accessToken: string, refreshToken: string ,email: string}> {
+    // Ensure user exists and verify password in DB
+    let user = await this.em.findOne(User, { email });
+    if (!user) {
+      const now = new Date();
+      const passwordHash = await argon2.hash(password);
+      user = this.em.create(User, {
+        email,
+        password: passwordHash,
+        isActive: true,
+        mailboxInitialized: false,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await this.em.persistAndFlush(user);
+    } else {
+      if (!user.password) {
+        user.password = await argon2.hash(password);
+        await this.em.persistAndFlush(user);
+      } else {
+        const valid = await argon2.verify(user.password, password);
+        if (!valid) {
+          throw new UnauthorizedException('Invalid Exchange credentials');
+        }
+      }
+    }
+
     const ssoEnabled = this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
     if (ssoEnabled) {
       // 1. Verify credentials against Exchange/EWS (SSO)
@@ -274,7 +300,7 @@ export class ExchangeAuthService {
     const scope = this.configService.get<string>('EWS_SCOPE');
     const resource = this.configService.get<string>('EWS_RESOURCE');
     const version =
-      this.configService.get<string>('EWS_VERSION') || 'Exchange2016';
+      this.configService.get<string>('EWS_VERSION') || 'Exchange2019';
 
     if (!url) {
       throw new Error('EWS_URL is not configured');

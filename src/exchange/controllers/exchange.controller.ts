@@ -20,6 +20,7 @@ import {
   MarkReadDto,
   MoveBatchDto,
   PermanentDeleteMailDto,
+  StarMailDto,
 } from '../dto/exchange.dto';
 import { ExchangeErrorInterceptor } from '../interceptors/exchange-error.interceptor';
 import type { Request, Response } from 'express';
@@ -202,5 +203,23 @@ export class ExchangeController {
   @ApiBody({ type: PermanentDeleteMailDto })
   async permanentDelete(@Body() dto: PermanentDeleteMailDto) {
     return this.mailService.permanentDelete(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/star')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Danh dau sao' })
+  @ApiBody({ type: StarMailDto })
+  async star(@Body() dto: StarMailDto) {
+    return this.mailService.markStar(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/unstar')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Bo danh dau sao' })
+  @ApiBody({ type: StarMailDto })
+  async unstar(@Body() dto: StarMailDto) {
+    return this.mailService.unmarkStar(dto);
   }
 }
