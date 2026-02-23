@@ -5,6 +5,7 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -31,6 +32,20 @@ async function bootstrap() {
   );
 
   app.use(cookieParser());
+
+  const config = new DocumentBuilder()
+    .setTitle('Webmail API')
+    .setDescription('API tài liệu cho frontend')
+    .setVersion('1.0')
+    .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'jwt')
+    .addCookieAuth('exchange_session', {
+      type: 'apiKey',
+      in: 'cookie',
+    }, 'exchange_cookie')
+    .build();
+
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('docs', app, document);
 
   await app.listen(process.env.PORT ?? 3000);
 }

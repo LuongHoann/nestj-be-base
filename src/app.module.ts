@@ -5,6 +5,7 @@ import databaseConfig from './config/database.config';
 import authConfig from './config/auth.config';
 import queryConfig from './config/query.config';
 import storageConfig from './config/storage.config';
+import ewsConfig from './config/ews.config';
 import { MetaModule } from './meta/meta.module';
 import { CommonModule } from './common/common.module';
 import { AuthModule } from './auth/auth.module';
@@ -12,6 +13,8 @@ import { FilesModule } from './files/files.module';
 import { User } from './database/entities/user.entity';
 import { File } from './database/entities/file.entity';
 import { AuditLog } from './database/entities/audit-log.entity';
+import { Role } from './database/entities/role.entity';
+import { Permission } from './database/entities/permission.entity';
 import { AuditLogModule } from './audit/audit.module';
 import { ExchangeModule } from './exchange/exchange.module';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
@@ -20,13 +23,13 @@ import { PostgreSqlDriver } from '@mikro-orm/postgresql';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [databaseConfig, authConfig, queryConfig, storageConfig],
+      load: [databaseConfig, authConfig, queryConfig, storageConfig, ewsConfig],
     }),
     MikroOrmModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
         driver: PostgreSqlDriver,
-        entities: [User, File, AuditLog],
+        entities: [User, File, AuditLog, Role, Permission],
         dbName: configService.get<string>('database.name'),
         host: configService.get<string>('database.host'),
         port: configService.get<number>('database.port'),

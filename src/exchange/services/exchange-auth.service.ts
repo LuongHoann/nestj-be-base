@@ -7,10 +7,21 @@ import { ulid } from 'ulid';
 import * as crypto from 'crypto';
 import * as argon2 from 'argon2';
 import {
-  getFolderAliases,
-  MAIL_FOLDERS,
-  resolveFolderId,
-} from '../constants/mail-folders.constant';
+  ExchangeService,
+  ExchangeVersion,
+  OAuthCredentials,
+  WebCredentials,
+  Uri,
+  WellKnownFolderName,
+  Folder,
+  FolderView,
+  FolderSchema,
+  BasePropertySet,
+  PropertySet,
+  ImpersonatedUserId,
+  ConnectingIdType,
+} from 'ews-javascript-api';
+import { XhrApi } from '@ewsjs/xhr';
 
 // exchange-auth.service.ts
 @Injectable()
@@ -80,8 +91,14 @@ export class ExchangeAuthService {
    * Login and return access and refresh tokens
    */
   async login(email: string, password: string): Promise<{ accessToken: string, refreshToken: string ,email: string}> {
-    // 1. Verify credentials against Exchange/IMAP
-    await this.verifyExchangeCredentials(email, password);
+    const ssoEnabled = this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
+    if (ssoEnabled) {
+      // 1. Verify credentials against Exchange/EWS (SSO)
+      await this.verifyExchangeCredentials(email);
+    } else {
+      // 1. Verify credentials against Exchange/EWS (basic)
+      await this.verifyExchangeCredentialsBasic(email, password);
+    }
 
     // 2. Ensure mailbox folders are initialized once per account
     await this.initializeMailboxIfNeeded(email, password);
@@ -174,15 +191,23 @@ export class ExchangeAuthService {
   /**
    * Verify Exchange credentials
    */
-  private async verifyExchangeCredentials(email: string, password: string): Promise<void> {
-    const client = await this.createImapClient(email, password);
+  private async verifyExchangeCredentials(email: string): Promise<void> {
+    const ssoEnabled = this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
+    if (!ssoEnabled) {
+      return;
+    }
+    const validate = this.configService.get<boolean>('EWS_VALIDATE_ON_LOGIN');
+    if (!validate) {
+      this.logger.log(`Skip EWS validation for ${email}`);
+      return;
+    }
 
+    const service = await this.createEwsService(email);
     try {
-      await client.connect();
-      await client.logout();
-      this.logger.log(`Exchange authentication successful for ${email}`);
+      await Folder.Bind(service, WellKnownFolderName.Inbox);
+      this.logger.log(`EWS authentication successful for ${email}`);
     } catch (error) {
-      this.logger.warn(`Exchange authentication failed for ${email}: ${error.message}`);
+      this.logger.warn(`EWS authentication failed for ${email}: ${error.message}`);
       throw new UnauthorizedException('Invalid Exchange credentials');
     }
   }
@@ -206,76 +231,145 @@ export class ExchangeAuthService {
       return;
     }
 
-    const client = await this.createImapClient(email, password);
-    let initializedSuccessfully = true;
-
     try {
-      await client.connect();
-      const existing = await client.list();
-      const existingSet = new Set(existing.map((m) => m.path.toLowerCase()));
-
-      for (const folder of MAIL_FOLDERS) {
-        if (folder.id === 'INBOX' || folder.id === 'Starred') {
-          continue;
-        }
-
-        const canonicalId = resolveFolderId(folder.id, folder.id);
-        const aliases = getFolderAliases(folder.id).map((alias) =>
-          alias.toLowerCase(),
-        );
-        const folderExists = aliases.some((alias) => existingSet.has(alias));
-
-        if (folderExists) {
-          continue;
-        }
-
-        try {
-          await client.mailboxCreate(canonicalId);
-          this.logger.log(`Created mailbox folder ${canonicalId} for ${email}`);
-          existingSet.add(canonicalId.toLowerCase());
-        } catch (error) {
-          initializedSuccessfully = false;
-          this.logger.warn(
-            `Failed to create mailbox folder ${canonicalId} for ${email}: ${error.message}`,
-          );
-        }
-      }
-    } finally {
-      try {
-        await client.logout();
-      } catch {
-        // Ignore logout failure after provisioning
-      }
+      const service = await this.createEwsService(email, password);
+      await this.ensureSystemFolders(service);
+      user.mailboxInitialized = true;
+    } catch (error) {
+      this.logger.warn(
+        `Failed to verify default folders for ${email}: ${error.message}`,
+      );
+      user.mailboxInitialized = false;
     }
 
-    user.mailboxInitialized = initializedSuccessfully;
     await this.em.persistAndFlush(user);
   }
 
-  private async createImapClient(email: string, password: string) {
-    const host = this.configService.get<string>('IMAP_HOST');
-    const port = this.configService.get<number>('IMAP_PORT', 993);
-    const secure = this.configService.get<boolean>('IMAP_SECURE', true);
+  async createSessionFromCredentials(
+    email: string,
+    password: string,
+  ): Promise<{ accessToken: string; refreshToken: string }> {
+    return this.issueTokens(email, password);
+  }
 
-    if (!host) {
-      throw new Error('IMAP_HOST is not configured');
+  async ensureMailboxExists(email: string, password?: string): Promise<void> {
+    const service = await this.createEwsService(email, password);
+    await Folder.Bind(service, WellKnownFolderName.Inbox);
+  }
+
+  private async createEwsService(
+    email: string,
+    password?: string,
+  ): Promise<ExchangeService> {
+    const rejectUnauthorized =
+      this.configService.get<string>('EWS_TLS_REJECT_UNAUTHORIZED') !== 'false';
+    if (!rejectUnauthorized) {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
     }
 
-    const { ImapFlow } = await import('imapflow');
-    return new ImapFlow({
-      host,
-      port,
-      secure,
-      auth: {
-        user: email,
-        pass: password,
-      },
-      tls: {
-        minVersion: 'TLSv1.2',
-        rejectUnauthorized: false,
-      },
-      logger: false,
-    });
+    const url = this.configService.get<string>('EWS_URL');
+    const tokenUrl = this.configService.get<string>('EWS_TOKEN_URL');
+    const clientId = this.configService.get<string>('EWS_CLIENT_ID');
+    const clientSecret = this.configService.get<string>('EWS_CLIENT_SECRET');
+    const scope = this.configService.get<string>('EWS_SCOPE');
+    const resource = this.configService.get<string>('EWS_RESOURCE');
+    const version =
+      this.configService.get<string>('EWS_VERSION') || 'Exchange2016';
+
+    if (!url) {
+      throw new Error('EWS_URL is not configured');
+    }
+
+    (ExchangeService as any).XHRApi = new XhrApi();
+    const service = new ExchangeService(
+      ExchangeVersion[version as keyof typeof ExchangeVersion] ||
+        ExchangeVersion.Exchange2016,
+    );
+    const ssoEnabled = this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
+    if (ssoEnabled) {
+      if (!tokenUrl || !clientId || !clientSecret) {
+        throw new Error('EWS OAuth2 config is missing');
+      }
+
+      const body = new URLSearchParams();
+      body.set('client_id', clientId);
+      body.set('client_secret', clientSecret);
+      body.set('grant_type', 'client_credentials');
+      if (scope) {
+        body.set('scope', scope);
+      } else if (resource) {
+        body.set('resource', resource);
+      }
+
+      const response = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new UnauthorizedException(`Failed to fetch EWS token: ${text}`);
+      }
+
+      const payload = (await response.json()) as { access_token: string };
+      service.Credentials = new OAuthCredentials(payload.access_token);
+    } else {
+      if (!password) {
+        throw new UnauthorizedException('Missing password for basic auth');
+      }
+      service.Credentials = new WebCredentials(email, password);
+    }
+    service.Url = new Uri(url);
+
+    if (this.configService.get<string>('EWS_IMPERSONATE') === 'true' && ssoEnabled) {
+      service.ImpersonatedUserId = new ImpersonatedUserId(
+        ConnectingIdType.SmtpAddress,
+        email,
+      );
+    }
+
+    return service;
+  }
+
+  private async verifyExchangeCredentialsBasic(email: string, password: string): Promise<void> {
+    const service = await this.createEwsService(email, password);
+    try {
+      await Folder.Bind(service, WellKnownFolderName.Inbox);
+      this.logger.log(`EWS basic authentication successful for ${email}`);
+    } catch (error) {
+      this.logger.warn(`EWS basic authentication failed for ${email}: ${error.message}`);
+      throw new UnauthorizedException('Invalid Exchange credentials');
+    }
+  }
+
+  private async ensureSystemFolders(service: ExchangeService): Promise<void> {
+    const targetFolders = [
+      WellKnownFolderName.Inbox,
+      WellKnownFolderName.SentItems,
+      WellKnownFolderName.Drafts,
+      WellKnownFolderName.DeletedItems,
+      WellKnownFolderName.JunkEmail,
+    ];
+
+    const view = new FolderView(200);
+    view.PropertySet = new PropertySet(BasePropertySet.IdOnly, FolderSchema.DisplayName);
+
+    const result = await service.FindFolders(
+      WellKnownFolderName.MsgFolderRoot,
+      view,
+    );
+
+    const existing = new Set(
+      result.Folders.map((folder) => folder.DisplayName?.toLowerCase() || ''),
+    );
+
+    for (const name of targetFolders) {
+      if (!existing.has(String(name).toLowerCase())) {
+        // Attempt to bind to ensure system folders exist; Exchange normally creates them.
+        await Folder.Bind(service, name);
+      }
+    }
   }
 
   /**

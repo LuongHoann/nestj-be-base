@@ -4,6 +4,7 @@ import { RequestContextInterceptor } from './interceptors/request-context.interc
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { DragonflyService } from './cache/dragonfly.service';
 import { CacheModule } from './cache/cache.module';
+import { PermissionService } from './permissions/permission.service';
 
 @Global()
 @Module({
@@ -14,7 +15,8 @@ import { CacheModule } from './cache/cache.module';
       provide: APP_INTERCEPTOR,
       useClass: RequestContextInterceptor,
     },
+    PermissionService,
   ],
-  exports: [RequestContext, CacheModule],
+  exports: [RequestContext, CacheModule, PermissionService],
 })
 export class CommonModule {}

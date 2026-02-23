@@ -10,11 +10,13 @@ import { User } from '../database/entities/user.entity';
 import { CommonModule } from '../common/common.module';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { AuditLogModule } from '../audit/audit.module';
+import { ExchangeModule } from '../exchange/exchange.module';
 
 @Module({
   imports: [
     CommonModule,
     AuditLogModule,
+    ExchangeModule,
     PassportModule.register({defaultStrategy: 'jwt'}),
     JwtModule.registerAsync({
       inject: [ConfigService],

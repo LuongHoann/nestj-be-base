@@ -2,7 +2,7 @@ import { Injectable, Scope } from '@nestjs/common';
 
 export interface UserContext {
   id: string | number;
-  role: string;
+  role?: string;
   email?: string;
   permissions?: any[];
 }

@@ -1,5 +1,12 @@
-import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
+import {
+  Entity,
+  PrimaryKey,
+  Property,
+  ManyToMany,
+  Collection,
+} from '@mikro-orm/core';
 import { ulid } from 'ulid';
+import { Role } from './role.entity';
 
 @Entity({ tableName: 'users' })
 export class User {
@@ -8,6 +15,12 @@ export class User {
 
   @Property({ unique: true })
   email!: string;
+
+  @Property({ nullable: true })
+  name?: string;
+
+  @Property({ nullable: true, hidden: true })
+  password?: string;
 
   @Property({ default: true })
   isActive: boolean = true;
@@ -20,4 +33,10 @@ export class User {
 
   @Property({ onUpdate: () => new Date() })
   updatedAt = new Date();
+
+  @ManyToMany(() => Role, (role) => role.users, {
+    owner: true,
+    pivotTable: 'user_roles',
+  })
+  roles = new Collection<Role>(this);
 }

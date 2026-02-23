@@ -1,128 +1,156 @@
 import { IsString, IsEmail, IsNotEmpty, IsOptional, IsArray } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
 
 export class ExchangeLoginDto {
+  @ApiProperty({ example: 'user@example.com' })
   @IsString()
   @IsNotEmpty()
   email!: string;
 
+  @ApiProperty({ example: 'P@ssw0rd123' })
   @IsString()
   @IsNotEmpty()
   password!: string;
 }
 
 export class AttachmentDto {
-    @IsString()
-    @IsNotEmpty()
-    filename!: string;
+  @ApiProperty({ example: 'report.pdf' })
+  @IsString()
+  @IsNotEmpty()
+  filename!: string;
 
-    @IsString()
-    @IsOptional()
-    contentType?: string;
+  @ApiProperty({ example: 'application/pdf', required: false })
+  @IsString()
+  @IsOptional()
+  contentType?: string;
 
-    @IsString()
-    @IsNotEmpty()
-    content!: string; // Base64 encoded content
+  @ApiProperty({ example: 'BASE64_ENCODED_CONTENT' })
+  @IsString()
+  @IsNotEmpty()
+  content!: string; // Base64 encoded content
 }
 
 export class SendMailDto {
-    @IsArray()
-    @IsEmail({}, { 
-        each: true,
-        message: 'Thông tin người nhận không hợp lệ!'
-    })
-    to!: string[];
+  @ApiProperty({ example: ['to@example.com'] })
+  @IsArray()
+  @IsEmail({}, {
+    each: true,
+    message: 'Thong tin nguoi nhan khong hop le!'
+  })
+  to!: string[];
 
-    @IsArray()
-    @IsOptional()
-    @IsEmail({}, { each: true, message: 'Thông tin CC không hợp lệ!' })
-    cc?: string[];
+  @ApiProperty({ example: ['cc@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsEmail({}, { each: true, message: 'Thong tin CC khong hop le!' })
+  cc?: string[];
 
-    @IsArray()
-    @IsOptional()
-    @IsEmail({}, { each: true, message: 'Thông tin BCC không hợp lệ!' })
-    bcc?: string[];
+  @ApiProperty({ example: ['bcc@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsEmail({}, { each: true, message: 'Thong tin BCC khong hop le!' })
+  bcc?: string[];
 
-    @IsArray()
-    @IsOptional()
-    @IsEmail({}, { each: true, message: 'Thông tin Reply-To không hợp lệ!' })
-    replyTo?: string[];
+  @ApiProperty({ example: ['reply@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsEmail({}, { each: true, message: 'Thong tin Reply-To khong hop le!' })
+  replyTo?: string[];
 
-    @IsString()
-    @IsNotEmpty({ message: 'Tiêu đề email không được để trống!' })
-    subject!: string;
+  @ApiProperty({ example: 'Tieu de email' })
+  @IsString()
+  @IsNotEmpty({ message: 'Tieu de email khong duoc de trong!' })
+  subject!: string;
 
-    @IsString()
-    @IsOptional()
-    text?: string; // Plain text version
+  @ApiProperty({ example: 'Noi dung text', required: false })
+  @IsString()
+  @IsOptional()
+  text?: string; // Plain text version
 
-    @IsString()
-    @IsOptional()
-    html?: string; // HTML version
+  @ApiProperty({ example: '<p>Noi dung HTML</p>', required: false })
+  @IsString()
+  @IsOptional()
+  html?: string; // HTML version
 
-    @IsArray()
-    @IsOptional()
-    attachments?: AttachmentDto[];
+  @ApiProperty({ type: [AttachmentDto], required: false })
+  @IsArray()
+  @IsOptional()
+  attachments?: AttachmentDto[];
 }
 
 export class MoveMailDto {
-    @IsString()
-    @IsNotEmpty()
-    messageId!: string;
+  @ApiProperty({ example: 'SU5CT1g6MTIzNDU=' })
+  @IsString()
+  @IsNotEmpty()
+  messageId!: string;
 
-    @IsString()
-    @IsNotEmpty()
-    targetFolder!: string;
+  @ApiProperty({ example: 'trash' })
+  @IsString()
+  @IsNotEmpty()
+  targetFolder!: string;
 }
 
 export class MarkReadDto {
-    @IsArray()
-    @IsOptional()
-    @IsString({ each: true })
-    ids?: string[];
+  @ApiProperty({ example: ['SU5CT1g6MTIzNDU='], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsString({ each: true })
+  ids?: string[];
 
-    @IsOptional()
-    all?: boolean;
+  @ApiProperty({ example: true, required: false })
+  @IsOptional()
+  all?: boolean;
 
-    @IsNotEmpty()
-    isRead!: boolean;
+  @ApiProperty({ example: true })
+  @IsNotEmpty()
+  isRead!: boolean;
 
-    @IsString()
-    @IsOptional()
-    folder?: string;
+  @ApiProperty({ example: 'inbox', required: false })
+  @IsString()
+  @IsOptional()
+  folder?: string;
 }
 
 export class MoveBatchDto {
-    @IsArray()
-    @IsOptional()
-    @IsString({ each: true })
-    ids?: string[];
+  @ApiProperty({ example: ['SU5CT1g6MTIzNDU='], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsString({ each: true })
+  ids?: string[];
 
-    @IsOptional()
-    all?: boolean;
+  @ApiProperty({ example: true, required: false })
+  @IsOptional()
+  all?: boolean;
 
-    @IsString()
-    @IsOptional()
-    sourceFolder?: string;
+  @ApiProperty({ example: 'spam', required: false })
+  @IsString()
+  @IsOptional()
+  sourceFolder?: string;
 
-    @IsString()
-    @IsNotEmpty()
-    targetFolder!: string;
+  @ApiProperty({ example: 'trash' })
+  @IsString()
+  @IsNotEmpty()
+  targetFolder!: string;
 }
 
 export class PermanentDeleteMailDto {
-    @IsString()
-    @IsOptional()
-    messageId?: string;
+  @ApiProperty({ example: 'SU5CT1g6MTIzNDU=', required: false })
+  @IsString()
+  @IsOptional()
+  messageId?: string;
 
-    @IsArray()
-    @IsOptional()
-    @IsString({ each: true })
-    ids?: string[];
+  @ApiProperty({ example: ['SU5CT1g6MTIzNDU='], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsString({ each: true })
+  ids?: string[];
 
-    @IsOptional()
-    all?: boolean;
+  @ApiProperty({ example: true, required: false })
+  @IsOptional()
+  all?: boolean;
 
-    @IsString()
-    @IsOptional()
-    sourceFolder?: string;
+  @ApiProperty({ example: 'trash', required: false })
+  @IsString()
+  @IsOptional()
+  sourceFolder?: string;
 }

@@ -1,6 +1,6 @@
 import { BadRequestException, Inject, Injectable, Logger, Scope } from '@nestjs/common';
 import { REQUEST } from '@nestjs/core';
-import { ImapMailProvider } from './imap-mail.provider';
+import { EwsMailProvider } from './ews-mail.provider';
 import { MailMessage } from '../interfaces/mail-provider.interface';
 import {
   SendMailDto,
@@ -22,7 +22,7 @@ export class MailService {
   private readonly logger = new Logger(MailService.name);
 
   constructor(
-    private readonly provider: ImapMailProvider,
+    private readonly provider: EwsMailProvider,
     private readonly dragonfly: DragonflyService,
     private readonly authService: ExchangeAuthService,
     @Inject(REQUEST) private readonly request: any,

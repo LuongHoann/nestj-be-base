@@ -17,7 +17,9 @@ import type { Response } from 'express';
 import { FilesService } from './files.service';
 import { CommitFileDto } from './dto/commit-file.dto';
 import { TempUploadResponseDto } from './dto/temp-upload-response.dto';
+import { ApiBody, ApiConsumes, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 
+@ApiTags('Files')
 @Controller('files')
 export class FilesController {
   constructor(private readonly filesService: FilesService) {}
@@ -28,6 +30,18 @@ export class FilesController {
    */
   @Post('upload')
   @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Upload file tạm' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary' },
+      },
+      required: ['file'],
+    },
+  })
+  @ApiResponse({ status: 201, type: TempUploadResponseDto })
   async uploadTemp(
     @UploadedFile() file: Express.Multer.File,
   ): Promise<TempUploadResponseDto> {
@@ -43,6 +57,7 @@ export class FilesController {
    * Stream temporary file for preview
    */
   @Get('temp/:id/preview')
+  @ApiOperation({ summary: 'Preview file tạm' })
   async previewTemp(@Param('id') id: string, @Res() res: Response) {
     const fileMetadata = await this.filesService.getMetadata(id);
     const stream = await this.filesService.getTempFileStream(id);
@@ -65,6 +80,8 @@ export class FilesController {
    * Commit file from temp to permanent storage
    */
   @Post('commit')
+  @ApiOperation({ summary: 'Commit file từ temp sang permanent' })
+  @ApiResponse({ status: 200, description: 'Commit thành công' })
   async commitFile(@Body() dto: CommitFileDto) {
     return this.filesService.commitFile(dto.id, dto.extraMetadata, dto.originalName);
   }
@@ -74,6 +91,7 @@ export class FilesController {
    * Get file metadata only (no streaming)
    */
   @Get(':id')
+  @ApiOperation({ summary: 'Lấy metadata file' })
   async getFileMetadata(@Param('id') id: string) {
     const file = await this.filesService.getMetadata(id);
 
@@ -85,6 +103,7 @@ export class FilesController {
   }
 }
 
+@ApiTags('Assets')
 @Controller('assets')
 export class AssetsController {
   constructor(private readonly filesService: FilesService) {}
@@ -94,6 +113,7 @@ export class AssetsController {
    * Stream permanent file with Range support
    */
   @Get(':id')
+  @ApiOperation({ summary: 'Stream file permanent' })
   async streamAsset(
     @Param('id') id: string,
     @Query('download') download: string,

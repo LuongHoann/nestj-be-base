@@ -4,7 +4,7 @@ import { ExchangeAuthService } from './services/exchange-auth.service';
 import { CacheModule } from '../common/cache/cache.module';
 import { CommonModule } from '../common/common.module';
 import { MailService } from './services/mail.service';
-import { ImapMailProvider } from './services/imap-mail.provider';
+import { EwsMailProvider } from './services/ews-mail.provider';
 import { SmtpSenderService } from './services/smtp-sender.service';
 
 @Module({
@@ -13,9 +13,9 @@ import { SmtpSenderService } from './services/smtp-sender.service';
   providers: [
     ExchangeAuthService,
     SmtpSenderService,
-    ImapMailProvider,
+    EwsMailProvider,
     MailService,
   ],
-  exports: [MailService],
+  exports: [MailService, ExchangeAuthService],
 })
 export class ExchangeModule {}
