@@ -155,7 +155,7 @@ export class ExchangeController {
   @UseGuards(ExchangeAuthGuard)
   @Get('mail/:id')
   @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Chi tiet mail' })
+  @ApiOperation({ summary: 'Chi tiết mail' })
   async check(@Param('id') id: string) {
     return this.mailService.getMessage(id);
   }
@@ -163,7 +163,7 @@ export class ExchangeController {
   @UseGuards(ExchangeAuthGuard)
   @Post('mail/send')
   @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Gui mail' })
+  @ApiOperation({ summary: 'Gửi mail' })
   @ApiBody({ type: SendMailDto })
   async send(@Body() dto: SendMailDto) {
     return this.mailService.sendMessage(dto);

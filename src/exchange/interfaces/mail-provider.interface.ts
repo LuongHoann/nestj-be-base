@@ -11,6 +11,7 @@ export interface MailMessage {
   isRead: boolean;
   preview: string;
   importance?: string;
+  isStarred?: boolean;
 }
 
 export interface MailFolder {

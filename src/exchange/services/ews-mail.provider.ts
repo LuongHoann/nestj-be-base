@@ -10,7 +10,6 @@ import { ConfigService } from '@nestjs/config';
 import {
   ExchangeService,
   ExchangeVersion,
-  OAuthCredentials,
   WebCredentials,
   Uri,
   WellKnownFolderName,
@@ -23,28 +22,26 @@ import {
   PropertySet,
   BasePropertySet,
   EmailMessage,
+  EmailAddress,
   MessageBody,
   BodyType,
   FolderSchema,
   EmailMessageSchema,
   ItemSchema,
-  ItemTraversal,
   ItemId,
-  ImpersonatedUserId,
-  ConnectingIdType,
   DeleteMode,
-  SendInvitationsMode,
   SendCancellationsMode,
   AffectedTaskOccurrence,
   ConflictResolutionMode,
   ServiceResponseCollection,
   ServiceError,
-  Flag,
-  FlaggedForAction,
+  ExtendedPropertyDefinition,
+  MapiPropertyType,
 } from 'ews-javascript-api';
 import { XhrApi } from '@ewsjs/xhr';
 import { DragonflyService } from '../../common/cache/dragonfly.service';
 import { ExchangeAuthService } from './exchange-auth.service';
+import { SmtpSenderService } from './smtp-sender.service';
 import {
   MAIL_FOLDERS,
   resolveFolderId,
@@ -58,204 +55,351 @@ import {
 
 (ExchangeService as any).XHRApi = new XhrApi();
 
+// ─── MAPI Extended Properties cho Flag/Star ───────────────────────────────────
+// Đây là cách chuẩn và đáng tin nhất với Exchange 2019 on-premises.
+// EmailMessageSchema.Flag thường không đồng bộ đúng qua EWS.
+
+/** PR_FLAG_STATUS (0x1090) — 0=NoFlag, 1=Flagged(Starred), 2=Complete */
+const PR_FLAG_STATUS = new ExtendedPropertyDefinition(0x1090, MapiPropertyType.Integer);
+/** PR_TODO_TITLE (0x0E2B) — thường là "Follow up" khi flag */
+const PR_TODO_TITLE  = new ExtendedPropertyDefinition(0x0E2B, MapiPropertyType.String);
+/** PR_FOLLOWUP_ICON (0x1095) — màu flag, 6 = red (default Outlook star) */
+const PR_FOLLOWUP_ICON = new ExtendedPropertyDefinition(0x1095, MapiPropertyType.Integer);
+/** PR_SENDER_SMTP_ADDRESS (0x5D01) — SMTP thực của sender, không bị X500 */
+const PR_SENDER_SMTP_ADDRESS = new ExtendedPropertyDefinition(0x5D01, MapiPropertyType.String);
+/** PR_SENT_REPRESENTING_SMTP_ADDRESS (0x5D02) — SMTP của người được đại diện gửi */
+const PR_SENT_REPRESENTING_SMTP_ADDRESS = new ExtendedPropertyDefinition(0x5D02, MapiPropertyType.String);
+
+enum FlagStatus {
+  NoFlag   = 0,
+  Flagged  = 1,
+  Complete = 2,
+}
+
+// ─── PropertySets tái sử dụng ─────────────────────────────────────────────────
+
+/** Dùng cho list — không load body để tối ưu tốc độ */
+const LIST_PROPS = new PropertySet(
+  BasePropertySet.IdOnly,
+  ItemSchema.Subject,
+  ItemSchema.DateTimeReceived,
+  EmailMessageSchema.From,
+  EmailMessageSchema.IsRead,
+  ItemSchema.HasAttachments,
+  ItemSchema.Categories,
+  PR_FLAG_STATUS,
+  PR_SENDER_SMTP_ADDRESS,
+  PR_SENT_REPRESENTING_SMTP_ADDRESS,
+);
+
+/** Dùng khi load chi tiết message */
+const DETAIL_PROPS = new PropertySet(
+  BasePropertySet.FirstClassProperties,
+  ItemSchema.Categories,
+  PR_FLAG_STATUS,
+  PR_TODO_TITLE,
+  PR_FOLLOWUP_ICON,
+  PR_SENDER_SMTP_ADDRESS,
+  PR_SENT_REPRESENTING_SMTP_ADDRESS,
+);
+
+/** Dùng khi chỉ cần set/unset flag */
+const FLAG_ONLY_PROPS = new PropertySet(
+  BasePropertySet.IdOnly,
+  ItemSchema.Categories,
+  PR_FLAG_STATUS,
+  PR_TODO_TITLE,
+  PR_FOLLOWUP_ICON,
+);
+
 @Injectable({ scope: Scope.REQUEST })
 export class EwsMailProvider implements IMailProvider {
   private readonly logger = new Logger(EwsMailProvider.name);
   private service: ExchangeService | null = null;
   private email: string | null = null;
+  private credentials: { email: string; password: string } | null = null;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly cache: DragonflyService,
     private readonly authService: ExchangeAuthService,
+    private readonly smtpSenderService: SmtpSenderService,
     @Inject(REQUEST) private readonly request: any,
   ) {}
 
+
+  private parseEmailAddress(value: string): { name: string; email: string } {
+    const trimmed = value?.trim?.() ?? '';
+    if (!trimmed) return { name: '', email: '' };
+
+    const angleMatch = trimmed.match(/^(.+?)<([^>]+)>$/);
+    if (angleMatch) {
+      return {
+        name: angleMatch[1].replace(/\"/g, '').trim(),
+        email: angleMatch[2].trim(),
+      };
+    }
+
+    const emailMatch = trimmed.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+    if (emailMatch) {
+      return { name: '', email: emailMatch[0] };
+    }
+
+    return { name: '', email: '' };
+  }
+
+  private toEmailAddress(value: string): EmailAddress | null {
+    const { name, email } = this.parseEmailAddress(value);
+    if (!email) return null;
+    const addr = name ? new EmailAddress(name, email) : new EmailAddress(email);
+    addr.RoutingType = 'SMTP';
+    return addr;
+  }
+
+  // ─── Config ───────────────────────────────────────────────────────────────
+
   private get ewsConfig() {
     return {
-      url: this.configService.get<string>('EWS_URL') || '',
-      tokenUrl: this.configService.get<string>('EWS_TOKEN_URL') || '',
-      clientId: this.configService.get<string>('EWS_CLIENT_ID') || '',
-      clientSecret: this.configService.get<string>('EWS_CLIENT_SECRET') || '',
-      scope: this.configService.get<string>('EWS_SCOPE') || '',
-      resource: this.configService.get<string>('EWS_RESOURCE') || '',
-      version: this.configService.get<string>('EWS_VERSION') || 'Exchange2016',
-      impersonate: this.configService.get<string>('EWS_IMPERSONATE') === 'true',
+      url:     this.configService.get<string>('EWS_URL') ?? '',
+      version: this.configService.get<string>('EWS_VERSION') ?? 'Exchange2016',
       tlsRejectUnauthorized:
         this.configService.get<string>('EWS_TLS_REJECT_UNAUTHORIZED') !== 'false',
     };
   }
 
-  private async getAccessToken(): Promise<string> {
-    const ssoEnabled = this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
-    if (!ssoEnabled) {
-      throw new UnauthorizedException('SSO is disabled');
-    }
-    const cacheKey = 'ews:token';
-    const cached = await this.cache.get<{
-      token: string;
-      expiresAt: number;
-    }>(cacheKey);
-
-    const now = Date.now();
-    if (cached && cached.expiresAt > now + 30_000) {
-      return cached.token;
-    }
-
-    const cfg = this.ewsConfig;
-    if (!cfg.tokenUrl || !cfg.clientId || !cfg.clientSecret) {
-      throw new Error('EWS OAuth2 config is missing');
-    }
-
-    const body = new URLSearchParams();
-    body.set('client_id', cfg.clientId);
-    body.set('client_secret', cfg.clientSecret);
-    body.set('grant_type', 'client_credentials');
-
-    if (cfg.scope) {
-      body.set('scope', cfg.scope);
-    } else if (cfg.resource) {
-      body.set('resource', cfg.resource);
-    }
-
-    const response = await fetch(cfg.tokenUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Failed to fetch EWS token: ${text}`);
-    }
-
-    const payload = (await response.json()) as {
-      access_token: string;
-      expires_in?: number;
-    };
-
-    const expiresIn = (payload.expires_in || 3600) * 1000;
-    const expiresAt = now + expiresIn;
-    await this.cache.set(cacheKey, { token: payload.access_token, expiresAt }, 3600);
-
-    return payload.access_token;
-  }
-
-  private resolveFolderName(folderId: string): WellKnownFolderName {
-    const resolved = resolveFolderId(folderId, folderId);
-    const normalized = resolved.toLowerCase();
-
-    if (normalized === 'inbox') return WellKnownFolderName.Inbox;
-    if (normalized === 'sent items') return WellKnownFolderName.SentItems;
-    if (normalized === 'drafts') return WellKnownFolderName.Drafts;
-    if (normalized === 'spam') return WellKnownFolderName.JunkEmail;
-    if (normalized === 'trash') return WellKnownFolderName.DeletedItems;
-
-    return WellKnownFolderName.Inbox;
-  }
-
-  private encodeId(folder: string, itemId: string): string {
-    return Buffer.from(`${folder}:${itemId}`).toString('base64');
-  }
-
-  private decodeId(id: string): { folder: string; itemId: string } {
-    const decoded = Buffer.from(id, 'base64').toString('utf8');
-    const [folder, itemId] = decoded.split(':');
-    return { folder, itemId };
-  }
-
-  private toJsDate(value: any): Date {
-    if (!value) return new Date();
-    if (value instanceof Date) return value;
-    if (typeof value.ToDate === 'function') return value.ToDate();
-    if (typeof value.ToISOString === 'function') return new Date(value.ToISOString());
-    return new Date(value);
-  }
-
-  private getFrom(item: any): { name: string; email: string } {
-    const from = item?.From;
-    if (!from) {
-      return { name: '', email: '' };
-    }
-    return { name: from.Name || '', email: from.Address || '' };
-  }
-
-  private getRecipients(collection: any): { name: string; email: string }[] {
-    const items = collection?.items || collection?.Items || [];
-    return items.map((addr: any) => ({
-      name: addr.Name || '',
-      email: addr.Address || '',
-    }));
-  }
-
-  private toFolderId(folder: WellKnownFolderName): FolderId {
-    return new FolderId(folder);
-  }
+  // ─── Connect / Disconnect ─────────────────────────────────────────────────
 
   async connect(): Promise<void> {
     const sessionToken = this.request.cookies?.['exchange_session'];
-    if (!sessionToken) {
-      throw new UnauthorizedException('No session token provided');
-    }
+    if (!sessionToken) throw new UnauthorizedException('No session token provided');
 
     const creds = await this.authService.getCredentials(sessionToken);
-    if (!creds) {
-      throw new UnauthorizedException('Session expired or invalid');
-    }
+    if (!creds)  throw new UnauthorizedException('Session expired or invalid');
+    if (!creds.password) throw new UnauthorizedException('Password not found in credentials');
 
     this.email = creds.email;
+    this.credentials = { email: creds.email, password: creds.password };
 
     const cfg = this.ewsConfig;
-    if (!cfg.url) {
-      throw new Error('EWS_URL is not configured');
-    }
+    if (!cfg.url) throw new Error('EWS_URL is not configured');
+
     if (!cfg.tlsRejectUnauthorized) {
       process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
     }
 
-    const service = new ExchangeService(
-      ExchangeVersion[cfg.version as keyof typeof ExchangeVersion] ||
-        ExchangeVersion.Exchange2016,
-    );
-    const ssoEnabled = this.configService.get<boolean>('ews.ssoEnabled');
-    if (ssoEnabled) {
-      const token = await this.getAccessToken();
-      service.Credentials = new OAuthCredentials(token);
-    } else {
-      service.Credentials = new WebCredentials(creds.email, creds.password);
-    }
-    service.Url = new Uri(cfg.url);
+    // Exchange 2019 on-premises tương thích với ExchangeVersion.Exchange2016
+    const version =
+      ExchangeVersion[cfg.version as keyof typeof ExchangeVersion] ??
+      ExchangeVersion.Exchange2016;
 
-    if (cfg.impersonate && this.email && ssoEnabled) {
-      service.ImpersonatedUserId = new ImpersonatedUserId(
-        ConnectingIdType.SmtpAddress,
-        this.email,
-      );
-    }
+    const service       = new ExchangeService(version);
+    service.Url         = new Uri(cfg.url);
+    service.Credentials = new WebCredentials(creds.email, creds.password);
 
     this.service = service;
   }
 
   async disconnect(): Promise<void> {
     this.service = null;
+    this.credentials = null;
   }
+
+  // ─── Folder helpers ───────────────────────────────────────────────────────
+
+  private resolveFolderName(folderId: string): WellKnownFolderName {
+    const resolved = resolveFolderId(folderId, folderId).toLowerCase();
+    switch (resolved) {
+      case 'inbox':
+        return WellKnownFolderName.Inbox;
+      case 'sent items':
+      case 'sent':
+        return WellKnownFolderName.SentItems;
+      case 'drafts':
+        return WellKnownFolderName.Drafts;
+      case 'spam':
+      case 'junkemail':
+      case 'junk':
+        return WellKnownFolderName.JunkEmail;
+      case 'trash':
+      case 'deleteditems':
+      case 'deleted':
+        return WellKnownFolderName.DeletedItems;
+      default:
+        return WellKnownFolderName.Inbox;
+    }
+  }
+
+  private toFolderId(folder: WellKnownFolderName): FolderId {
+    return new FolderId(folder);
+  }
+
+  // ─── ID helpers ───────────────────────────────────────────────────────────
+
+  private encodeId(folder: string, itemId: string): string {
+    return Buffer.from(`${folder}:${itemId}`).toString('base64');
+  }
+
+  private decodeId(id: string): { folder: string; itemId: string } {
+    const decoded    = Buffer.from(id, 'base64').toString('utf8');
+    const colonIndex = decoded.indexOf(':');
+    return {
+      folder: decoded.slice(0, colonIndex),
+      // Dùng indexOf tránh split sai nếu EWS UniqueId chứa ':'
+      itemId: decoded.slice(colonIndex + 1),
+    };
+  }
+
+  // ─── Type helpers ─────────────────────────────────────────────────────────
+
+  private toJsDate(value: any): Date {
+    if (!value)                               return new Date();
+    if (value instanceof Date)                return value;
+    if (typeof value.ToDate === 'function')   return value.ToDate();
+    if (typeof value.ToISOString === 'function') return new Date(value.ToISOString());
+    return new Date(value);
+  }
+
+  /**
+   * Kiểm tra xem address có phải X500/X400 DN không.
+   * Exchange on-premises lưu internal senders dưới dạng:
+   *   /O=ORGNAME/OU=GROUP/CN=RECIPIENTS/CN=hash-USERNAME
+   */
+  private isX500Address(address: string): boolean {
+    const upper = address.toUpperCase();
+    return (
+      upper.startsWith('/O=') ||
+      upper.startsWith('/OU=') ||
+      upper.startsWith('/CN=') ||
+      upper.startsWith('C=') ||
+      upper.startsWith('G=')
+    );
+  }
+
+  /**
+   * Lấy SMTP thực từ MAPI extended properties PR_SENDER_SMTP_ADDRESS (0x5D01)
+   * hoặc PR_SENT_REPRESENTING_SMTP_ADDRESS (0x5D02).
+   *
+   * Đây là cách đáng tin nhất để lấy email thật với Sent Items,
+   * vì EmailMessage.From.Address thường là X500 DN với Exchange on-premises.
+   */
+  private getSenderSmtpFromExtProps(item: any): string {
+    const extProps: any[] = item?.ExtendedProperties?.items ?? item?.ExtendedProperties ?? [];
+    for (const ep of extProps) {
+      const tag = ep?.PropertyDefinition?.Tag ?? ep?.Tag;
+      // 0x5D01 = PR_SENDER_SMTP_ADDRESS, 0x5D02 = PR_SENT_REPRESENTING_SMTP_ADDRESS
+      if ((tag === 0x5D01 || tag === 0x5D02) && ep.Value) {
+        return String(ep.Value);
+      }
+    }
+    return '';
+  }
+
+  private getFrom(item: any): { name: string; email: string } {
+    const raw = item?.From ?? item?.Sender;
+    const name = raw?.Name ?? '';
+    const rawAddress = raw?.Address ?? '';
+
+    // DEBUG — xóa sau khi xác định đúng field
+    this.logger.debug(`[getFrom] raw.Name=${name} raw.Address=${rawAddress}`);
+    this.logger.debug(`[getFrom] ExtendedProperties=${JSON.stringify(
+      item?.ExtendedProperties?.items ?? item?.ExtendedProperties ?? []
+    )}`);
+    this.logger.debug(`[getFrom] item keys=${Object.keys(item || {}).join(',')}`);
+
+    // Nếu address là X500 DN → thử lấy SMTP thực từ MAPI extended properties
+    if (!rawAddress || this.isX500Address(rawAddress)) {
+      const smtpFromMapi = this.getSenderSmtpFromExtProps(item);
+      this.logger.debug(`[getFrom] X500 detected, smtpFromMapi=${smtpFromMapi}`);
+      // Fallback: nếu MAPI cũng không có, trả về X500 gốc để không mất data
+      return { name, email: smtpFromMapi || rawAddress };
+    }
+
+    return { name, email: rawAddress };
+  }
+
+  private getRecipients(collection: any): { name: string; email: string }[] {
+    const items: any[] = collection?.items ?? collection?.Items ?? [];
+    return items.map((a: any) => {
+      const addr = a.Address ?? '';
+      return {
+        name:  a.Name ?? '',
+        // Recipients thường dùng SMTP, nhưng vẫn check X500 phòng trường hợp
+        email: this.isX500Address(addr) ? '' : addr,
+      };
+    });
+  }
+
+  // ─── Starred helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Đọc trạng thái starred từ MAPI PR_FLAG_STATUS.
+   * Fallback sang EmailMessageSchema.Flag rồi Categories.
+   *
+   * Trên Exchange 2019 on-premises, PR_FLAG_STATUS là nguồn đáng tin nhất.
+   * EmailMessageSchema.Flag đôi khi không serialize đúng qua ews-javascript-api.
+   */
+  private isItemStarred(item: any): boolean {
+    try {
+      // Ưu tiên: MAPI extended property PR_FLAG_STATUS
+      const extProps: any[] =
+        item.ExtendedProperties?.items ?? item.ExtendedProperties ?? [];
+
+      for (const ep of extProps) {
+        const tag = ep?.PropertyDefinition?.Tag ?? ep?.Tag;
+        if (tag === 0x1090) {
+          return Number(ep.Value) === FlagStatus.Flagged;
+        }
+      }
+
+      // Fallback 1: EmailMessageSchema.Flag object
+      const flagStatus = item.Flag?.FlagStatus ?? item.FlagStatus;
+      if (flagStatus !== undefined && flagStatus !== null) {
+        return Number(flagStatus) === FlagStatus.Flagged;
+      }
+
+      // Fallback 2: Categories chứa "Starred" (Outlook on mobile thường dùng cách này)
+      const cats: any[] = item.Categories?.items ?? item.Categories ?? [];
+      return cats.some((c) => String(c).toLowerCase() === 'starred');
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Set/unset flag trên message qua MAPI extended properties.
+   * Đây là cách chuẩn cho Exchange 2019 on-premises — đồng bộ với Outlook client.
+   */
+  private async setFlag(message: EmailMessage, starred: boolean): Promise<void> {
+    if (starred) {
+      message.SetExtendedProperty(PR_FLAG_STATUS,   FlagStatus.Flagged);
+      message.SetExtendedProperty(PR_TODO_TITLE,    'Follow up');
+      message.SetExtendedProperty(PR_FOLLOWUP_ICON, 6); // Red flag (default Outlook star)
+    } else {
+      message.SetExtendedProperty(PR_FLAG_STATUS,   FlagStatus.NoFlag);
+      message.SetExtendedProperty(PR_TODO_TITLE,    '');
+      message.SetExtendedProperty(PR_FOLLOWUP_ICON, 0);
+    }
+    await message.Update(ConflictResolutionMode.AlwaysOverwrite);
+  }
+
+  // ─── Folders ──────────────────────────────────────────────────────────────
 
   async getFolders(): Promise<MailFolder[]> {
     if (!this.service) throw new Error('EWS service not connected');
 
     const folders: MailFolder[] = [];
-
     for (const folder of MAIL_FOLDERS) {
       if (folder.id === 'Starred') {
         folders.push({ id: folder.id, name: folder.name });
         continue;
       }
-
-      const id = this.resolveFolderName(folder.id);
-      await Folder.Bind(this.service, id);
-      folders.push({ id: folder.id, name: folder.name });
+      try {
+        await Folder.Bind(this.service, new FolderId(this.resolveFolderName(folder.id)));
+        folders.push({ id: folder.id, name: folder.name });
+      } catch (err) {
+        this.logger.warn(`Cannot bind folder ${folder.id}: ${err.message}`);
+      }
     }
-
     return folders;
   }
 
@@ -263,78 +407,70 @@ export class EwsMailProvider implements IMailProvider {
     if (!this.service) throw new Error('EWS service not connected');
 
     const counts: Record<string, { total: number; unread: number }> = {};
+    const countProps = new PropertySet(
+      BasePropertySet.IdOnly,
+      FolderSchema.TotalCount,
+      FolderSchema.UnreadCount,
+    );
 
     for (const folder of MAIL_FOLDERS) {
       if (folder.id === 'Starred') {
         counts[folder.id] = await this.getStarredCounts();
         continue;
       }
-
-      const id = this.resolveFolderName(folder.id);
-      const bound = await Folder.Bind(this.service, id, new PropertySet(
-        BasePropertySet.IdOnly,
-        FolderSchema.TotalCount,
-        FolderSchema.UnreadCount,
-      ));
-
-      counts[folder.id] = {
-        total: bound.TotalCount || 0,
-        unread: bound.UnreadCount || 0,
-      };
+      try {
+        const bound = await Folder.Bind(
+          this.service,
+          new FolderId(this.resolveFolderName(folder.id)),
+          countProps,
+        );
+        counts[folder.id] = {
+          total:  bound.TotalCount  ?? 0,
+          unread: bound.UnreadCount ?? 0,
+        };
+      } catch (err) {
+        this.logger.warn(`getFolderCounts ${folder.id}: ${err.message}`);
+        counts[folder.id] = { total: 0, unread: 0 };
+      }
     }
-
     return counts;
   }
 
   private async getStarredCounts(): Promise<{ total: number; unread: number }> {
     if (!this.service) throw new Error('EWS service not connected');
-
     try {
-      const view = new ItemView(1, 0);
-      view.Traversal = ItemTraversal.Shallow;
-      const flagProp =
-        (EmailMessageSchema as any).FlagStatus ||
-        (EmailMessageSchema as any).Flag ||
-        (ItemSchema as any).FlagStatus;
+      const countView     = new ItemView(1, 0);
+      // Dùng MAPI filter để tìm đúng flagged items
+      const starredFilter = new SearchFilter.IsEqualTo(PR_FLAG_STATUS, FlagStatus.Flagged);
 
-      if (!flagProp) {
-        return { total: 0, unread: 0 };
-      }
-
-      const filter = new SearchFilter.IsEqualTo(flagProp, 2);
-
-      const result = await this.service.FindItems(
+      const totalResult = await this.service.FindItems(
         WellKnownFolderName.Inbox,
-        filter,
-        view,
+        starredFilter,
+        countView,
       );
 
-      const total = result.TotalCount || 0;
-      if (!total) return { total: 0, unread: 0 };
-
-      const unreadFilter = new SearchFilter.SearchFilterCollection(
-        LogicalOperator.And,
-        [
-          filter,
-          new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, false),
-        ],
-      );
+      if (!totalResult.TotalCount) return { total: 0, unread: 0 };
 
       const unreadResult = await this.service.FindItems(
         WellKnownFolderName.Inbox,
-        unreadFilter,
-        view,
+        new SearchFilter.SearchFilterCollection(LogicalOperator.And, [
+          starredFilter,
+          new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, false),
+        ]),
+        countView,
       );
 
       return {
-        total,
-        unread: unreadResult.TotalCount || 0,
+        total:  totalResult.TotalCount  ?? 0,
+        unread: unreadResult.TotalCount ?? 0,
       };
-    } catch (error) {
-      this.logger.warn(`Starred count not supported: ${error.message}`);
+    } catch (err) {
+      this.logger.warn(`getStarredCounts: ${err.message}`);
       return { total: 0, unread: 0 };
     }
   }
+
+  // ─── Messages ─────────────────────────────────────────────────────────────
 
   async getMessages(
     folderId: string,
@@ -343,78 +479,50 @@ export class EwsMailProvider implements IMailProvider {
   ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const resolvedId = resolveFolderId(folderId, folderId);
+    const resolvedId     = resolveFolderId(folderId, folderId);
     const resolvedFolder = this.resolveFolderName(folderId);
-    const offset = (page - 1) * limit;
+    const offset         = (page - 1) * limit;
+
     const view = new ItemView(limit, offset);
     view.OrderBy.Add(ItemSchema.DateTimeReceived, SortDirection.Descending);
-    view.PropertySet = new PropertySet(
-      BasePropertySet.IdOnly,
-      ItemSchema.Subject,
-      ItemSchema.DateTimeReceived,
-      EmailMessageSchema.From,
-      EmailMessageSchema.IsRead,
-      EmailMessageSchema.Flag,
-      ItemSchema.HasAttachments,
-      ItemSchema.Preview,
-    );
+    view.PropertySet = LIST_PROPS;
 
-    let result;
+    let result: any;
+
     if (resolvedId === 'Starred') {
       try {
-        const flagProp =
-          (EmailMessageSchema as any).FlagStatus ||
-          (EmailMessageSchema as any).Flag ||
-          (ItemSchema as any).FlagStatus;
-
-        if (!flagProp) {
-          return { items: [], total: 0 };
-        }
-
-        const filter = new SearchFilter.IsEqualTo(flagProp, 2);
-        result = await this.service.FindItems(
-          WellKnownFolderName.Inbox,
-          filter,
-          view,
-        );
-      } catch (error) {
-        this.logger.warn(`Starred filter not supported: ${error.message}`);
+        const filter = new SearchFilter.IsEqualTo(PR_FLAG_STATUS, FlagStatus.Flagged);
+        result = await this.service.FindItems(WellKnownFolderName.Inbox, filter, view);
+      } catch (err) {
+        this.logger.warn(`Starred getMessages: ${err.message}`);
         return { items: [], total: 0 };
       }
     } else {
       result = await this.service.FindItems(resolvedFolder, view);
     }
-    const items = result.Items.map((item: any) => ({
-      id: this.encodeId(resolvedId, item.Id!.UniqueId),
-      subject: item.Subject || '(No Subject)',
-      from: this.getFrom(item),
-      receivedAt: this.toJsDate(item.DateTimeReceived),
-      isRead: item.IsRead || false,
-      hasAttachments: item.HasAttachments || false,
-      preview: item.Preview || '',
-      isStarred: (() => {
-        try {
-          return (
-            item.Flag?.FlagStatus === 2 ||
-            item.FlagStatus === 2 ||
-            item.IsFlagged === true
-          );
-        } catch {
-          return false;
-        }
-      })(),
+
+    const items: Partial<MailMessage>[] = result.Items.map((item: any) => ({
+      id:             this.encodeId(resolvedId, item.Id?.UniqueId ?? ''),
+      subject:        item.Subject       ?? '(No Subject)',
+      from:           this.getFrom(item),
+      receivedAt:     this.toJsDate(item.DateTimeReceived),
+      isRead:         item.IsRead         ?? false,
+      hasAttachments: item.HasAttachments  ?? false,
+      preview:        '',
+      isStarred:      this.isItemStarred(item),
     }));
 
-    return { items, total: result.TotalCount || 0 };
+    return { items, total: result.TotalCount ?? 0 };
   }
 
   async getMessage(id: string): Promise<MailMessage> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const { folder, itemId } = this.decodeId(id);
-    const message = await EmailMessage.Bind(
+    const { itemId } = this.decodeId(id);
+    const message    = await EmailMessage.Bind(
       this.service,
       new ItemId(itemId),
+      DETAIL_PROPS,
     );
 
     if (!(message as any).IsRead) {
@@ -422,67 +530,99 @@ export class EwsMailProvider implements IMailProvider {
       await message.Update(ConflictResolutionMode.AlwaysOverwrite);
     }
 
+    const bodyText = message.Body?.Text ?? '';
+
     return {
       id,
-      subject: message.Subject || '(No Subject)',
-      from: message.From
-        ? { name: message.From.Name || '', email: message.From.Address || '' }
-        : { name: '', email: '' },
-      to: this.getRecipients(message.ToRecipients),
-      cc: this.getRecipients(message.CcRecipients),
-      receivedAt: this.toJsDate(message.DateTimeReceived),
-      body: message.Body ? message.Body.Text : '',
-      isHtml: message.Body?.BodyType === BodyType.HTML,
-      hasAttachments: message.HasAttachments || false,
-      isRead: true,
-      preview: message.Body ? message.Body.Text.substring(0, 100) : '',
+      subject:        message.Subject ?? '(No Subject)',
+      from:           { name: message.From?.Name ?? '', email: message.From?.Address ?? '' },
+      to:             this.getRecipients(message.ToRecipients),
+      cc:             this.getRecipients(message.CcRecipients),
+      receivedAt:     this.toJsDate(message.DateTimeReceived),
+      body:           bodyText,
+      isHtml:         message.Body?.BodyType === BodyType.HTML,
+      hasAttachments: message.HasAttachments ?? false,
+      isRead:         true,
+      isStarred:      this.isItemStarred(message),
+      preview:        bodyText.substring(0, 150),
     };
   }
 
-  async sendMessage(
-    options: SendMailOptions,
-  ): Promise<{ success: boolean; messageId?: string }> {
-    if (!this.service) throw new Error('EWS service not connected');
+  // ─── Send ─────────────────────────────────────────────────────────────────
 
-    const message = new EmailMessage(this.service);
-    message.Subject = options.subject || '';
-    message.Body = new MessageBody(
-      options.html ? BodyType.HTML : BodyType.Text,
-      options.html || options.text || '',
+  async sendMessage(options: SendMailOptions): Promise<{ success: boolean; messageId?: string }> {
+    if (!this.service) throw new Error('EWS service not connected');
+    if (!this.credentials) throw new Error('SMTP credentials not available');
+
+    const attachments = options.attachments?.map((att) => ({
+      filename: att.filename,
+      contentType: att.contentType,
+      content: Buffer.from(att.content, 'base64'),
+    }));
+
+    const mailOptions = {
+      from: this.credentials.email,
+      to: options.to,
+      cc: options.cc,
+      bcc: options.bcc,
+      replyTo: options.replyTo,
+      subject: options.subject,
+      text: options.text,
+      html: options.html,
+      attachments,
+    };
+
+    const info = await this.smtpSenderService.sendMail(
+      this.credentials,
+      mailOptions,
     );
 
-    for (const recipient of options.to || []) {
-      message.ToRecipients.Add(recipient);
-    }
-    for (const recipient of options.cc || []) {
-      message.CcRecipients.Add(recipient);
-    }
-    for (const recipient of options.bcc || []) {
-      message.BccRecipients.Add(recipient);
-    }
-    for (const recipient of options.replyTo || []) {
-      message.ReplyTo.Add(recipient);
-    }
+    // Save a copy to Sent Items using EWS (do not re-send)
+    try {
+      const message   = new EmailMessage(this.service);
+      message.Subject = options.subject ?? '';
+      message.Body    = new MessageBody(
+        options.html ? BodyType.HTML : BodyType.Text,
+        options.html ?? options.text ?? '',
+      );
 
-    if (options.attachments && options.attachments.length > 0) {
-      for (const attachment of options.attachments) {
-        const file = message.Attachments.AddFileAttachment(
-          attachment.filename,
-          attachment.content,
-        );
-        if (attachment.contentType) {
-          file.ContentType = attachment.contentType;
-        }
+      if (this.email) {
+        const fromAddr = new EmailAddress(this.email);
+        fromAddr.RoutingType = 'SMTP';
+        message.From = fromAddr;
       }
+
+      for (const r of options.to ?? []) {
+        const addr = this.toEmailAddress(r);
+        if (addr) message.ToRecipients.Add(addr);
+      }
+      for (const r of options.cc ?? []) {
+        const addr = this.toEmailAddress(r);
+        if (addr) message.CcRecipients.Add(addr);
+      }
+      for (const r of options.bcc ?? []) {
+        const addr = this.toEmailAddress(r);
+        if (addr) message.BccRecipients.Add(addr);
+      }
+      for (const r of options.replyTo ?? []) {
+        const addr = this.toEmailAddress(r);
+        if (addr) message.ReplyTo.Add(addr);
+      }
+
+      for (const att of options.attachments ?? []) {
+        const file = message.Attachments.AddFileAttachment(att.filename, att.content);
+        if (att.contentType) file.ContentType = att.contentType;
+      }
+
+      await message.Save(WellKnownFolderName.SentItems);
+    } catch (error) {
+      this.logger.warn(`Failed to save sent copy via EWS: ${error.message}`);
     }
 
-    await message.SendAndSaveCopy();
-
-    return {
-      success: true,
-      messageId: message.Id?.UniqueId,
-    };
+    return { success: true, messageId: info?.messageId };
   }
+
+  // ─── Search ───────────────────────────────────────────────────────────────
 
   async search(
     query: string,
@@ -491,186 +631,67 @@ export class EwsMailProvider implements IMailProvider {
   ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const offset = (page - 1) * limit;
-    const view = new ItemView(limit, offset);
+    const view = new ItemView(limit, (page - 1) * limit);
     view.OrderBy.Add(ItemSchema.DateTimeReceived, SortDirection.Descending);
-    view.PropertySet = new PropertySet(
-      BasePropertySet.IdOnly,
-      ItemSchema.Subject,
-      ItemSchema.DateTimeReceived,
-      EmailMessageSchema.From,
-      EmailMessageSchema.IsRead,
-      EmailMessageSchema.Flag,
-      ItemSchema.HasAttachments,
-    );
+    view.PropertySet = LIST_PROPS;
 
-    const filter = new SearchFilter.SearchFilterCollection(LogicalOperator.Or, [
-      new SearchFilter.ContainsSubstring(ItemSchema.Subject, query),
-      new SearchFilter.ContainsSubstring(ItemSchema.Body, query),
-    ]);
+    // Tìm theo Subject và From.Name — tránh search Body (rất chậm trên Exchange on-premises)
+    // Lưu ý: không có SenderName schema; dùng EmailMessageSchema.From không support ContainsSubstring
+    // → chỉ search Subject; nếu muốn search sender thì dùng AQS string query (Exchange 2013+)
+    const filter = new SearchFilter.ContainsSubstring(ItemSchema.Subject, query);
 
-    const result = await this.service.FindItems(
-      WellKnownFolderName.Inbox,
-      filter,
-      view,
-    );
-
-    const items = result.Items.map((item: any) => ({
-      id: this.encodeId('INBOX', item.Id!.UniqueId),
-      subject: item.Subject || '(No Subject)',
-      from: this.getFrom(item),
-      receivedAt: this.toJsDate(item.DateTimeReceived),
-      isRead: item.IsRead || false,
-      hasAttachments: item.HasAttachments || false,
-      isStarred: (() => {
-        try {
-          return (
-            item.Flag?.FlagStatus === 2 ||
-            item.FlagStatus === 2 ||
-            item.IsFlagged === true
-          );
-        } catch {
-          return false;
-        }
-      })(),
-    }));
-
-    return { items, total: result.TotalCount || 0 };
+    try {
+      const result = await this.service.FindItems(WellKnownFolderName.Inbox, filter, view);
+      const items: Partial<MailMessage>[] = result.Items.map((item: any) => ({
+        id:             this.encodeId('INBOX', item.Id?.UniqueId ?? ''),
+        subject:        item.Subject       ?? '(No Subject)',
+        from:           this.getFrom(item),
+        receivedAt:     this.toJsDate(item.DateTimeReceived),
+        isRead:         item.IsRead         ?? false,
+        hasAttachments: item.HasAttachments  ?? false,
+        isStarred:      this.isItemStarred(item),
+      }));
+      return { items, total: result.TotalCount ?? 0 };
+    } catch (err) {
+      this.logger.error(`Search error: ${err.message}`);
+      return { items: [], total: 0 };
+    }
   }
 
-  async moveMessage(
-    messageId: string,
-    targetFolder: string,
-  ): Promise<{ success: boolean }> {
+  // ─── Move ─────────────────────────────────────────────────────────────────
+
+  async moveMessage(messageId: string, targetFolder: string): Promise<{ success: boolean }> {
     if (!this.service) throw new Error('EWS service not connected');
 
     const { itemId } = this.decodeId(messageId);
-    const target = this.resolveFolderName(targetFolder);
     await this.service.MoveItems(
       [new ItemId(itemId)],
-      this.toFolderId(target),
+      this.toFolderId(this.resolveFolderName(targetFolder)),
     );
     return { success: true };
   }
 
-  async markMessages(ids: string[], isRead: boolean): Promise<void> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    for (const id of ids) {
-      const { itemId } = this.decodeId(id);
-      const message = await EmailMessage.Bind(this.service, new ItemId(itemId));
-      (message as any).IsRead = isRead;
-      await message.Update(ConflictResolutionMode.AlwaysOverwrite);
-    }
-  }
-
-  async markAllMessages(folder: string, isRead: boolean): Promise<void> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const resolved = this.resolveFolderName(folder);
-    const view = new ItemView(200, 0);
-    view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
-
-    let offset = 0;
-    let more = true;
-
-    while (more) {
-      view.Offset = offset;
-      const result = await this.service.FindItems(resolved, view);
-      if (!result.Items.length) break;
-
-      for (const item of result.Items) {
-        const message = await EmailMessage.Bind(
-          this.service,
-          new ItemId(item.Id!.UniqueId),
-        );
-        (message as any).IsRead = isRead;
-        await message.Update(ConflictResolutionMode.AlwaysOverwrite);
-      }
-
-      offset += result.Items.length;
-      more = result.MoreAvailable || false;
-    }
-  }
-
-  async markMessagesStar(ids: string[], starred: boolean): Promise<void> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    for (const id of ids) {
-      const { itemId } = this.decodeId(id);
-      const message = await EmailMessage.Bind(this.service, new ItemId(itemId));
-      if (starred) {
-        const flag = new Flag();
-        flag.FlagStatus = 2;
-        (message as any).Flag = flag;
-      } else {
-        const flag = new Flag();
-        flag.FlagStatus = 0;
-        (message as any).Flag = flag;
-      }
-      await message.Update(ConflictResolutionMode.AlwaysOverwrite);
-    }
-  }
-
-  async markAllMessagesStar(folder: string, starred: boolean): Promise<void> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const resolved = this.resolveFolderName(folder);
-    const view = new ItemView(200, 0);
-    view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
-
-    let offset = 0;
-    let more = true;
-
-    while (more) {
-      view.Offset = offset;
-      const result = await this.service.FindItems(resolved, view);
-      if (!result.Items.length) break;
-
-      for (const item of result.Items) {
-        const message = await EmailMessage.Bind(
-          this.service,
-          new ItemId(item.Id!.UniqueId),
-        );
-        if (starred) {
-          const flag = new Flag();
-          flag.FlagStatus = 2;
-          (message as any).Flag = flag;
-        } else {
-          const flag = new Flag();
-          flag.FlagStatus = 0;
-          (message as any).Flag = flag;
-        }
-        await message.Update(ConflictResolutionMode.AlwaysOverwrite);
-      }
-
-      offset += result.Items.length;
-      more = result.MoreAvailable || false;
-    }
-  }
-
   async moveMessagesBatch(ids: string[], targetFolder: string): Promise<void> {
     if (!this.service) throw new Error('EWS service not connected');
-    const target = this.resolveFolderName(targetFolder);
-    const itemIds = ids.map((id) => new ItemId(this.decodeId(id).itemId));
-    await this.service.MoveItems(itemIds, this.toFolderId(target));
+
+    await this.service.MoveItems(
+      ids.map((id) => new ItemId(this.decodeId(id).itemId)),
+      this.toFolderId(this.resolveFolderName(targetFolder)),
+    );
   }
 
-  async moveAllMessages(
-    sourceFolder: string,
-    targetFolder: string,
-  ): Promise<void> {
+  async moveAllMessages(sourceFolder: string, targetFolder: string): Promise<void> {
     if (!this.service) throw new Error('EWS service not connected');
+
     const source = this.resolveFolderName(sourceFolder);
     const target = this.resolveFolderName(targetFolder);
-    const view = new ItemView(200, 0);
-    view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
-
-    let offset = 0;
-    let more = true;
+    let more     = true;
 
     while (more) {
-      view.Offset = offset;
+      // Luôn query offset=0 — sau khi move items đã bị remove khỏi source
+      const view = new ItemView(200, 0);
+      view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
+
       const result = await this.service.FindItems(source, view);
       if (!result.Items.length) break;
 
@@ -678,63 +699,141 @@ export class EwsMailProvider implements IMailProvider {
         result.Items.map((item) => new ItemId(item.Id!.UniqueId)),
         this.toFolderId(target),
       );
-
-      offset += result.Items.length;
-      more = result.MoreAvailable || false;
+      more = result.MoreAvailable ?? false;
     }
   }
+
+  // ─── Mark read/unread ─────────────────────────────────────────────────────
+
+  async markMessages(ids: string[], isRead: boolean): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const props = new PropertySet(BasePropertySet.IdOnly, EmailMessageSchema.IsRead);
+    for (const id of ids) {
+      const { itemId } = this.decodeId(id);
+      const msg        = await EmailMessage.Bind(this.service, new ItemId(itemId), props);
+      if ((msg as any).IsRead !== isRead) {
+        (msg as any).IsRead = isRead;
+        await msg.Update(ConflictResolutionMode.AlwaysOverwrite);
+      }
+    }
+  }
+
+  async markAllMessages(folder: string, isRead: boolean): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const resolved = this.resolveFolderName(folder);
+    const props    = new PropertySet(BasePropertySet.IdOnly, EmailMessageSchema.IsRead);
+    let offset     = 0;
+    let more       = true;
+
+    while (more) {
+      const view = new ItemView(200, offset);
+      view.PropertySet = props;
+
+      const result = await this.service.FindItems(resolved, view);
+      if (!result.Items.length) break;
+
+      for (const item of result.Items) {
+        const msg = await EmailMessage.Bind(this.service, new ItemId(item.Id!.UniqueId), props);
+        if ((msg as any).IsRead !== isRead) {
+          (msg as any).IsRead = isRead;
+          await msg.Update(ConflictResolutionMode.AlwaysOverwrite);
+        }
+      }
+
+      offset += result.Items.length;
+      more    = result.MoreAvailable ?? false;
+    }
+  }
+
+  // ─── Star / Unstar ────────────────────────────────────────────────────────
+
+  async markMessagesStar(ids: string[], starred: boolean): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    for (const id of ids) {
+      const { itemId } = this.decodeId(id);
+      const message    = await EmailMessage.Bind(
+        this.service,
+        new ItemId(itemId),
+        FLAG_ONLY_PROPS,
+      );
+      await this.setFlag(message, starred);
+    }
+  }
+
+  async markAllMessagesStar(folder: string, starred: boolean): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const resolved = this.resolveFolderName(folder);
+    let offset     = 0;
+    let more       = true;
+
+    while (more) {
+      const view = new ItemView(200, offset);
+      view.PropertySet = FLAG_ONLY_PROPS;
+
+      const result = await this.service.FindItems(resolved, view);
+      if (!result.Items.length) break;
+
+      for (const item of result.Items) {
+        const message = await EmailMessage.Bind(
+          this.service,
+          new ItemId(item.Id!.UniqueId),
+          FLAG_ONLY_PROPS,
+        );
+        await this.setFlag(message, starred);
+      }
+
+      offset += result.Items.length;
+      more    = result.MoreAvailable ?? false;
+    }
+  }
+
+  // ─── Delete ───────────────────────────────────────────────────────────────
 
   async permanentlyDeleteMessages(ids: string[]): Promise<number> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const itemIds = ids.map((id) => new ItemId(this.decodeId(id).itemId));
-    const response: ServiceResponseCollection<any> =
-      await this.service.DeleteItems(
-        itemIds,
-        DeleteMode.HardDelete,
-        SendCancellationsMode.SendToNone,
-        AffectedTaskOccurrence.AllOccurrences,
-      );
-
-    const deleted = response.Responses.filter(
-      (item) => item.ErrorCode === ServiceError.NoError,
-    ).length;
-
-    return deleted;
+    const response: ServiceResponseCollection<any> = await this.service.DeleteItems(
+      ids.map((id) => new ItemId(this.decodeId(id).itemId)),
+      DeleteMode.HardDelete,
+      SendCancellationsMode.SendToNone,
+      AffectedTaskOccurrence.AllOccurrences,
+    );
+    return response.Responses.filter((r) => r.ErrorCode === ServiceError.NoError).length;
   }
 
   async permanentlyDeleteAllMessages(folder: string): Promise<number> {
     if (!this.service) throw new Error('EWS service not connected');
 
     const resolved = this.resolveFolderName(folder);
-    const view = new ItemView(200, 0);
-    view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
-
-    let offset = 0;
-    let more = true;
-    let deleted = 0;
+    let offset     = 0;
+    let more       = true;
+    let deleted    = 0;
 
     while (more) {
-      view.Offset = offset;
+      const view = new ItemView(200, offset);
+      view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
+
       const result = await this.service.FindItems(resolved, view);
       if (!result.Items.length) break;
 
-      const response: ServiceResponseCollection<any> =
-        await this.service.DeleteItems(
-          result.Items.map((item) => new ItemId(item.Id!.UniqueId)),
-          DeleteMode.HardDelete,
-          SendCancellationsMode.SendToNone,
-          AffectedTaskOccurrence.AllOccurrences,
-        );
+      const response: ServiceResponseCollection<any> = await this.service.DeleteItems(
+        result.Items.map((item) => new ItemId(item.Id!.UniqueId)),
+        DeleteMode.HardDelete,
+        SendCancellationsMode.SendToNone,
+        AffectedTaskOccurrence.AllOccurrences,
+      );
 
-      deleted += response.Responses.filter(
-        (item) => item.ErrorCode === ServiceError.NoError,
-      ).length;
-
-      offset += result.Items.length;
-      more = result.MoreAvailable || false;
+      deleted += response.Responses.filter((r) => r.ErrorCode === ServiceError.NoError).length;
+      offset  += result.Items.length;
+      more     = result.MoreAvailable ?? false;
     }
 
     return deleted;
   }
 }
+
+

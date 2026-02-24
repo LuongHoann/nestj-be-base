@@ -332,6 +332,7 @@ export class ImapMailProvider implements IMailProvider {
     }
 
     const canonicalFolderId = resolveFolderId(folderId, folderId);
+    const isSentFolder = canonicalFolderId === 'Sent Items';
     if (canonicalFolderId === 'Starred') {
       return this.getStarredMessages(page, limit);
     }
@@ -374,16 +375,18 @@ export class ImapMailProvider implements IMailProvider {
       })) {
         messages.push(msg);
       }
-
       // Reverse to show newest first
       messages.reverse();
+
+      console.log('messages==', messages);
 
       const items = await Promise.all(
         messages.map(async (msg) => {
           let preview = '';
+          let parsed: any = null;
           if (msg.source) {
             try {
-              const parsed = await mailparser.simpleParser(msg.source);
+              parsed = await mailparser.simpleParser(msg.source);
               if (parsed.text) {
                 preview = parsed.text;
               } else if (parsed.html) {
@@ -398,12 +401,15 @@ export class ImapMailProvider implements IMailProvider {
             }
           }
 
+          const from = this.resolveFrom(msg, parsed, {
+            fallbackEmail: this.credentials?.email,
+            preferFallbackWhenX500: isSentFolder,
+          });
+
           return {
             id: this.encodeId(mailboxPath, msg.uid.toString()),
             subject: msg.envelope.subject || '(No Subject)',
-            from: msg.envelope.from
-              ? this.mapAddress(msg.envelope.from[0])
-              : { name: '', email: '' },
+            from,
             receivedAt: msg.internalDate,
             isRead: msg.flags.has('\\Seen'),
             hasAttachments: this.checkAttachments(msg.bodyStructure),
@@ -474,9 +480,10 @@ export class ImapMailProvider implements IMailProvider {
       const items = await Promise.all(
         messages.map(async (msg) => {
           let preview = '';
+          let parsed: any = null;
           if (msg.source) {
             try {
-              const parsed = await mailparser.simpleParser(msg.source);
+              parsed = await mailparser.simpleParser(msg.source);
               if (parsed.text) {
                 preview = parsed.text;
               } else if (parsed.html) {
@@ -491,12 +498,12 @@ export class ImapMailProvider implements IMailProvider {
             }
           }
 
+          const from = this.resolveFrom(msg, parsed);
+
           return {
             id: this.encodeId(inboxPath, msg.uid.toString()),
             subject: msg.envelope.subject || '(No Subject)',
-            from: msg.envelope.from
-              ? this.mapAddress(msg.envelope.from[0])
-              : { name: '', email: '' },
+            from,
             receivedAt: msg.internalDate,
             isRead: msg.flags.has('\\Seen'),
             hasAttachments: this.checkAttachments(msg.bodyStructure),
@@ -512,10 +519,101 @@ export class ImapMailProvider implements IMailProvider {
   }
 
   private mapAddress(addr: any): { name: string; email: string } {
+    const address =
+      addr.address ||
+      (addr.mailbox && addr.host ? `${addr.mailbox}@${addr.host}` : '');
+
+    const email =
+      address && address.includes('@') && !address.startsWith('/')
+        ? address
+        : '';
+
     return {
       name: addr.name || '',
-      email: addr.address || '',
+      email,
     };
+  }
+
+  private extractEmailFromHeader(value: unknown): string {
+    if (typeof value !== 'string') return '';
+    const match = value.match(
+      /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i,
+    );
+    return match ? match[0] : '';
+  }
+
+  private formatAddressHeader(value: unknown): string {
+    if (Array.isArray(value)) {
+      return value.map((v) => this.formatAddressHeader(v)).join(', ');
+    }
+
+    if (typeof value !== 'string') return '';
+
+    if (value.includes('<') && value.includes('>')) {
+      return value;
+    }
+
+    const email = this.extractEmailFromHeader(value);
+    if (!email) return value;
+
+    const name = value
+      .replace(email, '')
+      .replace(/[<>"]/g, '')
+      .trim();
+
+    return name ? `"${name}" <${email}>` : `<${email}>`;
+  }
+
+  private resolveFrom(
+    msg: any,
+    parsed?: any,
+    options?: { fallbackEmail?: string; preferFallbackWhenX500?: boolean },
+  ): { name: string; email: string } {
+    console.log('msg==', msg);
+    console.log('parsed==', parsed);
+    const fallbackEmail = options?.fallbackEmail || '';
+    const preferFallback = !!options?.preferFallbackWhenX500;
+    const parsedFrom = parsed?.from?.value?.[0];
+    const parsedName = parsedFrom?.name || '';
+    const parsedEmail = parsedFrom?.address || '';
+
+    if (parsedEmail && parsedEmail.includes('@') && !parsedEmail.startsWith('/')) {
+      return { name: parsedName, email: parsedEmail };
+    }
+    if (preferFallback && parsedEmail.startsWith('/') && fallbackEmail) {
+      return { name: parsedName, email: fallbackEmail };
+    }
+
+    const headerSender = this.extractEmailFromHeader(
+      parsed?.headers?.get?.('sender'),
+    );
+    if (headerSender) {
+      return { name: parsedName, email: headerSender };
+    }
+
+    const headerFrom = this.extractEmailFromHeader(
+      parsed?.headers?.get?.('from'),
+    );
+    if (headerFrom) {
+      return { name: parsedName, email: headerFrom };
+    }
+
+    if (msg?.envelope?.from?.[0]) {
+      const mapped = this.mapAddress(msg.envelope.from[0]);
+      if (!mapped.email && preferFallback && fallbackEmail) {
+        return { name: mapped.name || parsedName, email: fallbackEmail };
+      }
+      return {
+        name: mapped.name || parsedName,
+        email: mapped.email,
+      };
+    }
+
+    if (preferFallback && fallbackEmail) {
+      return { name: parsedName, email: fallbackEmail };
+    }
+
+    return { name: parsedName, email: '' };
   }
 
   private checkAttachments(struct: any): boolean {
@@ -564,15 +662,16 @@ export class ImapMailProvider implements IMailProvider {
       // Parse email
       const parsed: any = await mailparser.simpleParser(msg.source);
 
+      const canonicalFolderId = resolveFolderId(folder, folder);
+      const from = this.resolveFrom(msg, parsed, {
+        fallbackEmail: this.credentials?.email,
+        preferFallbackWhenX500: canonicalFolderId === 'Sent Items',
+      });
+
       return {
         id: id,
         subject: parsed.subject || '(No Subject)',
-        from: parsed.from?.value?.[0]
-          ? {
-              name: parsed.from.value[0].name || '',
-              email: parsed.from.value[0].address || '',
-            }
-          : { name: '', email: '' },
+        from,
         to: this.parseAddressList(parsed.to),
         cc: this.parseAddressList(parsed.cc),
         receivedAt: parsed.date || new Date(),
@@ -671,13 +770,18 @@ export class ImapMailProvider implements IMailProvider {
     }
   }
 
-    private buildRFC822Message(mailOptions: any, messageId: string): string {
+  private buildRFC822Message(mailOptions: any, messageId: string): string {
     const lines: string[] = [];
 
     // Headers
     lines.push(`Message-ID: ${messageId}`);
     lines.push(`Date: ${new Date().toUTCString()}`);
-    lines.push(`From: ${mailOptions.from}`);
+    const fromHeader = this.formatAddressHeader(mailOptions.from);
+    lines.push(`From: ${fromHeader}`);
+    const senderEmail = this.extractEmailFromHeader(fromHeader);
+    if (senderEmail) {
+      lines.push(`Sender: <${senderEmail}>`);
+    }
     
     if (mailOptions.to) {
       const toAddresses = Array.isArray(mailOptions.to)
@@ -694,7 +798,8 @@ export class ImapMailProvider implements IMailProvider {
     }
 
     if (mailOptions.replyTo) {
-      lines.push(`Reply-To: ${mailOptions.replyTo}`);
+      const replyToHeader = this.formatAddressHeader(mailOptions.replyTo);
+      lines.push(`Reply-To: ${replyToHeader}`);
     }
 
     lines.push(`Subject: ${mailOptions.subject || '(No Subject)'}`);
@@ -810,22 +915,39 @@ export class ImapMailProvider implements IMailProvider {
 
       for await (const msg of this.client.fetch(
         uidSet,
-        { envelope: true, internalDate: true, uid: true, flags: true },
+        {
+          envelope: true,
+          internalDate: true,
+          uid: true,
+          flags: true,
+          source: { maxLength: 1024 },
+        },
         { uid: true },
       )) {
         messages.push(msg);
       }
 
-      const items = messages.map((msg) => ({
-        id: this.encodeId(folderId, msg.uid.toString()),
-        subject: msg.envelope.subject || '(No Subject)',
-        from: msg.envelope.from
-          ? this.mapAddress(msg.envelope.from[0])
-          : { name: '', email: '' },
-        receivedAt: msg.internalDate,
-        isRead: msg.flags.has('\\Seen'),
-        hasAttachments: false, // Skip for search results performance
-      }));
+      const items = await Promise.all(
+        messages.map(async (msg) => {
+          let parsed: any = null;
+          if (msg.source) {
+            try {
+              parsed = await mailparser.simpleParser(msg.source);
+            } catch (error) {
+              // Ignore parsing errors in search result
+            }
+          }
+
+          return {
+            id: this.encodeId(folderId, msg.uid.toString()),
+            subject: msg.envelope.subject || '(No Subject)',
+            from: this.resolveFrom(msg, parsed),
+            receivedAt: msg.internalDate,
+            isRead: msg.flags.has('\\Seen'),
+            hasAttachments: false, // Skip for search results performance
+          };
+        }),
+      );
 
       // Sort by date descending
       items.sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime());
