@@ -298,18 +298,9 @@ export class EwsMailProvider implements IMailProvider {
     const raw = item?.From ?? item?.Sender;
     const name = raw?.Name ?? '';
     const rawAddress = raw?.Address ?? '';
-
-    // DEBUG — xóa sau khi xác định đúng field
-    this.logger.debug(`[getFrom] raw.Name=${name} raw.Address=${rawAddress}`);
-    this.logger.debug(`[getFrom] ExtendedProperties=${JSON.stringify(
-      item?.ExtendedProperties?.items ?? item?.ExtendedProperties ?? []
-    )}`);
-    this.logger.debug(`[getFrom] item keys=${Object.keys(item || {}).join(',')}`);
-
     // Nếu address là X500 DN → thử lấy SMTP thực từ MAPI extended properties
     if (!rawAddress || this.isX500Address(rawAddress)) {
       const smtpFromMapi = this.getSenderSmtpFromExtProps(item);
-      this.logger.debug(`[getFrom] X500 detected, smtpFromMapi=${smtpFromMapi}`);
       // Fallback: nếu MAPI cũng không có, trả về X500 gốc để không mất data
       return { name, email: smtpFromMapi || rawAddress };
     }
@@ -519,11 +510,26 @@ export class EwsMailProvider implements IMailProvider {
     if (!this.service) throw new Error('EWS service not connected');
 
     const { itemId } = this.decodeId(id);
-    const message    = await EmailMessage.Bind(
-      this.service,
-      new ItemId(itemId),
-      DETAIL_PROPS,
-    );
+    let message: EmailMessage;
+    try {
+      message = await EmailMessage.Bind(
+        this.service,
+        new ItemId(itemId),
+        DETAIL_PROPS,
+      );
+    } catch (err) {
+      if (String(err?.message || '').includes('extended property attribute combination is invalid')) {
+        // Fallback to basic properties if extended properties are rejected by server
+        const basicProps = new PropertySet(BasePropertySet.FirstClassProperties);
+        message = await EmailMessage.Bind(
+          this.service,
+          new ItemId(itemId),
+          basicProps,
+        );
+      } else {
+        throw err;
+      }
+    }
 
     if (!(message as any).IsRead) {
       (message as any).IsRead = true;

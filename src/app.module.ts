@@ -18,6 +18,7 @@ import { Permission } from './database/entities/permission.entity';
 import { AuditLogModule } from './audit/audit.module';
 import { ExchangeModule } from './exchange/exchange.module';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
+import { MailboxModule } from './mailbox/mailbox.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { PostgreSqlDriver } from '@mikro-orm/postgresql';
     FilesModule,
     AuditLogModule,
     ExchangeModule,
+    MailboxModule,
   ],
   controllers: [],
   providers: [],
