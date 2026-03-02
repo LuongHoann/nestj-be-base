@@ -50,6 +50,8 @@ import {
   ConversationId,
   ConversationIndexedItemView,
   ConversationSchema,
+  FileAttachment,
+  ItemAttachment,
 } from 'ews-javascript-api';
 
 import { XhrApi } from '@ewsjs/xhr';
@@ -63,6 +65,7 @@ import {
 import {
   IMailProvider,
   MailFolder,
+  MailAttachmentMeta,
   MailMessage,
   SendMailOptions,
   SaveDraftOptions,
@@ -812,13 +815,13 @@ export class EwsMailProvider implements IMailProvider {
     }
 
     const bodyText = message.Body?.Text ?? '';
+    const attachments = this.extractAttachmentMetas(message);
 
     // Đọc ConversationId nếu có — dùng để fetch toàn bộ luồng thư hội thoại
     const rawConvId = (message as any).ConversationId?.UniqueId as
       | string
       | undefined;
 
-    console.log('rawConvId==', (message as any).ConversationId);
     return {
       id,
       subject: message.Subject ?? '(No Subject)',
@@ -836,6 +839,78 @@ export class EwsMailProvider implements IMailProvider {
       isStarred: this.isItemStarred(message),
       preview: bodyText.substring(0, 150),
       conversationId: rawConvId,
+      attachments,
+    };
+  }
+
+  private extractAttachmentMetas(message: EmailMessage): MailAttachmentMeta[] {
+    const items: any[] =
+      (message as any)?.Attachments?.items ??
+      (message as any)?.Attachments ??
+      [];
+
+    return items.map((att: any, index: number) => ({
+      index,
+      filename: att?.Name || `attachment-${index + 1}`,
+      contentType: att?.ContentType || 'application/octet-stream',
+      size: Number(att?.Size || 0),
+    }));
+  }
+
+  async downloadAttachment(
+    messageId: string,
+    index: number,
+  ): Promise<{
+    filename: string;
+    contentType: string;
+    size: number;
+    content: Buffer;
+  }> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const { itemId } = this.decodeId(messageId);
+    const message = await EmailMessage.Bind(
+      this.service,
+      new ItemId(itemId),
+      new PropertySet(BasePropertySet.FirstClassProperties),
+    );
+
+    const attachments: any[] =
+      (message as any)?.Attachments?.items ??
+      (message as any)?.Attachments ??
+      [];
+
+    if (!Number.isInteger(index) || index < 0 || index >= attachments.length) {
+      throw new BadRequestException('Attachment index khong hop le');
+    }
+
+    const attachment = attachments[index];
+    if (typeof attachment?.Load === 'function') {
+      await attachment.Load();
+    }
+
+    if (attachment instanceof ItemAttachment) {
+      throw new BadRequestException(
+        'Attachment dang item-embedded, chua ho tro download',
+      );
+    }
+
+    if (!(attachment instanceof FileAttachment)) {
+      throw new BadRequestException('Loai attachment khong ho tro');
+    }
+
+    const base64Content = attachment.Base64Content;
+    if (!base64Content) {
+      throw new BadRequestException('Attachment content khong ton tai');
+    }
+
+    const content = Buffer.from(base64Content, 'base64');
+
+    return {
+      filename: attachment.Name || `attachment-${index + 1}`,
+      contentType: attachment.ContentType || 'application/octet-stream',
+      size: Number(attachment.Size || content.length || 0),
+      content,
     };
   }
 

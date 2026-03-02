@@ -25,6 +25,7 @@ import {
 @Injectable({ scope: Scope.REQUEST })
 export class MailService {
   private readonly logger = new Logger(MailService.name);
+  private static readonly MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024; // 25MB/file
 
   constructor(
     private readonly provider: EwsMailProvider,
@@ -58,6 +59,35 @@ export class MailService {
 
   private mapIdToFolderType(id: string): string {
     return resolveFolderType(id);
+  }
+
+  private getBase64SizeInBytes(base64Content: string): number {
+    if (!base64Content) return 0;
+    const normalized = base64Content.includes(',')
+      ? base64Content.split(',').pop() || ''
+      : base64Content;
+    const sanitized = normalized.replace(/\s/g, '');
+    const padding = sanitized.endsWith('==')
+      ? 2
+      : sanitized.endsWith('=')
+        ? 1
+        : 0;
+    return Math.floor((sanitized.length * 3) / 4) - padding;
+  }
+
+  private validateAttachmentsSize(
+    attachments?: Array<{ filename: string; content: string }>,
+  ): void {
+    if (!attachments?.length) return;
+
+    for (const attachment of attachments) {
+      const size = this.getBase64SizeInBytes(attachment.content);
+      if (size > MailService.MAX_ATTACHMENT_SIZE_BYTES) {
+        throw new BadRequestException(
+          `File "${attachment.filename}" vuot qua gioi han 25MB`,
+        );
+      }
+    }
   }
 
   async getFolderCounts() {
@@ -146,7 +176,14 @@ export class MailService {
     return message;
   }
 
+  async downloadAttachment(messageId: string, index: number) {
+    return this.withProvider(() =>
+      this.provider.downloadAttachment(messageId, index),
+    );
+  }
+
   async sendMessage(dto: SendMailDto) {
+    this.validateAttachmentsSize(dto.attachments);
     const result = await this.withProvider(() => this.provider.sendMessage(dto));
 
     const email = await this.getEmailFromSession();
@@ -159,6 +196,7 @@ export class MailService {
   }
 
   async saveDraft(dto: SaveDraftDto) {
+    this.validateAttachmentsSize(dto.attachments);
     const result = await this.withProvider(() => this.provider.saveDraft(dto));
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
@@ -437,6 +475,7 @@ export class MailService {
    * EWS sẽ tự động kết nối luồng hội thoại (In-Reply-To, References headers).
    */
   async replyMessage(dto: ReplyMailDto) {
+    this.validateAttachmentsSize(dto.attachments);
     const result = await this.withProvider(() =>
       this.provider.replyMessage({
         messageId: dto.messageId,
@@ -465,6 +504,7 @@ export class MailService {
    * EWS giữ nguyên thư, tệp đính kèm cũ được chuyển theo tự động.
    */
   async forwardMessage(dto: ForwardMailDto) {
+    this.validateAttachmentsSize(dto.attachments);
     const result = await this.withProvider(() =>
       this.provider.forwardMessage({
         messageId: dto.messageId,

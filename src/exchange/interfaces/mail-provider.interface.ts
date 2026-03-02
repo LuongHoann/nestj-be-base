@@ -1,3 +1,10 @@
+export interface MailAttachmentMeta {
+  index: number;
+  filename: string;
+  contentType?: string;
+  size?: number;
+}
+
 export interface MailMessage {
   id: string; // Composite ID: Base64(folder:uid)
   subject: string;
@@ -12,8 +19,9 @@ export interface MailMessage {
   preview: string;
   importance?: string;
   isStarred?: boolean;
-  /** ConversationId nhóm các email cùng luồng hội thoại */
+  // Conversation group id
   conversationId?: string;
+  attachments?: MailAttachmentMeta[];
 }
 
 export interface MailFolder {
