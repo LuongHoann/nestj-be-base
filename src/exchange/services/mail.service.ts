@@ -4,11 +4,15 @@ import { EwsMailProvider } from './ews-mail.provider';
 import { MailMessage } from '../interfaces/mail-provider.interface';
 import {
   SendMailDto,
+  SaveDraftDto,
   MarkReadDto,
   MoveBatchDto,
   PermanentDeleteMailDto,
   StarMailDto,
+  ReplyMailDto,
+  ForwardMailDto,
 } from '../dto/exchange.dto';
+
 import { DragonflyService } from '../../common/cache/dragonfly.service';
 import { ExchangeAuthService } from './exchange-auth.service';
 import {
@@ -149,6 +153,17 @@ export class MailService {
     if (email && this.dragonfly.enabled) {
       await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
       await this.dragonfly.del(`exchange:count:${email}:INBOX`);
+    }
+
+    return result;
+  }
+
+  async saveDraft(dto: SaveDraftDto) {
+    const result = await this.withProvider(() => this.provider.saveDraft(dto));
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      // Dọn cache thư mục Nháp (Drafts)
+      await this.dragonfly.del(`exchange:count:${email}:Drafts`);
     }
 
     return result;
@@ -415,5 +430,75 @@ export class MailService {
     }
 
     return { success: true };
+  }
+
+  /**
+   * Trả lời một email dựa trên ID của thư gốc.
+   * EWS sẽ tự động kết nối luồng hội thoại (In-Reply-To, References headers).
+   */
+  async replyMessage(dto: ReplyMailDto) {
+    const result = await this.withProvider(() =>
+      this.provider.replyMessage({
+        messageId: dto.messageId,
+        html: dto.html,
+        text: dto.text,
+        replyAll: dto.replyAll,
+        attachments: dto.attachments?.map((att) => ({
+          filename: att.filename,
+          contentType: att.contentType,
+          content: att.content,
+        })),
+      }),
+    );
+
+    // Xóa cache Sent Items để cập nhật số lượng mới
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Chuyển tiếp một email đến người nhận khác.
+   * EWS giữ nguyên thư, tệp đính kèm cũ được chuyển theo tự động.
+   */
+  async forwardMessage(dto: ForwardMailDto) {
+    const result = await this.withProvider(() =>
+      this.provider.forwardMessage({
+        messageId: dto.messageId,
+        to: dto.to,
+        cc: dto.cc,
+        bcc: dto.bcc,
+        html: dto.html,
+        text: dto.text,
+        attachments: dto.attachments?.map((att) => ({
+          filename: att.filename,
+          contentType: att.contentType,
+          content: att.content,
+        })),
+      }),
+    );
+
+    // Xóa cache Sent Items để cập nhận số lượng mới
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Lấy toàn bộ email trong cùng luồng hội thoại theo messageId gốc.
+   * Backend tự bind email để lấy ConversationId, sau đó tìm xuyên Inbox/Sent/Drafts.
+   * @param messageId - Composite ID (base64) của email cần load thread
+   * @param maxItems  - Số lượng email tối đa (mặc định 50)
+   */
+  async getConversationMessages(messageId: string, maxItems: number = 50) {
+    return this.withProvider(() =>
+      this.provider.getConversationMessages(messageId, maxItems),
+    );
   }
 }

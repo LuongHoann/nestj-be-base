@@ -57,6 +57,18 @@ export class MailboxController {
     return this.mailboxService.remove(id);
   }
 
+  @Post(':id/restore')
+  @ApiOperation({ summary: 'Restore user/mailbox' })
+  async restore(@Param('id') id: string) {
+    return this.mailboxService.restore(id);
+  }
+
+  @Delete(':id/permanent')
+  @ApiOperation({ summary: 'Permanently delete user/mailbox' })
+  async destroy(@Param('id') id: string) {
+    return this.mailboxService.destroy(id);
+  }
+
   @Post('import')
   @ApiOperation({ summary: 'Import users/mailboxes from CSV' })
   @ApiBody({ type: ImportMailboxDto })

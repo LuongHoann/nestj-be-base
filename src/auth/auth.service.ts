@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, Logger, ConflictException } from '@nestjs/common';
+﻿import { Injectable, UnauthorizedException, Logger, ConflictException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { EntityManager } from '@mikro-orm/core';
 import { User } from '../database/entities/user.entity';
@@ -26,9 +26,14 @@ export class AuthService {
     exchangeRefreshToken: string;
   }> {
     const user = await this.em.findOne(User, { email });
-    if (!user || !user.isActive || !user.password) {
+    if (!user || !user.password) {
       await this.auditLogService.logAuth(null, 'login_failed', { email });
       throw new UnauthorizedException('Thông tin đăng nhập không hợp lệ!');
+    }
+
+    if (!user.isActive) {
+      await this.auditLogService.logAuth(user.id, 'login_failed', { email });
+      throw new UnauthorizedException('Tài khoản đã bị vô hiệu hoá');
     }
 
     const isValid = await argon2.verify(user.password, password);

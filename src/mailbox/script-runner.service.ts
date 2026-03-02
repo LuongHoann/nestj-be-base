@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { spawn } from 'child_process';
 
-export type ScriptAction = 'create' | 'update' | 'disable';
+export type ScriptAction = 'create' | 'update' | 'disable' | 'restore' | 'delete';
 
 @Injectable()
 export class ScriptRunnerService {
@@ -75,6 +75,10 @@ export class ScriptRunnerService {
         return this.configService.get<string>('MAILBOX_SCRIPT_UPDATE');
       case 'disable':
         return this.configService.get<string>('MAILBOX_SCRIPT_DISABLE');
+      case 'restore':
+        return this.configService.get<string>('MAILBOX_SCRIPT_RESTORE');
+      case 'delete':
+        return this.configService.get<string>('MAILBOX_SCRIPT_DELETE');
       default:
         return undefined;
     }

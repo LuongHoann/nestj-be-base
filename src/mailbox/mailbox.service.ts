@@ -113,6 +113,35 @@ export class MailboxService {
     return { success: true };
   }
 
+  async restore(id: string) {
+    const user = await this.em.findOne(User, { id });
+    if (!user) throw new NotFoundException('User not found');
+
+    await this.scriptRunner.run('restore', {
+      action: 'restore',
+      email: user.email,
+    });
+
+    user.isActive = true;
+    await this.em.persistAndFlush(user);
+
+    return { success: true };
+  }
+
+  async destroy(id: string) {
+    const user = await this.em.findOne(User, { id });
+    if (!user) throw new NotFoundException('User not found');
+
+    await this.scriptRunner.run('delete', {
+      action: 'delete',
+      email: user.email,
+    });
+
+    await this.em.removeAndFlush(user);
+
+    return { success: true };
+  }
+
   async importCsv(csv: string) {
     const records = this.parseCsv(csv);
     const results: { email: string; success: boolean; error?: string }[] = [];

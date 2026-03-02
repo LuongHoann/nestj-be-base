@@ -1,4 +1,4 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EntityManager } from '@mikro-orm/core';
 import { User } from 'src/database/entities/user.entity';
@@ -106,6 +106,9 @@ export class ExchangeAuthService {
       });
       await this.em.persistAndFlush(user);
     } else {
+      if (!user.isActive) {
+        throw new ForbiddenException('Tài khoản đã bị vô hiệu hoá');
+      }
       if (!user.password) {
         user.password = await argon2.hash(password);
         await this.em.persistAndFlush(user);

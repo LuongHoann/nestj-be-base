@@ -5,10 +5,10 @@ import {
   Get,
   UseGuards,
   Query,
-  Param,
   UseInterceptors,
   Req,
   Res,
+  Param,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { ExchangeAuthService } from '../services/exchange-auth.service';
@@ -16,12 +16,16 @@ import { MailService } from '../services/mail.service';
 import {
   ExchangeLoginDto,
   SendMailDto,
+  SaveDraftDto,
   MoveMailDto,
   MarkReadDto,
   MoveBatchDto,
   PermanentDeleteMailDto,
   StarMailDto,
+  ReplyMailDto,
+  ForwardMailDto,
 } from '../dto/exchange.dto';
+
 import { ExchangeErrorInterceptor } from '../interceptors/exchange-error.interceptor';
 import type { Request, Response } from 'express';
 import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
@@ -153,6 +157,21 @@ export class ExchangeController {
   }
 
   @UseGuards(ExchangeAuthGuard)
+  @Get('mail/conversation')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Lấy toàn bộ email trong cùng một luồng hội thoại theo messageId gốc' })
+  async getConversation(
+    @Query('messageId') messageId: string,
+    @Query('maxItems') maxItems?: string,
+  ) {
+    if (!messageId) {
+      throw new Error('messageId là bắt buộc');
+    }
+    const max = maxItems ? parseInt(maxItems, 10) : 50;
+    return this.mailService.getConversationMessages(messageId, max);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
   @Get('mail/:id')
   @ApiBearerAuth('exchange_cookie')
   @ApiOperation({ summary: 'Chi tiết mail' })
@@ -167,6 +186,15 @@ export class ExchangeController {
   @ApiBody({ type: SendMailDto })
   async send(@Body() dto: SendMailDto) {
     return this.mailService.sendMessage(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/draft')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Lưu nháp' })
+  @ApiBody({ type: SaveDraftDto })
+  async saveDraft(@Body() dto: SaveDraftDto) {
+    return this.mailService.saveDraft(dto);
   }
 
   @UseGuards(ExchangeAuthGuard)
@@ -222,4 +250,24 @@ export class ExchangeController {
   async unstar(@Body() dto: StarMailDto) {
     return this.mailService.unmarkStar(dto);
   }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/reply')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Trả lời email (Reply / Reply All)' })
+  @ApiBody({ type: ReplyMailDto })
+  async reply(@Body() dto: ReplyMailDto) {
+    return this.mailService.replyMessage(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/forward')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Chuyển tiếp email (Forward)' })
+  @ApiBody({ type: ForwardMailDto })
+  async forward(@Body() dto: ForwardMailDto) {
+    return this.mailService.forwardMessage(dto);
+  }
+
+
 }

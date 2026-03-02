@@ -14,6 +14,7 @@ import {
   MailFolder,
   MailMessage,
   SendMailOptions,
+  SaveDraftOptions,
 } from '../interfaces/mail-provider.interface';
 import {
   getFolderAliases,
@@ -766,6 +767,51 @@ export class ImapMailProvider implements IMailProvider {
       };
     } catch (error) {
       this.logger.error(`Error sending email: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async saveDraft(
+    options: SaveDraftOptions,
+  ): Promise<{ success: boolean; messageId?: string }> {
+    if (!this.client) {
+      throw new Error('IMAP client not connected. Call connect() first.');
+    }
+
+    try {
+      // Build attachments array if provided
+      const attachments = options.attachments?.map((att) => ({
+        filename: att.filename,
+        contentType: att.contentType,
+        content: Buffer.from(att.content, 'base64'),
+      }));
+
+      const mailOptions = {
+        from: this.credentials.email,
+        to: options.to ?? [],
+        cc: options.cc ?? [],
+        bcc: options.bcc ?? [],
+        replyTo: options.replyTo ?? [],
+        subject: options.subject ?? '',
+        text: options.text,
+        html: options.html,
+        attachments,
+      };
+
+      const draftsFolder = (await this.resolveMailboxPath('Drafts')) ?? 'Drafts';
+      const messageId = `<${Date.now()}.${Math.random().toString(36).substring(2)}@drafts>`;
+      const draftData = this.buildRFC822Message(mailOptions, messageId);
+
+      const appendRes = await this.client.append(draftsFolder, draftData, ['\\Seen', '\\Draft'], new Date());
+      let resId: string | undefined;
+
+      if (appendRes && appendRes.uid) {
+        resId = this.encodeId(draftsFolder, appendRes.uid.toString());
+      }
+
+      return { success: true, messageId: resId };
+    } catch (error) {
+      this.logger.error(`Error saving draft via IMAP: ${error.message}`);
       throw error;
     }
   }

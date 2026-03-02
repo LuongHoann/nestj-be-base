@@ -41,15 +41,21 @@ The content is organized as follows:
 audit_log_implementation_notes.md
 dockerfile
 docs/BATCH_MAIL_APIS.md
+docs/contacts-api.md
 docs/EXCHANGE_API_DOCUMENTATION.md
+docs/MAILBOX_MODULE_GUIDE.md
 docs/PERMANENT_DELETE_MAIL_API.md
 docs/PROJECT_IMPLEMENTED_FEATURES.md
-docs/REQUIREMENTS_2_2_STATUS.md
 eslint.config.mjs
 mikro-orm.config.ts
 MOVE_MAIL_API.md
 nest-cli.json
 package.json
+scripts/mailbox/create-mailbox.ps1
+scripts/mailbox/delete-mailbox.ps1
+scripts/mailbox/disable-mailbox.ps1
+scripts/mailbox/restore-mailbox.ps1
+scripts/mailbox/update-mailbox.ps1
 src/app.controller.spec.ts
 src/app.controller.ts
 src/app.module.ts
@@ -92,11 +98,16 @@ src/database/migrations/Migration20260223120000.ts
 src/dto/post/create-post.dto.ts
 src/dto/post/update-post.dto.ts
 src/exchange/constants/mail-folders.constant.ts
+src/exchange/controllers/contacts.controller.ts
 src/exchange/controllers/exchange.controller.ts
+src/exchange/controllers/notes.controller.ts
+src/exchange/dto/contact-note.dto.ts
 src/exchange/dto/exchange.dto.ts
 src/exchange/exchange.module.ts
 src/exchange/interceptors/exchange-error.interceptor.ts
+src/exchange/interfaces/contact-note.interface.ts
 src/exchange/interfaces/mail-provider.interface.ts
+src/exchange/services/contact-note.service.ts
 src/exchange/services/ews-mail.provider.ts
 src/exchange/services/exchange-auth.service.ts
 src/exchange/services/imap-mail.provider.ts
@@ -109,6 +120,12 @@ src/files/files.controller.ts
 src/files/files.module.ts
 src/files/files.scheduler.ts
 src/files/files.service.ts
+src/mailbox/gal.service.ts
+src/mailbox/mailbox.controller.ts
+src/mailbox/mailbox.dto.ts
+src/mailbox/mailbox.module.ts
+src/mailbox/mailbox.service.ts
+src/mailbox/script-runner.service.ts
 src/main.ts
 src/meta/entity-registry.service.ts
 src/meta/meta.module.ts
@@ -128,6 +145,860 @@ web_mail_server.tar
 ```
 
 # Files
+
+## File: docs/contacts-api.md
+````markdown
+# Contacts API (Webmail)
+
+Base path: `{{API_BASE}}/webmail/contacts`
+
+Auth:
+- Cookie `exchange_session`
+- Or header `Authorization: Bearer <token>`
+
+Model:
+- `ExchangeContact`
+  - `id`: string (encoded, use as-is)
+  - `displayName`: string
+  - `email`: string
+  - `givenName?`: string
+  - `surname?`: string
+  - `company?`: string
+  - `jobTitle?`: string
+  - `phone?`: string
+  - `address?`: object
+
+- `ExchangeContactAddress`
+  - `street?`: string
+  - `city?`: string
+  - `state?`: string
+  - `postalCode?`: string
+  - `country?`: string
+- `ExchangeSearchResult<T>`
+  - `items`: T[]
+  - `total`: number
+
+Notes:
+- `id` is base64 with internal prefix `CONTACTS:`. FE should not decode.
+- Create returns optional fields as empty strings if not provided.
+- Update behavior:
+  - If `phone` is omitted: keep current value.
+  - If `phone` is `""`: clear the phone.
+- `email` must be unique (checked against EmailAddress1/2/3).
+
+---
+
+## 1) Create contact
+`POST {{API_BASE}}/webmail/contacts`
+
+Body:
+```json
+{
+  "email": "user@example.com",
+  "displayName": "User Name",
+  "givenName": "User",
+  "surname": "Name",
+  "company": "ACME",
+  "jobTitle": "Engineer",
+  "phone": "0900000000",
+  "address": {
+    "street": "123 Nguyen Trai",
+    "city": "HCM",
+    "state": "Q1",
+    "postalCode": "70000",
+    "country": "VN"
+  }
+}
+```
+
+Response 200:
+```json
+{
+  "id": "Q09OVEFDVFM6AAMk...==",
+  "displayName": "User Name",
+  "email": "user@example.com",
+  "givenName": "User",
+  "surname": "Name",
+  "company": "ACME",
+  "jobTitle": "Engineer",
+  "phone": "0900000000",
+  "address": {
+    "street": "123 Nguyen Trai",
+    "city": "HCM",
+    "state": "Q1",
+    "postalCode": "70000",
+    "country": "VN"
+  }
+}
+```
+
+Errors:
+- 400 `Email is required`
+- 400 `Contact email already exists`
+- 401 Unauthorized (missing/invalid session)
+
+---
+
+## 2) Update contact
+`PUT {{API_BASE}}/webmail/contacts/:id`
+
+Body (all optional):
+```json
+{
+  "displayName": "New Name",
+  "email": "new@example.com",
+  "givenName": "New",
+  "surname": "Name",
+  "company": "New Co",
+  "jobTitle": "Lead",
+  "phone": "",
+  "address": {
+    "street": "",
+    "city": "",
+    "state": "",
+    "postalCode": "",
+    "country": ""
+  }
+}
+```
+
+Response 200:
+```json
+{
+  "id": "Q09OVEFDVFM6AAMk...==",
+  "displayName": "New Name",
+  "email": "new@example.com",
+  "givenName": "New",
+  "surname": "Name",
+  "company": "New Co",
+  "jobTitle": "Lead",
+  "phone": "",
+  "address": {
+    "street": "",
+    "city": "",
+    "state": "",
+    "postalCode": "",
+    "country": ""
+  }
+}
+```
+
+Errors:
+- 400 `Contact email already exists`
+- 401 Unauthorized (missing/invalid session)
+
+---
+
+## 3) Delete contact
+`DELETE {{API_BASE}}/webmail/contacts/:id`
+
+Response 200:
+```json
+{ "success": true }
+```
+
+Errors:
+- 401 Unauthorized (missing/invalid session)
+
+---
+
+## 4) Get contact by email
+`GET {{API_BASE}}/webmail/contacts/by-email?email=user@example.com`
+
+Response 200:
+```json
+{
+  "id": "Q09OVEFDVFM6AAMk...==",
+  "displayName": "User Name",
+  "email": "user@example.com",
+  "givenName": "User",
+  "surname": "Name",
+  "company": "ACME",
+  "jobTitle": "Engineer",
+  "phone": "0900000000",
+  "address": {
+    "street": "123 Nguyen Trai",
+    "city": "HCM",
+    "state": "Q1",
+    "postalCode": "70000",
+    "country": "VN"
+  }
+}
+```
+
+If not found: `null`
+
+Errors:
+- 401 Unauthorized (missing/invalid session)
+
+---
+
+## 5) Get contacts count
+`GET {{API_BASE}}/webmail/contacts/count`
+
+Response 200:
+```json
+{ "total": 123 }
+```
+
+Errors:
+- 401 Unauthorized (missing/invalid session)
+
+---
+
+## 6) Get contact by id
+`GET {{API_BASE}}/webmail/contacts/:id`
+
+Response 200:
+```json
+{
+  "id": "Q09OVEFDVFM6AAMk...==",
+  "displayName": "User Name",
+  "email": "user@example.com",
+  "givenName": "User",
+  "surname": "Name",
+  "company": "ACME",
+  "jobTitle": "Engineer",
+  "phone": "0900000000",
+  "address": {
+    "street": "123 Nguyen Trai",
+    "city": "HCM",
+    "state": "Q1",
+    "postalCode": "70000",
+    "country": "VN"
+  }
+}
+```
+
+If not found: `null`
+
+Errors:
+- 401 Unauthorized (missing/invalid session)
+
+---
+
+## 7) Search contacts
+`GET {{API_BASE}}/webmail/contacts`
+
+Query:
+- `q` string, optional (search by display name or email)
+- `page` number, optional, default `1`
+- `pageSize` number, optional, default `20`
+
+Response 200:
+```json
+{
+  "items": [
+    {
+      "id": "Q09OVEFDVFM6AAMk...==",
+      "displayName": "User Name",
+      "email": "user@example.com",
+      "givenName": "User",
+      "surname": "Name",
+      "company": "ACME",
+      "jobTitle": "Engineer",
+      "phone": "0900000000",
+      "address": {
+        "street": "123 Nguyen Trai",
+        "city": "HCM",
+        "state": "Q1",
+        "postalCode": "70000",
+        "country": "VN"
+      }
+    }
+  ],
+  "total": 1
+}
+```
+
+If `q` is empty, returns all contacts with pagination.
+````
+
+## File: scripts/mailbox/delete-mailbox.ps1
+````powershell
+param()
+
+# 1. Đọc dữ liệu từ NestJS
+$inputJson = [Console]::In.ReadToEnd()
+if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
+$data = $inputJson | ConvertFrom-Json
+
+if (-not $data.email) {
+    Write-Error 'Missing email'
+    exit 1
+}
+
+# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
+$ExchangeServer = $data.ExchangeServer
+$UserAdmin = $data.UserAdmin
+$Password = $data.Password | ConvertTo-SecureString -AsPlainText -Force
+$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
+
+try {
+    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
+    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+
+    $Session = New-PSSession `
+        -ConfigurationName Microsoft.Exchange `
+        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
+        -Authentication Basic `
+        -Credential $Credential `
+        -SessionOption $SessionOption `
+        -AllowRedirection `
+        -ErrorAction Stop
+
+    # 3. Chạy lệnh Remove-Mailbox vĩnh viễn
+    Invoke-Command -Session $Session -ScriptBlock {
+        param($email)
+        Remove-Mailbox -Identity $email -Permanent $true -Confirm:$false
+    } -ArgumentList $data.email
+
+    Write-Output "successfully_deleted:$($data.email)"
+
+    # 4. Dọn dẹp session
+    Remove-PSSession $Session
+    exit 0
+
+} catch {
+    Write-Error "Lỗi: $($_.Exception.Message)"
+    if ($Session) { Remove-PSSession $Session }
+    exit 1
+}
+````
+
+## File: scripts/mailbox/restore-mailbox.ps1
+````powershell
+param()
+
+# 1. Đọc dữ liệu từ NestJS
+$inputJson = [Console]::In.ReadToEnd()
+if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
+$data = $inputJson | ConvertFrom-Json
+
+if (-not $data.email) {
+    Write-Error 'Missing email'
+    exit 1
+}
+
+# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
+$ExchangeServer = $data.ExchangeServer
+$UserAdmin = $data.UserAdmin
+$Password = $data.Password | ConvertTo-SecureString -AsPlainText -Force
+$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
+
+try {
+    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
+    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+
+    $Session = New-PSSession `
+        -ConfigurationName Microsoft.Exchange `
+        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
+        -Authentication Basic `
+        -Credential $Credential `
+        -SessionOption $SessionOption `
+        -AllowRedirection `
+        -ErrorAction Stop
+
+    # 3. Chạy lệnh Enable-Mailbox trực tiếp trên Session đó bằng Invoke-Command
+    Invoke-Command -Session $Session -ScriptBlock {
+        param($email)
+        Enable-Mailbox -Identity $email -Confirm:$false
+    } -ArgumentList $data.email
+
+    Write-Output "successfully_restored:$($data.email)"
+
+    # 4. Dọn dẹp session
+    Remove-PSSession $Session
+    exit 0
+
+} catch {
+    Write-Error "Lỗi: $($_.Exception.Message)"
+    if ($Session) { Remove-PSSession $Session }
+    exit 1
+}
+````
+
+## File: src/exchange/controllers/contacts.controller.ts
+````typescript
+import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiBody, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
+import { ContactNoteService } from '../services/contact-note.service';
+import { CreateContactDto, UpdateContactDto } from '../dto/contact-note.dto';
+
+@ApiTags('Contacts')
+@Controller('webmail/contacts')
+@UseGuards(ExchangeAuthGuard)
+export class ContactsController {
+  constructor(private readonly contactNoteService: ContactNoteService) {}
+
+  @Post()
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Create contact' })
+  @ApiBody({ type: CreateContactDto })
+  async createContact(@Body() dto: CreateContactDto) {
+    return this.contactNoteService.createContact(dto);
+  }
+
+  @Put(':id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Update contact' })
+  @ApiBody({ type: UpdateContactDto })
+  async updateContact(@Param('id') id: string, @Body() dto: UpdateContactDto) {
+    return this.contactNoteService.updateContact(id, dto);
+  }
+
+  @Delete(':id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Delete contact' })
+  async deleteContact(@Param('id') id: string) {
+    return this.contactNoteService.deleteContact(id);
+  }
+
+  @Get('by-email')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Get contact by email' })
+  @ApiQuery({ name: 'email', required: true })
+  async getContactByEmail(@Query('email') email: string) {
+    return this.contactNoteService.getContactByEmail(email);
+  }
+
+  @Get('count')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Get contacts count' })
+  async getContactsCount() {
+    return this.contactNoteService.getContactsCount();
+  }
+
+  @Get(':id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Get contact by id' })
+  @ApiParam({ name: 'id', required: true })
+  async getContactById(@Param('id') id: string) {
+    return this.contactNoteService.getContactById(id);
+  }
+
+  @Get()
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Search contacts' })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'pageSize', required: false })
+  async searchContacts(
+    @Query('q') q: string = '',
+    @Query('page') page: number = 1,
+    @Query('pageSize') pageSize: number = 20,
+  ) {
+    return this.contactNoteService.searchContacts(q, Number(page), Number(pageSize));
+  }
+}
+````
+
+## File: src/exchange/controllers/notes.controller.ts
+````typescript
+import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiBody, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
+import { ContactNoteService } from '../services/contact-note.service';
+import { CreateNoteDto, UpdateNoteDto } from '../dto/contact-note.dto';
+
+@ApiTags('Notes')
+@Controller('webmail/notes')
+@UseGuards(ExchangeAuthGuard)
+export class NotesController {
+  constructor(private readonly contactNoteService: ContactNoteService) {}
+
+  @Get()
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'List notes' })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'pageSize', required: false })
+  async listNotes(
+    @Query('page') page: number = 1,
+    @Query('pageSize') pageSize: number = 20,
+  ) {
+    return this.contactNoteService.listNotes(Number(page), Number(pageSize));
+  }
+
+  @Post()
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Create note' })
+  @ApiBody({ type: CreateNoteDto })
+  async createNote(@Body() dto: CreateNoteDto) {
+    return this.contactNoteService.createNote(dto);
+  }
+
+  @Put(':id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Update note' })
+  @ApiBody({ type: UpdateNoteDto })
+  async updateNote(@Param('id') id: string, @Body() dto: UpdateNoteDto) {
+    return this.contactNoteService.updateNote(id, dto);
+  }
+
+  @Delete(':id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Delete note' })
+  async deleteNote(@Param('id') id: string) {
+    return this.contactNoteService.deleteNote(id);
+  }
+}
+````
+
+## File: src/exchange/dto/contact-note.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+import { IsEmail, IsNotEmpty, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class ContactAddressDto {
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  street?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  city?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  state?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  postalCode?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  country?: string;
+}
+
+export class CreateContactDto {
+  @ApiProperty({ example: 'user@example.com' })
+  @IsEmail()
+  email!: string;
+
+  @ApiProperty({ example: 'User Name' })
+  @IsString()
+  @IsNotEmpty()
+  displayName!: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  givenName?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  surname?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  company?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  jobTitle?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  phone?: string;
+
+  @ApiProperty({ required: false, type: ContactAddressDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ContactAddressDto)
+  address?: ContactAddressDto;
+}
+
+export class UpdateContactDto {
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  displayName?: string;
+
+  @ApiProperty({ required: false })
+  @IsEmail()
+  @IsOptional()
+  email?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  givenName?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  surname?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  company?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  jobTitle?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  phone?: string;
+
+  @ApiProperty({ required: false, type: ContactAddressDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ContactAddressDto)
+  address?: ContactAddressDto;
+}
+
+export class CreateNoteDto {
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  subject?: string;
+
+  @ApiProperty({ example: 'My note content' })
+  @IsString()
+  @IsNotEmpty()
+  content!: string;
+}
+
+export class UpdateNoteDto {
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  subject?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  content?: string;
+}
+````
+
+## File: src/exchange/interfaces/contact-note.interface.ts
+````typescript
+export interface ExchangeContact {
+  id: string;
+  displayName: string;
+  email: string;
+  givenName?: string;
+  surname?: string;
+  company?: string;
+  jobTitle?: string;
+  phone?: string;
+  address?: ExchangeContactAddress;
+}
+
+export interface ExchangeContactAddress {
+  street?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+}
+
+export interface ExchangeNote {
+  id: string;
+  subject?: string;
+  content: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
+export interface ExchangeSearchResult<T> {
+  items: T[];
+  total: number;
+}
+````
+
+## File: src/exchange/services/contact-note.service.ts
+````typescript
+import { Injectable, Logger, Scope, BadRequestException, Inject } from '@nestjs/common';
+import { REQUEST } from '@nestjs/core';
+import { EwsMailProvider } from './ews-mail.provider';
+import { DragonflyService } from '../../common/cache/dragonfly.service';
+import { ExchangeAuthService } from './exchange-auth.service';
+import {
+  ExchangeContact,
+  ExchangeNote,
+  ExchangeSearchResult,
+} from '../interfaces/contact-note.interface';
+
+@Injectable({ scope: Scope.REQUEST })
+export class ContactNoteService {
+  private readonly logger = new Logger(ContactNoteService.name);
+  private readonly CONTACT_COUNT_TTL = 300;
+
+  constructor(
+    private readonly provider: EwsMailProvider,
+    private readonly dragonfly: DragonflyService,
+    private readonly authService: ExchangeAuthService,
+    @Inject(REQUEST) private readonly request: any,
+  ) {}
+
+  private async withProvider<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      await this.provider.connect();
+      return await operation();
+    } catch (error) {
+      this.logger.error(`Exchange operation failed: ${error.message}`, error.stack);
+      throw error;
+    } finally {
+      await this.provider.disconnect();
+    }
+  }
+
+  private async getEmailFromSession(): Promise<string | null> {
+    const token = this.request.cookies?.['exchange_session'];
+    if (!token) return null;
+    const creds = await this.authService.getCredentials(token);
+    return creds?.email || null;
+  }
+
+  private getContactsCountCacheKey(email: string): string {
+    return `exchange:contacts:count:${email}`;
+  }
+
+  private async refreshContactsCountCache(email: string): Promise<void> {
+    if (!this.dragonfly.enabled) return;
+    const total = await this.withProvider(() => this.provider.getContactsCount());
+    await this.dragonfly.set(
+      this.getContactsCountCacheKey(email),
+      total,
+      this.CONTACT_COUNT_TTL,
+    );
+  }
+
+  async createContact(payload: {
+    displayName: string;
+    email: string;
+    givenName?: string;
+    surname?: string;
+    company?: string;
+    jobTitle?: string;
+    phone?: string;
+    address?: {
+      street?: string;
+      city?: string;
+      state?: string;
+      postalCode?: string;
+      country?: string;
+    };
+  }): Promise<ExchangeContact> {
+    if (!payload.email) {
+      throw new BadRequestException('Email is required');
+    }
+    const result = await this.withProvider(() => this.provider.createContact(payload));
+
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      await this.refreshContactsCountCache(email);
+    }
+
+    return result;
+  }
+
+  async updateContact(
+    id: string,
+    payload: {
+      displayName?: string;
+      email?: string;
+      givenName?: string;
+      surname?: string;
+      company?: string;
+      jobTitle?: string;
+      phone?: string;
+      address?: {
+        street?: string;
+        city?: string;
+        state?: string;
+        postalCode?: string;
+        country?: string;
+      };
+    },
+  ): Promise<ExchangeContact> {
+    return this.withProvider(() => this.provider.updateContact(id, payload));
+  }
+
+  async deleteContact(id: string): Promise<{ success: boolean }> {
+    await this.withProvider(() => this.provider.deleteContact(id));
+
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      await this.refreshContactsCountCache(email);
+    }
+
+    return { success: true };
+  }
+
+  async getContactByEmail(email: string): Promise<ExchangeContact | null> {
+    return this.withProvider(() => this.provider.getContactByEmail(email));
+  }
+
+  async getContactById(id: string): Promise<ExchangeContact | null> {
+    return this.withProvider(() => this.provider.getContactById(id));
+  }
+
+  async searchContacts(
+    keyword: string,
+    page: number,
+    pageSize: number,
+  ): Promise<ExchangeSearchResult<ExchangeContact>> {
+    return this.withProvider(() => this.provider.searchContacts(keyword, page, pageSize));
+  }
+
+  async getContactsCount(): Promise<{ total: number }> {
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      const key = this.getContactsCountCacheKey(email);
+      const cached = await this.dragonfly.get<number>(key);
+      if (cached !== null) {
+        return { total: cached };
+      }
+
+      const total = await this.withProvider(() => this.provider.getContactsCount());
+      await this.dragonfly.set(key, total, this.CONTACT_COUNT_TTL);
+      return { total };
+    }
+
+    const total = await this.withProvider(() => this.provider.getContactsCount());
+    return { total };
+  }
+
+  async listNotes(page: number, pageSize: number): Promise<ExchangeSearchResult<ExchangeNote>> {
+    return this.withProvider(() => this.provider.listNotes(page, pageSize));
+  }
+
+  async createNote(payload: { subject?: string; content: string }): Promise<ExchangeNote> {
+    if (!payload.content) {
+      throw new BadRequestException('Content is required');
+    }
+    return this.withProvider(() => this.provider.createNote(payload));
+  }
+
+  async updateNote(id: string, payload: { subject?: string; content?: string }): Promise<ExchangeNote> {
+    return this.withProvider(() => this.provider.updateNote(id, payload));
+  }
+
+  async deleteNote(id: string): Promise<{ success: boolean }> {
+    await this.withProvider(() => this.provider.deleteNote(id));
+    return { success: true };
+  }
+}
+````
 
 ## File: .dockerignore
 ````
@@ -400,6 +1271,176 @@ curl -X POST http://localhost:3000/webmail/mail/move-batch \
   - `src/exchange/services/mail.service.ts`
 - Provider:
   - `src/exchange/services/imap-mail.provider.ts`
+````
+
+## File: docs/MAILBOX_MODULE_GUIDE.md
+````markdown
+# Hướng Dẫn Triển Khai Module Mailbox (Backend + Frontend)
+
+## 1. Tổng quan
+Module quản lý user/mailbox cho Exchange on‑prem:
+- CRUD mailbox thật thông qua script.
+- Tra cứu GAL qua EWS.
+- Đồng bộ DB → Exchange.
+- Xóa = disable mailbox.
+
+## 2. Cấu hình Backend
+
+### 2.1. Biến môi trường
+Thêm vào `.env` (tham khảo `.env.example`):
+```
+MAILBOX_SCRIPT_CREATE=<path-to-create-script>
+MAILBOX_SCRIPT_UPDATE=<path-to-update-script>
+MAILBOX_SCRIPT_DISABLE=<path-to-disable-script>
+MAILBOX_SCRIPT_TIMEOUT_MS=60000
+
+# Dùng cho GAL khi không bật SSO
+EWS_ADMIN_EMAIL=<admin@domain.local>
+EWS_ADMIN_PASSWORD=<admin_password>
+```
+
+### 2.2. Hợp đồng Script
+Backend gọi script qua stdin với JSON payload:
+
+Create:
+```json
+{ "action": "create", "email": "user@domain.local", "name": "User Name", "password": "Temp@123" }
+```
+Update:
+```json
+{ "action": "update", "email": "new@domain.local", "oldEmail": "old@domain.local", "name": "New Name", "isActive": true }
+```
+Disable:
+```json
+{ "action": "disable", "email": "user@domain.local" }
+```
+
+Script cần:
+- đọc JSON từ stdin
+- trả exit code 0 nếu thành công
+- ghi lỗi vào stderr nếu thất bại
+
+### 2.3. Kết nối Module
+Module đã được mount sẵn trong `AppModule`:
+- `src/mailbox/*`
+- `src/app.module.ts`
+
+### 2.4. GAL (EWS)
+GAL search dùng EWS ResolveName.
+Nếu `EWS_SSO_ENABLED=false`, cần `EWS_ADMIN_EMAIL` và `EWS_ADMIN_PASSWORD`.
+
+## 3. API cho Frontend
+
+### Auth (Cookie)
+Tất cả endpoint yêu cầu cookie đăng nhập (JWT cookie do backend set).
+Header:
+```
+Cookie: exchange_session=<token>
+```
+
+### 3.1. Danh sách mailbox
+`GET /mailbox`
+Query: `page`, `pageSize`, `search`
+
+Response:
+```json
+{ "items": [ { "id": "...", "email": "...", "name": "..." } ], "total": 12, "page": 1, "pageSize": 20 }
+```
+
+### 3.2. Chi tiết mailbox
+`GET /mailbox/:id`
+
+### 3.3. Tạo mailbox
+`POST /mailbox`
+Body:
+```json
+{ "email": "user@domain.local", "name": "User Name", "password": "Temp@123" }
+```
+
+### 3.4. Cập nhật mailbox
+`PUT /mailbox/:id`
+Body:
+```json
+{ "name": "New Name", "email": "new@domain.local", "isActive": true }
+```
+
+### 3.5. Vô hiệu hóa mailbox
+`DELETE /mailbox/:id`
+
+### 3.6. Import CSV
+`POST /mailbox/import`
+Body:
+```json
+{ "csv": "email,name,password\nuser@domain.local,User Name,Temp@123" }
+```
+Response:
+```json
+{ "results": [ { "email": "user@domain.local", "success": true } ] }
+```
+
+### 3.7. Tra cứu GAL
+`GET /mailbox/gal/search?q=<keyword>`
+
+Response:
+```json
+[ { "name": "User Name", "email": "user@domain.local" } ]
+```
+
+### 3.8. Đồng bộ mailbox
+`POST /mailbox/sync/:id`
+Body (optional):
+```json
+{ "password": "Temp@123" }
+```
+
+## 4. Ghi chú cho Frontend
+- Khi tạo user, UI nên yêu cầu `email`, `name`, `password`.
+- Update cho phép đổi email/name.
+- Delete chỉ là disable, không xóa DB record.
+- CSV import: FE chỉ cần gửi string raw.
+
+## 5. Xử lý lỗi
+- `409 Conflict` nếu email đã tồn tại.
+- `404 Not Found` nếu user không có.
+- `400 Bad Request` nếu CSV thiếu header hoặc sync thiếu password.
+- Lỗi script sẽ trả `500` với message từ stderr.
+
+## 6. Ví dụ Script PowerShell (Pseudo)
+```powershell
+# Read JSON payload
+$inputJson = [Console]::In.ReadToEnd()
+$data = $inputJson | ConvertFrom-Json
+
+switch ($data.action) {
+  'create' { New-Mailbox -UserPrincipalName $data.email -Name $data.name -Password (ConvertTo-SecureString $data.password -AsPlainText -Force) }
+  'update' { Set-Mailbox -Identity $data.oldEmail -PrimarySmtpAddress $data.email -DisplayName $data.name }
+  'disable' { Disable-Mailbox -Identity $data.email -Confirm:$false }
+}
+```
+
+## 7. Checklist triển khai
+- [ ] Cấu hình env script path
+- [ ] Cấu hình EWS admin nếu cần
+- [ ] Kiểm tra script chạy thủ công OK
+- [ ] Test API create/update/delete
+- [ ] Test GAL search
+
+## Script cấu hình mẫu
+Các script PowerShell mẫu đã được đặt trong `scripts/mailbox/`:
+- `create-mailbox.ps1`
+- `update-mailbox.ps1`
+- `disable-mailbox.ps1`
+
+Trong `.env` dùng các path mặc định:
+```
+MAILBOX_SCRIPT_CREATE=./scripts/mailbox/create-mailbox.ps1
+MAILBOX_SCRIPT_UPDATE=./scripts/mailbox/update-mailbox.ps1
+MAILBOX_SCRIPT_DISABLE=./scripts/mailbox/disable-mailbox.ps1
+```
+
+Lưu ý:
+- Các script này yêu cầu chạy trong môi trường có Exchange Management Shell.
+- Nếu chạy trên server khác, cần mở remote session hoặc cài tool phù hợp.
 ````
 
 ## File: docs/PERMANENT_DELETE_MAIL_API.md
@@ -706,92 +1747,6 @@ Ghi chu:
 - `docs/PERMANENT_DELETE_MAIL_API.md`
 ````
 
-## File: docs/REQUIREMENTS_2_2_STATUS.md
-````markdown
-# 2.2 Yêu cầu chức năng - đối chiếu với source code
-
-Cập nhật: 2026-02-23
-Phạm vi đối chiếu: source code hiện có trong repo `nestjs-base-be`.
-
-Quy ước:
-- `x`: Đã có trong source code.
-- `~`: Mới có một phần, cần bổ sung thêm để đúng như yêu cầu.
-- `` (trong cột Có): Chưa thấy trong source code hiện tại.
-
-## I. Chức năng dành cho người dùng
-
-| Stt | Nhóm chức năng/chức năng | Có | Trạng thái code | Ghi chú |
-|---|---|---|---|---|
-| 1 | Gửi/nhận thư điện tử (trong và ngoài cơ quan) | x | Đã có | Có API gửi mail (`POST /webmail/mail/send`) và API đọc/list mail (`GET /webmail/mail`, `GET /webmail/mail/:id`). |
-| 2 | Gửi/nhận kèm tệp (file Word, Excel, ảnh, PDF...) | x | Đã có | `SendMailDto.attachments` + xử lý attachment trong SMTP/IMAP; có module file upload/stream. |
-| 3 | Lưu thư nháp để gửi sau. | ~ | Một phần | Có folder `Drafts` để đọc/list; chưa thấy API tạo/lưu draft riêng trước khi gửi. |
-| 4 | Chuyển tiếp hoặc trả lời thư | ~ | Một phần | Có API gửi mail tổng quát; có field `replyTo`; chưa có endpoint `reply/forward` chuyên biệt. |
-| 5 | Đánh dấu thư quan trọng, lọc thư chưa đọc. | ~ | Một phần | Có folder `Starred` (flagged) và API mark read/unread; chưa có API bật/tắt `star` và query filter unread riêng. |
-| 6 | Sắp xếp thư vào các thư mục riêng. | x | Đã có | Có API move 1 mail và move batch (`/webmail/mail/move`, `/webmail/mail/move-batch`). |
-| 7 | Tìm kiếm và lọc thư | ~ | Một phần | Có API search (`/webmail/mail/search`); chưa có bộ filter đầy đủ theo nhiều điều kiện. |
-| 8 | Tìm thư theo người gửi, tiêu đề, nội dung, ngày tháng. | ~ | Một phần | Search hiện tại theo `from/subject/body`; chưa thấy filter theo ngày tháng. |
-| 9 | Lọc thư có file đính kèm hoặc theo trạng thái (đã đọc/chưa đọc/...) |  | Chưa có | API list trả về `hasAttachments`, `isRead` nhưng chưa có filter query theo các trạng thái này. |
-| 10 | Hộp thư đến (Inbox) | x | Đã có | Có mapping folder `INBOX` và API list folder/mail. |
-| 11 | Hộp thư đi (Outbox) |  | Chưa có | Chưa thấy folder/API outbox riêng. |
-| 12 | Thư đã gửi (Sent Items) | x | Đã có | Có folder `Sent Items`; mail gửi xong được append vào Sent. |
-| 13 | Thư nháp (Drafts) | ~ | Một phần | Có folder `Drafts` để truy xuất; chưa có luồng tạo draft riêng. |
-| 14 | Thư đã xóa (Deleted Items) | x | Đã có | Có mapping `Trash` alias `Deleted Items`; có move vào trash và permanent delete. |
-| 15 | Thư rác (Junk Email) | x | Đã có | Có mapping folder `Spam` alias `Junk Email`. |
-| 16 | Nguồn tin RSS (RSS Feeds): Nhận tin tức tự động từ các trang web đăng ký. |  | Chưa có | Chưa thấy module/API RSS. |
-| 17 | Lịch làm việc và nhắc việc |  | Chưa có | Chưa thấy module/API calendar/reminder. |
-| 18 | Tạo lịch làm việc |  | Chưa có | Chưa thấy API tạo sự kiện lịch. |
-| 19 | Hẹn giờ, đặt lời nhắc |  | Chưa có | Chưa thấy API reminder/alarm. |
-| 20 | Lặp lại lịch theo ngày, tuần, tháng. |  | Chưa có | Chưa thấy recurrence rule cho lịch. |
-| 21 | Quản lý danh bạ |  | Chưa có | Chưa thấy module/API contacts. |
-| 22 | Tra cứu danh bạ |  | Chưa có | Chưa thấy API tìm kiếm danh bạ. |
-| 23 | Ghi chú và sổ tay |  | Chưa có | Chưa thấy module/API notes. |
-| 24 | Sử dụng trên máy tính, điện thoại, hoặc qua trình duyệt web. | ~ | Một phần | Backend REST API có thể dùng cho web/mobile; repo hiện tại không chứa client desktop/mobile/webmail UI đầy đủ. |
-| 25 | Đồng bộ dữ liệu giữa các thiết bị. | ~ | Một phần | Dữ liệu mail đồng bộ theo Exchange/IMAP; chưa có cơ chế đồng bộ thiết bị riêng ở backend này. |
-
-## II. Chức năng dành cho quản trị
-
-### Quản lý tài khoản
-
-| Stt | Nhóm chức năng/chức năng | Có | Trạng thái code | Ghi chú |
-|---|---|---|---|---|
-| 26 | Tạo tài khoản email | ~ | Một phần | Có tạo bản ghi `User` nội bộ khi login Exchange lần đầu; chưa có API/provisioning tạo mailbox email quản trị. |
-| 27 | Xóa hoặc tạm khóa tài khoản |  | Chưa có | Chưa thấy API disable/delete account. |
-| 28 | Quản lý hộp thư dùng chung cho nhóm hoặc phòng ban. |  | Chưa có | Chưa thấy shared mailbox management. |
-| 29 | Cài đặt giới hạn dung lượng hộp thư. |  | Chưa có | Chưa thấy quota setting APIs. |
-
-### Bảo mật và lọc thư
-
-| Stt | Nhóm chức năng/chức năng | Có | Trạng thái code | Ghi chú |
-|---|---|---|---|---|
-| 30 | Ngăn thư rác (spam) và thư chứa mã độc | ~ | Một phần | Có folder Spam/Junk để xử lý ở mức mailbox; chưa thấy engine/rule lọc spam-malware tại backend này. |
-| 31 | Đặt quy tắc để tự động xử lý hoặc chặn thư theo điều kiện. |  | Chưa có | Chưa thấy message rules/filter rules APIs. |
-
-### Theo dõi và báo cáo
-
-| Stt | Nhóm chức năng/chức năng | Có | Trạng thái code | Ghi chú |
-|---|---|---|---|---|
-| 32 | Xem thống kê số lượng thư gửi/nhận | ~ | Một phần | Có `GET /webmail/folders/counts` (total/unread theo folder); chưa có báo cáo gửi/nhận theo kỳ. |
-| 33 | Xem lịch sử đăng nhập, gửi nhận | ~ | Một phần | Có audit interceptor ghi CUD vào DB; chưa thấy API UI quản trị để xem lịch sử đăng nhập/gửi-nhận đầy đủ. |
-| 34 | Cảnh báo khi dung lượng hộp thư hoặc máy chủ sắp đầy |  | Chưa có | Chưa thấy cảnh báo quota/server capacity. |
-
-### Sao lưu và phục hồi
-
-| Stt | Nhóm chức năng/chức năng | Có | Trạng thái code | Ghi chú |
-|---|---|---|---|---|
-| 35 | Sao lưu toàn bộ dữ liệu email. |  | Chưa có | Chưa thấy backup service/API. |
-| 36 | Khôi phục từng thư hoặc cả hộp thư khi cần. |  | Chưa có | Chưa thấy restore mail/mailbox APIs. |
-
-## Bằng chứng source code chính
-
-- Mail APIs: `src/exchange/controllers/exchange.controller.ts`
-- Mail business logic: `src/exchange/services/mail.service.ts`
-- IMAP/SMTP provider: `src/exchange/services/imap-mail.provider.ts`
-- Folder mapping (Inbox/Sent/Drafts/Spam/Trash/Starred): `src/exchange/constants/mail-folders.constant.ts`
-- Exchange auth + khởi tạo folder mailbox: `src/exchange/services/exchange-auth.service.ts`
-- Audit interceptor/service: `src/audit/audit-log.interceptor.ts`, `src/audit/audit.service.ts`
-- File upload/asset APIs: `src/files/files.controller.ts`, `src/files/files.service.ts`
-````
-
 ## File: eslint.config.mjs
 ````javascript
 // @ts-check
@@ -840,6 +1795,176 @@ export default tseslint.config(
   "compilerOptions": {
     "deleteOutDir": true
   }
+}
+````
+
+## File: scripts/mailbox/create-mailbox.ps1
+````powershell
+param()
+
+# 1. Đọc dữ liệu từ NestJS
+$inputJson = [Console]::In.ReadToEnd()
+if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
+$data = $inputJson | ConvertFrom-Json
+
+if (-not $data.email -or -not $data.name -or -not $data.password) {
+  Write-Error 'Missing email, name, or password'
+  exit 1
+}
+
+# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
+$ExchangeServer = $data.ExchangeServer
+$UserAdmin = $data.UserAdmin
+$Password = $data.Password | ConvertTo-SecureString -AsPlainText -Force
+$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
+
+try {
+    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
+    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+
+    $Session = New-PSSession `
+        -ConfigurationName Microsoft.Exchange `
+        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
+        -Authentication Basic `
+        -Credential $Credential `
+        -SessionOption $SessionOption `
+        -AllowRedirection `
+        -ErrorAction Stop
+
+    # 3. Chạy lệnh New-Mailbox trực tiếp trên Session đó bằng Invoke-Command
+    Invoke-Command -Session $Session -ScriptBlock {
+        param($email, $name, $password)
+        $secure = ConvertTo-SecureString $password -AsPlainText -Force
+        New-Mailbox -UserPrincipalName $email -Name $name -Password $secure
+    } -ArgumentList $data.email, $data.name, $data.password
+
+    Write-Output "created:$($data.email)"
+
+    # 4. Dọn dẹp session
+    Remove-PSSession $Session
+    exit 0
+
+} catch {
+    Write-Error "Lỗi: $($_.Exception.Message)"
+    if ($Session) { Remove-PSSession $Session }
+    exit 1
+}
+````
+
+## File: scripts/mailbox/disable-mailbox.ps1
+````powershell
+param()
+
+# 1. Đọc dữ liệu từ NestJS
+$inputJson = [Console]::In.ReadToEnd()
+if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
+$data = $inputJson | ConvertFrom-Json
+
+if (-not $data.email) {
+    Write-Error 'Missing email'
+    exit 1
+}
+
+# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
+$ExchangeServer = $data.ExchangeServer
+$UserAdmin = $data.UserAdmin
+$Password = $data.Password | ConvertTo-SecureString -AsPlainText -Force
+$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
+
+try {
+    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
+    # Sử dụng Kerberos authentication cho môi trường Domain
+    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+
+    $Session = New-PSSession `
+        -ConfigurationName Microsoft.Exchange `
+        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
+        -Authentication Basic `
+        -Credential $Credential `
+        -SessionOption $SessionOption `
+        -AllowRedirection `
+        -ErrorAction Stop
+
+    # 3. Chạy lệnh Disable-Mailbox trực tiếp trên Session đó bằng Invoke-Command
+    Invoke-Command -Session $Session -ScriptBlock {
+        param($email)
+        # Load module Exchange nếu cần (trong session thường đã có sẵn)
+        Disable-Mailbox -Identity $email -Confirm:$false
+    } -ArgumentList $data.email
+
+    Write-Output "successfully_disabled:$($data.email)"
+
+    # 4. Dọn dẹp session
+    Remove-PSSession $Session
+    exit 0
+
+} catch {
+    Write-Error "Lỗi: $($_.Exception.Message)"
+    if ($Session) { Remove-PSSession $Session }
+    exit 1
+}
+````
+
+## File: scripts/mailbox/update-mailbox.ps1
+````powershell
+param()
+
+# 1. Đọc dữ liệu từ NestJS
+$inputJson = [Console]::In.ReadToEnd()
+if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
+$data = $inputJson | ConvertFrom-Json
+
+if (-not $data.email) {
+  Write-Error 'Missing email'
+  exit 1
+}
+
+# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
+$ExchangeServer = $data.ExchangeServer
+$UserAdmin = $data.UserAdmin
+$Password = $data.Password | ConvertTo-SecureString -AsPlainText -Force
+$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
+
+try {
+    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
+    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+
+    $Session = New-PSSession `
+        -ConfigurationName Microsoft.Exchange `
+        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
+        -Authentication Basic `
+        -Credential $Credential `
+        -SessionOption $SessionOption `
+        -AllowRedirection `
+        -ErrorAction Stop
+
+    # 3. Chạy lệnh Update trực tiếp trên Session đó bằng Invoke-Command
+    Invoke-Command -Session $Session -ScriptBlock {
+        param($email, $oldEmail, $name, $isActive)
+        
+        if ($oldEmail -and $oldEmail -ne $email) {
+            Set-Mailbox -Identity $oldEmail -PrimarySmtpAddress $email
+        }
+
+        if ($name) {
+            Set-Mailbox -Identity $email -DisplayName $name
+        }
+
+        if ($null -ne $isActive -and -not $isActive) {
+            Disable-Mailbox -Identity $email -Confirm:$false
+        }
+    } -ArgumentList $data.email, $data.oldEmail, $data.name, $data.isActive
+
+    Write-Output "updated:$($data.email)"
+
+    # 4. Dọn dẹp session
+    Remove-PSSession $Session
+    exit 0
+
+} catch {
+    Write-Error "Lỗi: $($_.Exception.Message)"
+    if ($Session) { Remove-PSSession $Session }
+    exit 1
 }
 ````
 
@@ -1765,6 +2890,642 @@ export class FilesService {
     }
 
     return deletedCount;
+  }
+}
+````
+
+## File: src/mailbox/gal.service.ts
+````typescript
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import {
+  ExchangeService,
+  ExchangeVersion,
+  OAuthCredentials,
+  WebCredentials,
+  Uri,
+  ResolveNameSearchLocation,
+} from 'ews-javascript-api';
+import { XhrApi } from '@ewsjs/xhr';
+
+(ExchangeService as any).XHRApi = new XhrApi();
+
+@Injectable()
+export class GalService {
+  constructor(private readonly configService: ConfigService) {}
+
+  async search(query: string): Promise<{ name: string; email: string }[]> {
+    if (!query?.trim()) return [];
+    const service = await this.createService();
+
+    const response = await service.ResolveName(
+      query,
+      ResolveNameSearchLocation.DirectoryOnly,
+      true,
+    );
+
+    const resolutions = response?.GetEnumerator?.() ?? [];
+    return resolutions.map((r: any) => ({
+      name: r?.Mailbox?.Name ?? '',
+      email: r?.Mailbox?.Address ?? '',
+    })).filter((r: any) => r.email);
+  }
+
+  private async createService(): Promise<ExchangeService> {
+    const rejectUnauthorized =
+      this.configService.get<string>('EWS_TLS_REJECT_UNAUTHORIZED') !== 'false';
+    if (!rejectUnauthorized) {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    }
+
+    const url = this.configService.get<string>('EWS_URL');
+    if (!url) {
+      throw new Error('EWS_URL is not configured');
+    }
+
+    const version =
+      this.configService.get<string>('EWS_VERSION') || 'Exchange2016';
+
+    const service = new ExchangeService(
+      ExchangeVersion[version as keyof typeof ExchangeVersion] ||
+        ExchangeVersion.Exchange2016,
+    );
+    service.Url = new Uri(url);
+
+    const ssoEnabled = this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
+    if (ssoEnabled) {
+      const tokenUrl = this.configService.get<string>('EWS_TOKEN_URL');
+      const clientId = this.configService.get<string>('EWS_CLIENT_ID');
+      const clientSecret = this.configService.get<string>('EWS_CLIENT_SECRET');
+      const scope = this.configService.get<string>('EWS_SCOPE');
+      const resource = this.configService.get<string>('EWS_RESOURCE');
+
+      if (!tokenUrl || !clientId || !clientSecret) {
+        throw new Error('EWS OAuth2 config is missing');
+      }
+
+      const body = new URLSearchParams();
+      body.set('client_id', clientId);
+      body.set('client_secret', clientSecret);
+      body.set('grant_type', 'client_credentials');
+      if (scope) {
+        body.set('scope', scope);
+      } else if (resource) {
+        body.set('resource', resource);
+      }
+
+      const response = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new UnauthorizedException(`Failed to fetch EWS token: ${text}`);
+      }
+
+      const payload = (await response.json()) as { access_token: string };
+      service.Credentials = new OAuthCredentials(payload.access_token);
+      return service;
+    }
+
+    const adminEmail = this.configService.get<string>('EWS_ADMIN_EMAIL');
+    const adminPassword = this.configService.get<string>('EWS_ADMIN_PASSWORD');
+    if (!adminEmail || !adminPassword) {
+      throw new Error('EWS_ADMIN_EMAIL/EWS_ADMIN_PASSWORD is not configured');
+    }
+
+    service.Credentials = new WebCredentials(adminEmail, adminPassword);
+    return service;
+  }
+}
+````
+
+## File: src/mailbox/mailbox.controller.ts
+````typescript
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiBody, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { GalService } from './gal.service';
+import { MailboxService } from './mailbox.service';
+import { CreateMailboxDto, ImportMailboxDto, UpdateMailboxDto } from './mailbox.dto';
+import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
+
+@ApiTags('Mailbox')
+@Controller('mailbox')
+@UseGuards(ExchangeAuthGuard)
+export class MailboxController {
+  constructor(
+    private readonly mailboxService: MailboxService,
+    private readonly galService: GalService,
+  ) {}
+
+  @Get()
+  @ApiOperation({ summary: 'List users/mailboxes' })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'pageSize', required: false })
+  @ApiQuery({ name: 'search', required: false })
+  async list(
+    @Query('page') page = 1,
+    @Query('pageSize') pageSize = 20,
+    @Query('search') search?: string,
+  ) {
+    return this.mailboxService.list(Number(page), Number(pageSize), search);
+  }
+
+  @Post()
+  @ApiOperation({ summary: 'Create user/mailbox' })
+  @ApiBody({ type: CreateMailboxDto })
+  async create(@Body() dto: CreateMailboxDto) {
+    return this.mailboxService.create(dto);
+  }
+
+  @Put(':id')
+  @ApiOperation({ summary: 'Update user/mailbox' })
+  @ApiBody({ type: UpdateMailboxDto })
+  async update(@Param('id') id: string, @Body() dto: UpdateMailboxDto) {
+    return this.mailboxService.update(id, dto);
+  }
+
+  @Delete(':id')
+  @ApiOperation({ summary: 'Disable user/mailbox' })
+  async remove(@Param('id') id: string) {
+    return this.mailboxService.remove(id);
+  }
+
+  @Post(':id/restore')
+  @ApiOperation({ summary: 'Restore user/mailbox' })
+  async restore(@Param('id') id: string) {
+    return this.mailboxService.restore(id);
+  }
+
+  @Delete(':id/permanent')
+  @ApiOperation({ summary: 'Permanently delete user/mailbox' })
+  async destroy(@Param('id') id: string) {
+    return this.mailboxService.destroy(id);
+  }
+
+  @Post('import')
+  @ApiOperation({ summary: 'Import users/mailboxes from CSV' })
+  @ApiBody({ type: ImportMailboxDto })
+  async importCsv(@Body() dto: ImportMailboxDto) {
+    return this.mailboxService.importCsv(dto.csv);
+  }
+
+  @Get('gal/search')
+  @ApiOperation({ summary: 'Search GAL via EWS' })
+  @ApiQuery({ name: 'q', required: true })
+  async galSearch(@Query('q') q: string) {
+    return this.galService.search(q);
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Get user/mailbox detail' })
+  async get(@Param('id') id: string) {
+    return this.mailboxService.get(id);
+  }
+
+  @Post('sync/:id')
+  @ApiOperation({ summary: 'Sync mailbox for user' })
+  @ApiBody({ schema: { properties: { password: { type: 'string' } } } })
+  async sync(@Param('id') id: string, @Body('password') password?: string) {
+    return this.mailboxService.sync(id, password);
+  }
+}
+````
+
+## File: src/mailbox/mailbox.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+import { IsBoolean, IsEmail, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+
+export class CreateMailboxDto {
+  @ApiProperty({ example: 'user@domain.local' })
+  @IsEmail()
+  email!: string;
+
+  @ApiProperty({ example: 'User Name' })
+  @IsString()
+  @IsNotEmpty()
+  name!: string;
+
+  @ApiProperty({ example: 'Temp@123' })
+  @IsString()
+  @IsNotEmpty()
+  password!: string;
+}
+
+export class UpdateMailboxDto {
+  @ApiProperty({ example: 'User Name', required: false })
+  @IsString()
+  @IsOptional()
+  name?: string;
+
+  @ApiProperty({ example: 'user@domain.local', required: false })
+  @IsEmail()
+  @IsOptional()
+  email?: string;
+
+  @ApiProperty({ example: true, required: false })
+  @IsBoolean()
+  @IsOptional()
+  isActive?: boolean;
+}
+
+export class ImportMailboxDto {
+  @ApiProperty({ example: 'email,name,password\nuser@domain.local,User Name,Temp@123' })
+  @IsString()
+  @IsNotEmpty()
+  csv!: string;
+}
+````
+
+## File: src/mailbox/mailbox.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
+import { MailboxController } from './mailbox.controller';
+import { MailboxService } from './mailbox.service';
+import { ScriptRunnerService } from './script-runner.service';
+import { GalService } from './gal.service';
+import { ExchangeAuthService } from 'src/exchange/services/exchange-auth.service';
+
+@Module({
+  imports: [AuthModule],
+  controllers: [MailboxController],
+  providers: [MailboxService, ScriptRunnerService, GalService, ExchangeAuthService],
+})
+export class MailboxModule {}
+````
+
+## File: src/mailbox/mailbox.service.ts
+````typescript
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { EntityManager, QueryOrder } from '@mikro-orm/core';
+import { User } from '../database/entities/user.entity';
+import { ScriptRunnerService } from './script-runner.service';
+import { CreateMailboxDto, UpdateMailboxDto } from './mailbox.dto';
+
+@Injectable()
+export class MailboxService {
+  constructor(
+    private readonly em: EntityManager,
+    private readonly scriptRunner: ScriptRunnerService,
+  ) {}
+
+  async list(page: number, pageSize: number, search?: string) {
+    const limit = Math.max(1, Math.min(pageSize || 20, 100));
+    const offset = Math.max(0, (page - 1) * limit);
+
+    const where: any = {};
+    if (search?.trim()) {
+      where.$or = [
+        { email: { $ilike: `%${search}%` } },
+        { name: { $ilike: `%${search}%` } },
+      ];
+    }
+
+    const [items, total] = await this.em.findAndCount(User, where, {
+      limit,
+      offset,
+      orderBy: { createdAt: QueryOrder.DESC },
+    });
+
+    return { items, total, page, pageSize: limit };
+  }
+
+  async get(id: string) {
+    const user = await this.em.findOne(User, { id });
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
+
+  async create(dto: CreateMailboxDto) {
+    const existing = await this.em.findOne(User, { email: dto.email });
+    if (existing) throw new ConflictException('Email already exists');
+
+    await this.scriptRunner.run('create', {
+      action: 'create',
+      email: dto.email,
+      name: dto.name,
+      password: dto.password,
+    });
+
+    const now = new Date();
+    const user = this.em.create(User, {
+      email: dto.email,
+      name: dto.name,
+      isActive: true,
+      mailboxInitialized: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await this.em.persistAndFlush(user);
+
+    return user;
+  }
+
+  async update(id: string, dto: UpdateMailboxDto) {
+    const user = await this.em.findOne(User, { id });
+    if (!user) throw new NotFoundException('User not found');
+
+    if (dto.email && dto.email !== user.email) {
+      const existing = await this.em.findOne(User, { email: dto.email });
+      if (existing) throw new ConflictException('Email already exists');
+    }
+
+    const oldEmail = user.email;
+    const nextName = dto.name ?? user.name;
+    const nextEmail = dto.email ?? user.email;
+    const nextIsActive = dto.isActive ?? user.isActive;
+
+    await this.scriptRunner.run('update', {
+      action: 'update',
+      email: nextEmail,
+      oldEmail,
+      name: nextName,
+      isActive: nextIsActive,
+    });
+
+    user.name = nextName;
+    user.email = nextEmail;
+    user.isActive = nextIsActive;
+    await this.em.persistAndFlush(user);
+
+    return user;
+  }
+
+  async remove(id: string) {
+    const user = await this.em.findOne(User, { id });
+    if (!user) throw new NotFoundException('User not found');
+
+    await this.scriptRunner.run('disable', {
+      action: 'disable',
+      email: user.email,
+    });
+
+    user.isActive = false;
+    await this.em.persistAndFlush(user);
+
+    return { success: true };
+  }
+
+  async restore(id: string) {
+    const user = await this.em.findOne(User, { id });
+    if (!user) throw new NotFoundException('User not found');
+
+    await this.scriptRunner.run('restore', {
+      action: 'restore',
+      email: user.email,
+    });
+
+    user.isActive = true;
+    await this.em.persistAndFlush(user);
+
+    return { success: true };
+  }
+
+  async destroy(id: string) {
+    const user = await this.em.findOne(User, { id });
+    if (!user) throw new NotFoundException('User not found');
+
+    await this.scriptRunner.run('delete', {
+      action: 'delete',
+      email: user.email,
+    });
+
+    await this.em.removeAndFlush(user);
+
+    return { success: true };
+  }
+
+  async importCsv(csv: string) {
+    const records = this.parseCsv(csv);
+    const results: { email: string; success: boolean; error?: string }[] = [];
+
+    for (const record of records) {
+      try {
+        await this.create({
+          email: record.email,
+          name: record.name,
+          password: record.password,
+        });
+        results.push({ email: record.email, success: true });
+      } catch (error) {
+        results.push({ email: record.email, success: false, error: error.message });
+      }
+    }
+
+    return { results };
+  }
+
+  async sync(id: string, password?: string) {
+    const user = await this.em.findOne(User, { id });
+    if (!user) throw new NotFoundException('User not found');
+
+    if (!user.isActive) {
+      await this.scriptRunner.run('disable', {
+        action: 'disable',
+        email: user.email,
+      });
+      return { success: true, action: 'disable' };
+    }
+
+    if (!user.mailboxInitialized) {
+      if (!password) {
+        throw new BadRequestException('Password is required to create mailbox');
+      }
+      await this.scriptRunner.run('create', {
+        action: 'create',
+        email: user.email,
+        name: user.name ?? '',
+        password,
+      });
+      user.mailboxInitialized = true;
+      await this.em.persistAndFlush(user);
+      return { success: true, action: 'create' };
+    }
+
+    await this.scriptRunner.run('update', {
+      action: 'update',
+      email: user.email,
+      name: user.name ?? '',
+      isActive: user.isActive,
+    });
+
+    return { success: true, action: 'update' };
+  }
+
+  private parseCsv(csv: string): { email: string; name: string; password: string }[] {
+    const lines = csv.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return [];
+
+    const header = this.parseCsvLine(lines[0]);
+    const emailIndex = header.indexOf('email');
+    const nameIndex = header.indexOf('name');
+    const passwordIndex = header.indexOf('password');
+
+    if (emailIndex < 0 || nameIndex < 0 || passwordIndex < 0) {
+      throw new BadRequestException('CSV must include headers: email,name,password');
+    }
+
+    const records: { email: string; name: string; password: string }[] = [];
+    for (const line of lines.slice(1)) {
+      const cols = this.parseCsvLine(line);
+      const email = cols[emailIndex]?.trim();
+      const name = cols[nameIndex]?.trim();
+      const password = cols[passwordIndex]?.trim();
+      if (!email || !name || !password) continue;
+      records.push({ email, name, password });
+    }
+
+    return records;
+  }
+
+  private parseCsvLine(line: string): string[] {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+        continue;
+      }
+
+      if (char === ',' && !inQuotes) {
+        result.push(current);
+        current = '';
+        continue;
+      }
+
+      current += char;
+    }
+
+    result.push(current);
+    return result;
+  }
+}
+````
+
+## File: src/mailbox/script-runner.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { spawn } from 'child_process';
+
+export type ScriptAction = 'create' | 'update' | 'disable' | 'restore' | 'delete';
+
+@Injectable()
+export class ScriptRunnerService {
+  private readonly logger = new Logger(ScriptRunnerService.name);
+  private readonly timeoutMs: number;
+
+  constructor(private readonly configService: ConfigService) {
+    this.timeoutMs = this.configService.get<number>('MAILBOX_SCRIPT_TIMEOUT_MS', 60000);
+  }
+
+  async run(action: ScriptAction, payload: Record<string, any>): Promise<{ stdout: string; stderr: string }> {
+    const scriptPath = this.getScriptPath(action);
+    if (!scriptPath) {
+      throw new Error(`Script path not configured for action ${action}`);
+    }
+
+    return new Promise((resolve, reject) => {
+      const { command, args } = this.buildCommand(scriptPath);
+      const child = spawn(command, args, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+
+      let stdout = '';
+      let stderr = '';
+      const timer = setTimeout(() => {
+        child.kill();
+        reject(new Error(`Script timeout after ${this.timeoutMs}ms`));
+      }, this.timeoutMs);
+
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.on('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        if (code !== 0) {
+          const message = stderr || stdout || `Script exited with code ${code}`;
+          return reject(new Error(message));
+        }
+        resolve({ stdout, stderr });
+      });
+
+      try {
+        const enrichedPayload = {
+          ...payload,
+          ExchangeServer: this.configService.get<string>('EXCHANGE_SERVER') || 'mail-ex.mailex.local',
+          UserAdmin: this.configService.get<string>('EXCHANGE_USER_ADMIN') || 'mailex\\Administrator',
+          Password: this.configService.get<string>('EXCHANGE_PASSWORD') || '123456a@',
+        };
+        child.stdin.write(JSON.stringify(enrichedPayload));
+        child.stdin.end();
+      } catch (error) {
+        this.logger.warn(`Failed to write to script stdin: ${error.message}`);
+      }
+    });
+  }
+
+  private getScriptPath(action: ScriptAction): string | undefined {
+    switch (action) {
+      case 'create':
+        return this.configService.get<string>('MAILBOX_SCRIPT_CREATE');
+      case 'update':
+        return this.configService.get<string>('MAILBOX_SCRIPT_UPDATE');
+      case 'disable':
+        return this.configService.get<string>('MAILBOX_SCRIPT_DISABLE');
+      case 'restore':
+        return this.configService.get<string>('MAILBOX_SCRIPT_RESTORE');
+      case 'delete':
+        return this.configService.get<string>('MAILBOX_SCRIPT_DELETE');
+      default:
+        return undefined;
+    }
+  }
+
+  private buildCommand(scriptPath: string): { command: string; args: string[] } {
+    if (scriptPath.toLowerCase().endsWith('.ps1')) {
+      return {
+        command: 'powershell',
+        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
+      };
+    }
+    return { command: scriptPath, args: [] };
   }
 }
 ````
@@ -4804,99 +6565,6 @@ export interface IStorageAdapter {
 }
 ````
 
-## File: .env.example
-````
-# ==============================================================================
-# SERVER CONFIGURATION
-# ==============================================================================
-PORT=3000
-NODE_ENV=development
-# Set to 'true' to run seed data on startup (creates default admin/roles)
-RUN_SEEDING=false
-
-# ==============================================================================
-# DATABASE CONFIGURATION (PostgreSQL)
-# ==============================================================================
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=postgres
-DB_PASSWORD=your_password
-DB_NAME=nestjs_base_db
-# Allow global context for simpler MikroORM usage (default false for strictness)
-DB_ALLOW_GLOBAL_CONTEXT=false
-
-# ==============================================================================
-# AUTHENTICATION & SECURITY
-# ==============================================================================
-# JWT Secret Key - CHANGE THIS IN PRODUCTION!
-JWT_SECRET=your-super-secret-key-change-it-now
-# Access Token Lifetime
-JWT_EXPIRES_IN=15m
-# Refresh Token Lifetime
-REFRESH_EXPIRES_IN=7d
-# Max number of failed refresh attempts before blocking context (optional)
-AUTH_MAX_FAILED_REFRESH=5
-# Logging level for auth events: 'basic' or 'verbose'
-AUTH_LOG_LEVEL=basic
-
-# ==============================================================================
-# CACHE CONFIGURATION (DragonflyDB / Redis)
-# ==============================================================================
-# Enable caching layer (Optional)
-DRAGONFLY_ENABLED=false
-DRAGONFLY_HOST=localhost
-DRAGONFLY_PORT=6379
-DRAGONFLY_PASSWORD=
-# Default Cache TTL in seconds (e.g. 300 = 5 minutes)
-DRAGONFLY_TTL=300
-
-# ==============================================================================
-# QUERY ENGINE CONFIGURATION
-# ==============================================================================
-# Max nested depth for filtering/relations
-QUERY_MAX_DEPTH=3
-# Max number of conditions in a single query (hard limit for safety)
-QUERY_MAX_CONDITIONS=50
-# Max number of fields allowed in sort
-QUERY_MAX_SORT_FIELDS=3
-# Allow regex in filters? (Warning: performance impact)
-QUERY_ALLOW_REGEX=false
-
-# ==============================================================================
-# FILE STORAGE
-# ==============================================================================
-# Driver: 'local' | 's3' (future support)
-STORAGE_DRIVER=local
-FILE_STORAGE_PATH=./storage
-
-# ==============================================================================
-# EXCHANGE WEBMAIL CONFIGURATION (MVP)
-# ==============================================================================
-# Secret used to derive encryption keys for storing Exchange credentials in Redis
-# MUST be a long, random string. NEVER use JWT_SECRET for this.
-EXCHANGE_CRED_SECRET=change_this_to_a_complex_random_string_mvp_only
-
-# EWS Endpoint URL (e.g., Office 365)
-# Default: https://outlook.office365.com/EWS/Exchange.asmx
-EWS_URL=https://outlook.office365.com/EWS/Exchange.asmx
-EWS_TOKEN_URL=
-EWS_CLIENT_ID=
-EWS_CLIENT_SECRET=
-# Use either EWS_SCOPE (OAuth2 v2) or EWS_RESOURCE (OAuth2 v1/ADFS)
-EWS_SCOPE=
-EWS_RESOURCE=
-# Example: Exchange2013, Exchange2016, Exchange2019
-EWS_VERSION=Exchange2016
-# Impersonate mailbox by SMTP address (app-only OAuth2)
-EWS_IMPERSONATE=true
-# Validate EWS connectivity on login
-EWS_VALIDATE_ON_LOGIN=false
-# Temporarily disable SSO (EWS OAuth2)
-EWS_SSO_ENABLED=true
-# Allow self-signed certificates (dev only)
-EWS_TLS_REJECT_UNAUTHORIZED=true
-````
-
 ## File: src/auth/strategies/jwt.strategy.ts
 ````typescript
 import { Injectable } from '@nestjs/common';
@@ -5518,836 +7186,117 @@ export class RequestContext {
 }
 ````
 
-## File: src/exchange/services/ews-mail.provider.ts
-````typescript
-import {
-  Injectable,
-  Scope,
-  Inject,
-  Logger,
-  UnauthorizedException,
-} from '@nestjs/common';
-import { REQUEST } from '@nestjs/core';
-import { ConfigService } from '@nestjs/config';
-import {
-  ExchangeService,
-  ExchangeVersion,
-  WebCredentials,
-  Uri,
-  WellKnownFolderName,
-  Folder,
-  FolderId,
-  ItemView,
-  SearchFilter,
-  LogicalOperator,
-  SortDirection,
-  PropertySet,
-  BasePropertySet,
-  EmailMessage,
-  EmailAddress,
-  MessageBody,
-  BodyType,
-  FolderSchema,
-  EmailMessageSchema,
-  ItemSchema,
-  ItemId,
-  DeleteMode,
-  SendCancellationsMode,
-  AffectedTaskOccurrence,
-  ConflictResolutionMode,
-  ServiceResponseCollection,
-  ServiceError,
-  ExtendedPropertyDefinition,
-  MapiPropertyType,
-} from 'ews-javascript-api';
-import { XhrApi } from '@ewsjs/xhr';
-import { DragonflyService } from '../../common/cache/dragonfly.service';
-import { ExchangeAuthService } from './exchange-auth.service';
-import { SmtpSenderService } from './smtp-sender.service';
-import {
-  MAIL_FOLDERS,
-  resolveFolderId,
-} from '../constants/mail-folders.constant';
-import {
-  IMailProvider,
-  MailFolder,
-  MailMessage,
-  SendMailOptions,
-} from '../interfaces/mail-provider.interface';
-
-(ExchangeService as any).XHRApi = new XhrApi();
-
-// ─── MAPI Extended Properties cho Flag/Star ───────────────────────────────────
-// Đây là cách chuẩn và đáng tin nhất với Exchange 2019 on-premises.
-// EmailMessageSchema.Flag thường không đồng bộ đúng qua EWS.
-
-/** PR_FLAG_STATUS (0x1090) — 0=NoFlag, 1=Flagged(Starred), 2=Complete */
-const PR_FLAG_STATUS = new ExtendedPropertyDefinition(0x1090, MapiPropertyType.Integer);
-/** PR_TODO_TITLE (0x0E2B) — thường là "Follow up" khi flag */
-const PR_TODO_TITLE  = new ExtendedPropertyDefinition(0x0E2B, MapiPropertyType.String);
-/** PR_FOLLOWUP_ICON (0x1095) — màu flag, 6 = red (default Outlook star) */
-const PR_FOLLOWUP_ICON = new ExtendedPropertyDefinition(0x1095, MapiPropertyType.Integer);
-/** PR_SENDER_SMTP_ADDRESS (0x5D01) — SMTP thực của sender, không bị X500 */
-const PR_SENDER_SMTP_ADDRESS = new ExtendedPropertyDefinition(0x5D01, MapiPropertyType.String);
-/** PR_SENT_REPRESENTING_SMTP_ADDRESS (0x5D02) — SMTP của người được đại diện gửi */
-const PR_SENT_REPRESENTING_SMTP_ADDRESS = new ExtendedPropertyDefinition(0x5D02, MapiPropertyType.String);
-
-enum FlagStatus {
-  NoFlag   = 0,
-  Flagged  = 1,
-  Complete = 2,
-}
-
-// ─── PropertySets tái sử dụng ─────────────────────────────────────────────────
-
-/** Dùng cho list — không load body để tối ưu tốc độ */
-const LIST_PROPS = new PropertySet(
-  BasePropertySet.IdOnly,
-  ItemSchema.Subject,
-  ItemSchema.DateTimeReceived,
-  EmailMessageSchema.From,
-  EmailMessageSchema.IsRead,
-  ItemSchema.HasAttachments,
-  ItemSchema.Categories,
-  PR_FLAG_STATUS,
-  PR_SENDER_SMTP_ADDRESS,
-  PR_SENT_REPRESENTING_SMTP_ADDRESS,
-);
-
-/** Dùng khi load chi tiết message */
-const DETAIL_PROPS = new PropertySet(
-  BasePropertySet.FirstClassProperties,
-  ItemSchema.Categories,
-  PR_FLAG_STATUS,
-  PR_TODO_TITLE,
-  PR_FOLLOWUP_ICON,
-  PR_SENDER_SMTP_ADDRESS,
-  PR_SENT_REPRESENTING_SMTP_ADDRESS,
-);
-
-/** Dùng khi chỉ cần set/unset flag */
-const FLAG_ONLY_PROPS = new PropertySet(
-  BasePropertySet.IdOnly,
-  ItemSchema.Categories,
-  PR_FLAG_STATUS,
-  PR_TODO_TITLE,
-  PR_FOLLOWUP_ICON,
-);
-
-@Injectable({ scope: Scope.REQUEST })
-export class EwsMailProvider implements IMailProvider {
-  private readonly logger = new Logger(EwsMailProvider.name);
-  private service: ExchangeService | null = null;
-  private email: string | null = null;
-  private credentials: { email: string; password: string } | null = null;
-
-  constructor(
-    private readonly configService: ConfigService,
-    private readonly cache: DragonflyService,
-    private readonly authService: ExchangeAuthService,
-    private readonly smtpSenderService: SmtpSenderService,
-    @Inject(REQUEST) private readonly request: any,
-  ) {}
-
-
-  private parseEmailAddress(value: string): { name: string; email: string } {
-    const trimmed = value?.trim?.() ?? '';
-    if (!trimmed) return { name: '', email: '' };
-
-    const angleMatch = trimmed.match(/^(.+?)<([^>]+)>$/);
-    if (angleMatch) {
-      return {
-        name: angleMatch[1].replace(/\"/g, '').trim(),
-        email: angleMatch[2].trim(),
-      };
-    }
-
-    const emailMatch = trimmed.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-    if (emailMatch) {
-      return { name: '', email: emailMatch[0] };
-    }
-
-    return { name: '', email: '' };
-  }
-
-  private toEmailAddress(value: string): EmailAddress | null {
-    const { name, email } = this.parseEmailAddress(value);
-    if (!email) return null;
-    const addr = name ? new EmailAddress(name, email) : new EmailAddress(email);
-    addr.RoutingType = 'SMTP';
-    return addr;
-  }
-
-  // ─── Config ───────────────────────────────────────────────────────────────
-
-  private get ewsConfig() {
-    return {
-      url:     this.configService.get<string>('EWS_URL') ?? '',
-      version: this.configService.get<string>('EWS_VERSION') ?? 'Exchange2016',
-      tlsRejectUnauthorized:
-        this.configService.get<string>('EWS_TLS_REJECT_UNAUTHORIZED') !== 'false',
-    };
-  }
-
-  // ─── Connect / Disconnect ─────────────────────────────────────────────────
-
-  async connect(): Promise<void> {
-    const sessionToken = this.request.cookies?.['exchange_session'];
-    if (!sessionToken) throw new UnauthorizedException('No session token provided');
-
-    const creds = await this.authService.getCredentials(sessionToken);
-    if (!creds)  throw new UnauthorizedException('Session expired or invalid');
-    if (!creds.password) throw new UnauthorizedException('Password not found in credentials');
-
-    this.email = creds.email;
-    this.credentials = { email: creds.email, password: creds.password };
-
-    const cfg = this.ewsConfig;
-    if (!cfg.url) throw new Error('EWS_URL is not configured');
-
-    if (!cfg.tlsRejectUnauthorized) {
-      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-    }
-
-    // Exchange 2019 on-premises tương thích với ExchangeVersion.Exchange2016
-    const version =
-      ExchangeVersion[cfg.version as keyof typeof ExchangeVersion] ??
-      ExchangeVersion.Exchange2016;
-
-    const service       = new ExchangeService(version);
-    service.Url         = new Uri(cfg.url);
-    service.Credentials = new WebCredentials(creds.email, creds.password);
-
-    this.service = service;
-  }
-
-  async disconnect(): Promise<void> {
-    this.service = null;
-    this.credentials = null;
-  }
-
-  // ─── Folder helpers ───────────────────────────────────────────────────────
-
-  private resolveFolderName(folderId: string): WellKnownFolderName {
-    const resolved = resolveFolderId(folderId, folderId).toLowerCase();
-    switch (resolved) {
-      case 'inbox':
-        return WellKnownFolderName.Inbox;
-      case 'sent items':
-      case 'sent':
-        return WellKnownFolderName.SentItems;
-      case 'drafts':
-        return WellKnownFolderName.Drafts;
-      case 'spam':
-      case 'junkemail':
-      case 'junk':
-        return WellKnownFolderName.JunkEmail;
-      case 'trash':
-      case 'deleteditems':
-      case 'deleted':
-        return WellKnownFolderName.DeletedItems;
-      default:
-        return WellKnownFolderName.Inbox;
-    }
-  }
-
-  private toFolderId(folder: WellKnownFolderName): FolderId {
-    return new FolderId(folder);
-  }
-
-  // ─── ID helpers ───────────────────────────────────────────────────────────
-
-  private encodeId(folder: string, itemId: string): string {
-    return Buffer.from(`${folder}:${itemId}`).toString('base64');
-  }
-
-  private decodeId(id: string): { folder: string; itemId: string } {
-    const decoded    = Buffer.from(id, 'base64').toString('utf8');
-    const colonIndex = decoded.indexOf(':');
-    return {
-      folder: decoded.slice(0, colonIndex),
-      // Dùng indexOf tránh split sai nếu EWS UniqueId chứa ':'
-      itemId: decoded.slice(colonIndex + 1),
-    };
-  }
-
-  // ─── Type helpers ─────────────────────────────────────────────────────────
-
-  private toJsDate(value: any): Date {
-    if (!value)                               return new Date();
-    if (value instanceof Date)                return value;
-    if (typeof value.ToDate === 'function')   return value.ToDate();
-    if (typeof value.ToISOString === 'function') return new Date(value.ToISOString());
-    return new Date(value);
-  }
-
-  /**
-   * Kiểm tra xem address có phải X500/X400 DN không.
-   * Exchange on-premises lưu internal senders dưới dạng:
-   *   /O=ORGNAME/OU=GROUP/CN=RECIPIENTS/CN=hash-USERNAME
-   */
-  private isX500Address(address: string): boolean {
-    const upper = address.toUpperCase();
-    return (
-      upper.startsWith('/O=') ||
-      upper.startsWith('/OU=') ||
-      upper.startsWith('/CN=') ||
-      upper.startsWith('C=') ||
-      upper.startsWith('G=')
-    );
-  }
-
-  /**
-   * Lấy SMTP thực từ MAPI extended properties PR_SENDER_SMTP_ADDRESS (0x5D01)
-   * hoặc PR_SENT_REPRESENTING_SMTP_ADDRESS (0x5D02).
-   *
-   * Đây là cách đáng tin nhất để lấy email thật với Sent Items,
-   * vì EmailMessage.From.Address thường là X500 DN với Exchange on-premises.
-   */
-  private getSenderSmtpFromExtProps(item: any): string {
-    const extProps: any[] = item?.ExtendedProperties?.items ?? item?.ExtendedProperties ?? [];
-    for (const ep of extProps) {
-      const tag = ep?.PropertyDefinition?.Tag ?? ep?.Tag;
-      // 0x5D01 = PR_SENDER_SMTP_ADDRESS, 0x5D02 = PR_SENT_REPRESENTING_SMTP_ADDRESS
-      if ((tag === 0x5D01 || tag === 0x5D02) && ep.Value) {
-        return String(ep.Value);
-      }
-    }
-    return '';
-  }
-
-  private getFrom(item: any): { name: string; email: string } {
-    const raw = item?.From ?? item?.Sender;
-    const name = raw?.Name ?? '';
-    const rawAddress = raw?.Address ?? '';
-    // Nếu address là X500 DN → thử lấy SMTP thực từ MAPI extended properties
-    if (!rawAddress || this.isX500Address(rawAddress)) {
-      const smtpFromMapi = this.getSenderSmtpFromExtProps(item);
-      // Fallback: nếu MAPI cũng không có, trả về X500 gốc để không mất data
-      return { name, email: smtpFromMapi || rawAddress };
-    }
-
-    return { name, email: rawAddress };
-  }
-
-  private getRecipients(collection: any): { name: string; email: string }[] {
-    const items: any[] = collection?.items ?? collection?.Items ?? [];
-    return items.map((a: any) => {
-      const addr = a.Address ?? '';
-      return {
-        name:  a.Name ?? '',
-        // Recipients thường dùng SMTP, nhưng vẫn check X500 phòng trường hợp
-        email: this.isX500Address(addr) ? '' : addr,
-      };
-    });
-  }
-
-  // ─── Starred helpers ──────────────────────────────────────────────────────
-
-  /**
-   * Đọc trạng thái starred từ MAPI PR_FLAG_STATUS.
-   * Fallback sang EmailMessageSchema.Flag rồi Categories.
-   *
-   * Trên Exchange 2019 on-premises, PR_FLAG_STATUS là nguồn đáng tin nhất.
-   * EmailMessageSchema.Flag đôi khi không serialize đúng qua ews-javascript-api.
-   */
-  private isItemStarred(item: any): boolean {
-    try {
-      // Ưu tiên: MAPI extended property PR_FLAG_STATUS
-      const extProps: any[] =
-        item.ExtendedProperties?.items ?? item.ExtendedProperties ?? [];
-
-      for (const ep of extProps) {
-        const tag = ep?.PropertyDefinition?.Tag ?? ep?.Tag;
-        if (tag === 0x1090) {
-          return Number(ep.Value) === FlagStatus.Flagged;
-        }
-      }
-
-      // Fallback 1: EmailMessageSchema.Flag object
-      const flagStatus = item.Flag?.FlagStatus ?? item.FlagStatus;
-      if (flagStatus !== undefined && flagStatus !== null) {
-        return Number(flagStatus) === FlagStatus.Flagged;
-      }
-
-      // Fallback 2: Categories chứa "Starred" (Outlook on mobile thường dùng cách này)
-      const cats: any[] = item.Categories?.items ?? item.Categories ?? [];
-      return cats.some((c) => String(c).toLowerCase() === 'starred');
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Set/unset flag trên message qua MAPI extended properties.
-   * Đây là cách chuẩn cho Exchange 2019 on-premises — đồng bộ với Outlook client.
-   */
-  private async setFlag(message: EmailMessage, starred: boolean): Promise<void> {
-    if (starred) {
-      message.SetExtendedProperty(PR_FLAG_STATUS,   FlagStatus.Flagged);
-      message.SetExtendedProperty(PR_TODO_TITLE,    'Follow up');
-      message.SetExtendedProperty(PR_FOLLOWUP_ICON, 6); // Red flag (default Outlook star)
-    } else {
-      message.SetExtendedProperty(PR_FLAG_STATUS,   FlagStatus.NoFlag);
-      message.SetExtendedProperty(PR_TODO_TITLE,    '');
-      message.SetExtendedProperty(PR_FOLLOWUP_ICON, 0);
-    }
-    await message.Update(ConflictResolutionMode.AlwaysOverwrite);
-  }
-
-  // ─── Folders ──────────────────────────────────────────────────────────────
-
-  async getFolders(): Promise<MailFolder[]> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const folders: MailFolder[] = [];
-    for (const folder of MAIL_FOLDERS) {
-      if (folder.id === 'Starred') {
-        folders.push({ id: folder.id, name: folder.name });
-        continue;
-      }
-      try {
-        await Folder.Bind(this.service, new FolderId(this.resolveFolderName(folder.id)));
-        folders.push({ id: folder.id, name: folder.name });
-      } catch (err) {
-        this.logger.warn(`Cannot bind folder ${folder.id}: ${err.message}`);
-      }
-    }
-    return folders;
-  }
-
-  async getFolderCounts(): Promise<Record<string, { total: number; unread: number }>> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const counts: Record<string, { total: number; unread: number }> = {};
-    const countProps = new PropertySet(
-      BasePropertySet.IdOnly,
-      FolderSchema.TotalCount,
-      FolderSchema.UnreadCount,
-    );
-
-    for (const folder of MAIL_FOLDERS) {
-      if (folder.id === 'Starred') {
-        counts[folder.id] = await this.getStarredCounts();
-        continue;
-      }
-      try {
-        const bound = await Folder.Bind(
-          this.service,
-          new FolderId(this.resolveFolderName(folder.id)),
-          countProps,
-        );
-        counts[folder.id] = {
-          total:  bound.TotalCount  ?? 0,
-          unread: bound.UnreadCount ?? 0,
-        };
-      } catch (err) {
-        this.logger.warn(`getFolderCounts ${folder.id}: ${err.message}`);
-        counts[folder.id] = { total: 0, unread: 0 };
-      }
-    }
-    return counts;
-  }
-
-  private async getStarredCounts(): Promise<{ total: number; unread: number }> {
-    if (!this.service) throw new Error('EWS service not connected');
-    try {
-      const countView     = new ItemView(1, 0);
-      // Dùng MAPI filter để tìm đúng flagged items
-      const starredFilter = new SearchFilter.IsEqualTo(PR_FLAG_STATUS, FlagStatus.Flagged);
-
-      const totalResult = await this.service.FindItems(
-        WellKnownFolderName.Inbox,
-        starredFilter,
-        countView,
-      );
-
-      if (!totalResult.TotalCount) return { total: 0, unread: 0 };
-
-      const unreadResult = await this.service.FindItems(
-        WellKnownFolderName.Inbox,
-        new SearchFilter.SearchFilterCollection(LogicalOperator.And, [
-          starredFilter,
-          new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, false),
-        ]),
-        countView,
-      );
-
-      return {
-        total:  totalResult.TotalCount  ?? 0,
-        unread: unreadResult.TotalCount ?? 0,
-      };
-    } catch (err) {
-      this.logger.warn(`getStarredCounts: ${err.message}`);
-      return { total: 0, unread: 0 };
-    }
-  }
-
-  // ─── Messages ─────────────────────────────────────────────────────────────
-
-  async getMessages(
-    folderId: string,
-    page: number,
-    limit: number,
-  ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const resolvedId     = resolveFolderId(folderId, folderId);
-    const resolvedFolder = this.resolveFolderName(folderId);
-    const offset         = (page - 1) * limit;
-
-    const view = new ItemView(limit, offset);
-    view.OrderBy.Add(ItemSchema.DateTimeReceived, SortDirection.Descending);
-    view.PropertySet = LIST_PROPS;
-
-    let result: any;
-
-    if (resolvedId === 'Starred') {
-      try {
-        const filter = new SearchFilter.IsEqualTo(PR_FLAG_STATUS, FlagStatus.Flagged);
-        result = await this.service.FindItems(WellKnownFolderName.Inbox, filter, view);
-      } catch (err) {
-        this.logger.warn(`Starred getMessages: ${err.message}`);
-        return { items: [], total: 0 };
-      }
-    } else {
-      result = await this.service.FindItems(resolvedFolder, view);
-    }
-
-    const items: Partial<MailMessage>[] = result.Items.map((item: any) => ({
-      id:             this.encodeId(resolvedId, item.Id?.UniqueId ?? ''),
-      subject:        item.Subject       ?? '(No Subject)',
-      from:           this.getFrom(item),
-      receivedAt:     this.toJsDate(item.DateTimeReceived),
-      isRead:         item.IsRead         ?? false,
-      hasAttachments: item.HasAttachments  ?? false,
-      preview:        '',
-      isStarred:      this.isItemStarred(item),
-    }));
-
-    return { items, total: result.TotalCount ?? 0 };
-  }
-
-  async getMessage(id: string): Promise<MailMessage> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const { itemId } = this.decodeId(id);
-    const message    = await EmailMessage.Bind(
-      this.service,
-      new ItemId(itemId),
-      DETAIL_PROPS,
-    );
-
-    if (!(message as any).IsRead) {
-      (message as any).IsRead = true;
-      await message.Update(ConflictResolutionMode.AlwaysOverwrite);
-    }
-
-    const bodyText = message.Body?.Text ?? '';
-
-    return {
-      id,
-      subject:        message.Subject ?? '(No Subject)',
-      from:           { name: message.From?.Name ?? '', email: message.From?.Address ?? '' },
-      to:             this.getRecipients(message.ToRecipients),
-      cc:             this.getRecipients(message.CcRecipients),
-      receivedAt:     this.toJsDate(message.DateTimeReceived),
-      body:           bodyText,
-      isHtml:         message.Body?.BodyType === BodyType.HTML,
-      hasAttachments: message.HasAttachments ?? false,
-      isRead:         true,
-      isStarred:      this.isItemStarred(message),
-      preview:        bodyText.substring(0, 150),
-    };
-  }
-
-  // ─── Send ─────────────────────────────────────────────────────────────────
-
-  async sendMessage(options: SendMailOptions): Promise<{ success: boolean; messageId?: string }> {
-    if (!this.service) throw new Error('EWS service not connected');
-    if (!this.credentials) throw new Error('SMTP credentials not available');
-
-    const attachments = options.attachments?.map((att) => ({
-      filename: att.filename,
-      contentType: att.contentType,
-      content: Buffer.from(att.content, 'base64'),
-    }));
-
-    const mailOptions = {
-      from: this.credentials.email,
-      to: options.to,
-      cc: options.cc,
-      bcc: options.bcc,
-      replyTo: options.replyTo,
-      subject: options.subject,
-      text: options.text,
-      html: options.html,
-      attachments,
-    };
-
-    const info = await this.smtpSenderService.sendMail(
-      this.credentials,
-      mailOptions,
-    );
-
-    // Save a copy to Sent Items using EWS (do not re-send)
-    try {
-      const message   = new EmailMessage(this.service);
-      message.Subject = options.subject ?? '';
-      message.Body    = new MessageBody(
-        options.html ? BodyType.HTML : BodyType.Text,
-        options.html ?? options.text ?? '',
-      );
-
-      if (this.email) {
-        const fromAddr = new EmailAddress(this.email);
-        fromAddr.RoutingType = 'SMTP';
-        message.From = fromAddr;
-      }
-
-      for (const r of options.to ?? []) {
-        const addr = this.toEmailAddress(r);
-        if (addr) message.ToRecipients.Add(addr);
-      }
-      for (const r of options.cc ?? []) {
-        const addr = this.toEmailAddress(r);
-        if (addr) message.CcRecipients.Add(addr);
-      }
-      for (const r of options.bcc ?? []) {
-        const addr = this.toEmailAddress(r);
-        if (addr) message.BccRecipients.Add(addr);
-      }
-      for (const r of options.replyTo ?? []) {
-        const addr = this.toEmailAddress(r);
-        if (addr) message.ReplyTo.Add(addr);
-      }
-
-      for (const att of options.attachments ?? []) {
-        const file = message.Attachments.AddFileAttachment(att.filename, att.content);
-        if (att.contentType) file.ContentType = att.contentType;
-      }
-
-      await message.Save(WellKnownFolderName.SentItems);
-    } catch (error) {
-      this.logger.warn(`Failed to save sent copy via EWS: ${error.message}`);
-    }
-
-    return { success: true, messageId: info?.messageId };
-  }
-
-  // ─── Search ───────────────────────────────────────────────────────────────
-
-  async search(
-    query: string,
-    page: number,
-    limit: number,
-  ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const view = new ItemView(limit, (page - 1) * limit);
-    view.OrderBy.Add(ItemSchema.DateTimeReceived, SortDirection.Descending);
-    view.PropertySet = LIST_PROPS;
-
-    // Tìm theo Subject và From.Name — tránh search Body (rất chậm trên Exchange on-premises)
-    // Lưu ý: không có SenderName schema; dùng EmailMessageSchema.From không support ContainsSubstring
-    // → chỉ search Subject; nếu muốn search sender thì dùng AQS string query (Exchange 2013+)
-    const filter = new SearchFilter.ContainsSubstring(ItemSchema.Subject, query);
-
-    try {
-      const result = await this.service.FindItems(WellKnownFolderName.Inbox, filter, view);
-      const items: Partial<MailMessage>[] = result.Items.map((item: any) => ({
-        id:             this.encodeId('INBOX', item.Id?.UniqueId ?? ''),
-        subject:        item.Subject       ?? '(No Subject)',
-        from:           this.getFrom(item),
-        receivedAt:     this.toJsDate(item.DateTimeReceived),
-        isRead:         item.IsRead         ?? false,
-        hasAttachments: item.HasAttachments  ?? false,
-        isStarred:      this.isItemStarred(item),
-      }));
-      return { items, total: result.TotalCount ?? 0 };
-    } catch (err) {
-      this.logger.error(`Search error: ${err.message}`);
-      return { items: [], total: 0 };
-    }
-  }
-
-  // ─── Move ─────────────────────────────────────────────────────────────────
-
-  async moveMessage(messageId: string, targetFolder: string): Promise<{ success: boolean }> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const { itemId } = this.decodeId(messageId);
-    await this.service.MoveItems(
-      [new ItemId(itemId)],
-      this.toFolderId(this.resolveFolderName(targetFolder)),
-    );
-    return { success: true };
-  }
-
-  async moveMessagesBatch(ids: string[], targetFolder: string): Promise<void> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    await this.service.MoveItems(
-      ids.map((id) => new ItemId(this.decodeId(id).itemId)),
-      this.toFolderId(this.resolveFolderName(targetFolder)),
-    );
-  }
-
-  async moveAllMessages(sourceFolder: string, targetFolder: string): Promise<void> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const source = this.resolveFolderName(sourceFolder);
-    const target = this.resolveFolderName(targetFolder);
-    let more     = true;
-
-    while (more) {
-      // Luôn query offset=0 — sau khi move items đã bị remove khỏi source
-      const view = new ItemView(200, 0);
-      view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
-
-      const result = await this.service.FindItems(source, view);
-      if (!result.Items.length) break;
-
-      await this.service.MoveItems(
-        result.Items.map((item) => new ItemId(item.Id!.UniqueId)),
-        this.toFolderId(target),
-      );
-      more = result.MoreAvailable ?? false;
-    }
-  }
-
-  // ─── Mark read/unread ─────────────────────────────────────────────────────
-
-  async markMessages(ids: string[], isRead: boolean): Promise<void> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const props = new PropertySet(BasePropertySet.IdOnly, EmailMessageSchema.IsRead);
-    for (const id of ids) {
-      const { itemId } = this.decodeId(id);
-      const msg        = await EmailMessage.Bind(this.service, new ItemId(itemId), props);
-      if ((msg as any).IsRead !== isRead) {
-        (msg as any).IsRead = isRead;
-        await msg.Update(ConflictResolutionMode.AlwaysOverwrite);
-      }
-    }
-  }
-
-  async markAllMessages(folder: string, isRead: boolean): Promise<void> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const resolved = this.resolveFolderName(folder);
-    const props    = new PropertySet(BasePropertySet.IdOnly, EmailMessageSchema.IsRead);
-    let offset     = 0;
-    let more       = true;
-
-    while (more) {
-      const view = new ItemView(200, offset);
-      view.PropertySet = props;
-
-      const result = await this.service.FindItems(resolved, view);
-      if (!result.Items.length) break;
-
-      for (const item of result.Items) {
-        const msg = await EmailMessage.Bind(this.service, new ItemId(item.Id!.UniqueId), props);
-        if ((msg as any).IsRead !== isRead) {
-          (msg as any).IsRead = isRead;
-          await msg.Update(ConflictResolutionMode.AlwaysOverwrite);
-        }
-      }
-
-      offset += result.Items.length;
-      more    = result.MoreAvailable ?? false;
-    }
-  }
-
-  // ─── Star / Unstar ────────────────────────────────────────────────────────
-
-  async markMessagesStar(ids: string[], starred: boolean): Promise<void> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    for (const id of ids) {
-      const { itemId } = this.decodeId(id);
-      const message    = await EmailMessage.Bind(
-        this.service,
-        new ItemId(itemId),
-        FLAG_ONLY_PROPS,
-      );
-      await this.setFlag(message, starred);
-    }
-  }
-
-  async markAllMessagesStar(folder: string, starred: boolean): Promise<void> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const resolved = this.resolveFolderName(folder);
-    let offset     = 0;
-    let more       = true;
-
-    while (more) {
-      const view = new ItemView(200, offset);
-      view.PropertySet = FLAG_ONLY_PROPS;
-
-      const result = await this.service.FindItems(resolved, view);
-      if (!result.Items.length) break;
-
-      for (const item of result.Items) {
-        const message = await EmailMessage.Bind(
-          this.service,
-          new ItemId(item.Id!.UniqueId),
-          FLAG_ONLY_PROPS,
-        );
-        await this.setFlag(message, starred);
-      }
-
-      offset += result.Items.length;
-      more    = result.MoreAvailable ?? false;
-    }
-  }
-
-  // ─── Delete ───────────────────────────────────────────────────────────────
-
-  async permanentlyDeleteMessages(ids: string[]): Promise<number> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const response: ServiceResponseCollection<any> = await this.service.DeleteItems(
-      ids.map((id) => new ItemId(this.decodeId(id).itemId)),
-      DeleteMode.HardDelete,
-      SendCancellationsMode.SendToNone,
-      AffectedTaskOccurrence.AllOccurrences,
-    );
-    return response.Responses.filter((r) => r.ErrorCode === ServiceError.NoError).length;
-  }
-
-  async permanentlyDeleteAllMessages(folder: string): Promise<number> {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const resolved = this.resolveFolderName(folder);
-    let offset     = 0;
-    let more       = true;
-    let deleted    = 0;
-
-    while (more) {
-      const view = new ItemView(200, offset);
-      view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
-
-      const result = await this.service.FindItems(resolved, view);
-      if (!result.Items.length) break;
-
-      const response: ServiceResponseCollection<any> = await this.service.DeleteItems(
-        result.Items.map((item) => new ItemId(item.Id!.UniqueId)),
-        DeleteMode.HardDelete,
-        SendCancellationsMode.SendToNone,
-        AffectedTaskOccurrence.AllOccurrences,
-      );
-
-      deleted += response.Responses.filter((r) => r.ErrorCode === ServiceError.NoError).length;
-      offset  += result.Items.length;
-      more     = result.MoreAvailable ?? false;
-    }
-
-    return deleted;
-  }
-}
+## File: .env.example
+````
+# ==============================================================================
+# SERVER CONFIGURATION
+# ==============================================================================
+PORT=3000
+NODE_ENV=development
+# Set to 'true' to run seed data on startup (creates default admin/roles)
+RUN_SEEDING=false
+
+# ==============================================================================
+# DATABASE CONFIGURATION (PostgreSQL)
+# ==============================================================================
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=your_password
+DB_NAME=nestjs_base_db
+# Allow global context for simpler MikroORM usage (default false for strictness)
+DB_ALLOW_GLOBAL_CONTEXT=false
+
+# ==============================================================================
+# AUTHENTICATION & SECURITY
+# ==============================================================================
+# JWT Secret Key - CHANGE THIS IN PRODUCTION!
+JWT_SECRET=your-super-secret-key-change-it-now
+# Access Token Lifetime
+JWT_EXPIRES_IN=15m
+# Refresh Token Lifetime
+REFRESH_EXPIRES_IN=7d
+# Max number of failed refresh attempts before blocking context (optional)
+AUTH_MAX_FAILED_REFRESH=5
+# Logging level for auth events: 'basic' or 'verbose'
+AUTH_LOG_LEVEL=basic
+
+# ==============================================================================
+# CACHE CONFIGURATION (DragonflyDB / Redis)
+# ==============================================================================
+# Enable caching layer (Optional)
+DRAGONFLY_ENABLED=false
+DRAGONFLY_HOST=localhost
+DRAGONFLY_PORT=6379
+DRAGONFLY_PASSWORD=
+# Default Cache TTL in seconds (e.g. 300 = 5 minutes)
+DRAGONFLY_TTL=300
+
+# ==============================================================================
+# QUERY ENGINE CONFIGURATION
+# ==============================================================================
+# Max nested depth for filtering/relations
+QUERY_MAX_DEPTH=3
+# Max number of conditions in a single query (hard limit for safety)
+QUERY_MAX_CONDITIONS=50
+# Max number of fields allowed in sort
+QUERY_MAX_SORT_FIELDS=3
+# Allow regex in filters? (Warning: performance impact)
+QUERY_ALLOW_REGEX=false
+
+# ==============================================================================
+# FILE STORAGE
+# ==============================================================================
+# Driver: 'local' | 's3' (future support)
+STORAGE_DRIVER=local
+FILE_STORAGE_PATH=./storage
+
+# ==============================================================================
+# EXCHANGE WEBMAIL CONFIGURATION (MVP)
+# ==============================================================================
+# Secret used to derive encryption keys for storing Exchange credentials in Redis
+# MUST be a long, random string. NEVER use JWT_SECRET for this.
+EXCHANGE_CRED_SECRET=change_this_to_a_complex_random_string_mvp_only
+
+# EWS Endpoint URL (e.g., Office 365)
+# Default: https://outlook.office365.com/EWS/Exchange.asmx
+EWS_URL=https://outlook.office365.com/EWS/Exchange.asmx
+EWS_TOKEN_URL=
+EWS_CLIENT_ID=
+EWS_CLIENT_SECRET=
+# Use either EWS_SCOPE (OAuth2 v2) or EWS_RESOURCE (OAuth2 v1/ADFS)
+EWS_SCOPE=
+EWS_RESOURCE=
+# Example: Exchange2013, Exchange2016, Exchange2019
+EWS_VERSION=Exchange2016
+# Impersonate mailbox by SMTP address (app-only OAuth2)
+EWS_IMPERSONATE=true
+# Validate EWS connectivity on login
+EWS_VALIDATE_ON_LOGIN=false
+# Temporarily disable SSO (EWS OAuth2)
+EWS_SSO_ENABLED=true
+# Allow self-signed certificates (dev only)
+EWS_TLS_REJECT_UNAUTHORIZED=true
+
+# ==============================================================================
+# MAILBOX MANAGEMENT (SCRIPT + GAL)
+# ==============================================================================
+# Paths to mailbox management scripts (PowerShell or executable)
+MAILBOX_SCRIPT_CREATE=./scripts/mailbox/create-mailbox.ps1
+MAILBOX_SCRIPT_UPDATE=./scripts/mailbox/update-mailbox.ps1
+MAILBOX_SCRIPT_DISABLE=./scripts/mailbox/disable-mailbox.ps1
+MAILBOX_SCRIPT_RESTORE=./scripts/mailbox/restore-mailbox.ps1
+MAILBOX_SCRIPT_DELETE=./scripts/mailbox/delete-mailbox.ps1
+# Script timeout in milliseconds
+MAILBOX_SCRIPT_TIMEOUT_MS=60000
+# Admin credentials for GAL lookup when EWS_SSO_ENABLED=false
+EWS_ADMIN_EMAIL=
+EWS_ADMIN_PASSWORD=
+
+# Exchange Connection for PowerShell Scripts
+EXCHANGE_SERVER=mail-ex.mailex.local
+EXCHANGE_USER_ADMIN=mailex\Administrator
+EXCHANGE_PASSWORD=123456a@
 ````
 
 ## File: src/auth/auth.controller.ts
@@ -6507,25 +7456,2145 @@ export class Role {
 ````typescript
 import { Module } from '@nestjs/common';
 import { ExchangeController } from './controllers/exchange.controller';
+import { ContactsController } from './controllers/contacts.controller';
+import { NotesController } from './controllers/notes.controller';
 import { ExchangeAuthService } from './services/exchange-auth.service';
 import { CacheModule } from '../common/cache/cache.module';
 import { CommonModule } from '../common/common.module';
 import { MailService } from './services/mail.service';
 import { EwsMailProvider } from './services/ews-mail.provider';
 import { SmtpSenderService } from './services/smtp-sender.service';
+import { ContactNoteService } from './services/contact-note.service';
 
 @Module({
   imports: [CacheModule, CommonModule],
-  controllers: [ExchangeController],
+  controllers: [ExchangeController, ContactsController, NotesController],
   providers: [
     ExchangeAuthService,
     SmtpSenderService,
     EwsMailProvider,
     MailService,
+    ContactNoteService,
   ],
   exports: [MailService, ExchangeAuthService],
 })
 export class ExchangeModule {}
+````
+
+## File: src/exchange/services/ews-mail.provider.ts
+````typescript
+import {
+  Injectable,
+  Scope,
+  Inject,
+  Logger,
+  UnauthorizedException,
+  BadRequestException,
+} from '@nestjs/common';
+import { REQUEST } from '@nestjs/core';
+import { ConfigService } from '@nestjs/config';
+import {
+  ExchangeService,
+  ExchangeVersion,
+  WebCredentials,
+  Uri,
+  WellKnownFolderName,
+  Folder,
+  FolderId,
+  ItemView,
+  SearchFilter,
+  LogicalOperator,
+  SortDirection,
+  PropertySet,
+  BasePropertySet,
+  Contact,
+  ContactSchema,
+  EmailMessage,
+  EmailAddressKey,
+  EmailAddress,
+  MessageBody,
+  BodyType,
+  FolderSchema,
+  EmailMessageSchema,
+  ItemSchema,
+  Item,
+  ItemId,
+  DeleteMode,
+  SendCancellationsMode,
+  AffectedTaskOccurrence,
+  ConflictResolutionMode,
+  ServiceResponseCollection,
+  ServiceError,
+  ExtendedPropertyDefinition,
+  DefaultExtendedPropertySet,
+  MapiPropertyType,
+  PhoneNumberKey,
+  PhysicalAddressKey,
+  PhysicalAddressEntry,
+  IOutParam,
+  ConversationId,
+  ConversationIndexedItemView,
+  ConversationSchema,
+} from 'ews-javascript-api';
+
+import { XhrApi } from '@ewsjs/xhr';
+import { DragonflyService } from '../../common/cache/dragonfly.service';
+import { ExchangeAuthService } from './exchange-auth.service';
+import { SmtpSenderService } from './smtp-sender.service';
+import {
+  MAIL_FOLDERS,
+  resolveFolderId,
+} from '../constants/mail-folders.constant';
+import {
+  IMailProvider,
+  MailFolder,
+  MailMessage,
+  SendMailOptions,
+  SaveDraftOptions,
+} from '../interfaces/mail-provider.interface';
+import {
+  ExchangeContact,
+  ExchangeContactAddress,
+  ExchangeNote,
+  ExchangeSearchResult,
+} from '../interfaces/contact-note.interface';
+
+(ExchangeService as any).XHRApi = new XhrApi();
+
+// ─── MAPI Extended Properties cho Flag/Star ───────────────────────────────────
+// Đây là cách chuẩn và đáng tin nhất với Exchange 2019 on-premises.
+// EmailMessageSchema.Flag thường không đồng bộ đúng qua EWS.
+
+/** PR_FLAG_STATUS (0x1090) — 0=NoFlag, 1=Flagged(Starred), 2=Complete */
+const PR_FLAG_STATUS = new ExtendedPropertyDefinition(
+  0x1090,
+  MapiPropertyType.Integer,
+);
+/** PR_TODO_TITLE (0x0E2B) — thường là "Follow up" khi flag */
+const PR_TODO_TITLE = new ExtendedPropertyDefinition(
+  0x0e2b,
+  MapiPropertyType.String,
+);
+/** PR_FOLLOWUP_ICON (0x1095) — màu flag, 6 = red (default Outlook star) */
+const PR_FOLLOWUP_ICON = new ExtendedPropertyDefinition(
+  0x1095,
+  MapiPropertyType.Integer,
+);
+/** PR_SENDER_SMTP_ADDRESS (0x5D01) — SMTP thực của sender, không bị X500 */
+const PR_SENDER_SMTP_ADDRESS = new ExtendedPropertyDefinition(
+  0x5d01,
+  MapiPropertyType.String,
+);
+/** PR_SENT_REPRESENTING_SMTP_ADDRESS (0x5D02) — SMTP của người được đại diện gửi */
+const PR_SENT_REPRESENTING_SMTP_ADDRESS = new ExtendedPropertyDefinition(
+  0x5d02,
+  MapiPropertyType.String,
+);
+
+enum FlagStatus {
+  NoFlag = 0,
+  Flagged = 1,
+  Complete = 2,
+}
+
+// ─── PropertySets tái sử dụng ─────────────────────────────────────────────────
+
+/** Dùng cho list — không load body để tối ưu tốc độ */
+const LIST_PROPS = new PropertySet(
+  BasePropertySet.IdOnly,
+  ItemSchema.Subject,
+  ItemSchema.DateTimeReceived,
+  EmailMessageSchema.From,
+  EmailMessageSchema.IsRead,
+  ItemSchema.HasAttachments,
+  ItemSchema.Categories,
+  PR_FLAG_STATUS,
+  PR_SENDER_SMTP_ADDRESS,
+  PR_SENT_REPRESENTING_SMTP_ADDRESS,
+);
+
+/** Dùng khi load chi tiết message */
+const DETAIL_PROPS = new PropertySet(
+  BasePropertySet.FirstClassProperties,
+  ItemSchema.Categories,
+  PR_FLAG_STATUS,
+  PR_TODO_TITLE,
+  PR_FOLLOWUP_ICON,
+  PR_SENDER_SMTP_ADDRESS,
+  PR_SENT_REPRESENTING_SMTP_ADDRESS,
+);
+
+/** Dùng khi chỉ cần set/unset flag */
+const FLAG_ONLY_PROPS = new PropertySet(
+  BasePropertySet.IdOnly,
+  ItemSchema.Categories,
+  PR_FLAG_STATUS,
+  PR_TODO_TITLE,
+  PR_FOLLOWUP_ICON,
+);
+
+// ─── Contact PropertySets ─────────────────────────────────────────────────────
+// LƯU Ý QUAN TRỌNG: ContactSchema.EmailAddresses và ContactSchema.PhoneNumbers
+// là complex dictionary properties — EWS KHÔNG hỗ trợ chúng trong FindItem.
+// Phải dùng IndexedPropertyDefinition riêng lẻ (EmailAddress1/2/3, MobilePhone…)
+// cho FindItem. ContactSchema.EmailAddresses/PhoneNumbers chỉ dùng được với Bind.
+
+/** Dùng cho FindItem — chỉ dùng indexed properties được EWS hỗ trợ */
+const CONTACT_LIST_PROPS = new PropertySet(
+  BasePropertySet.IdOnly,
+  ContactSchema.DisplayName,
+  ContactSchema.GivenName,
+  ContactSchema.Surname,
+  ContactSchema.CompanyName,
+  ContactSchema.JobTitle,
+  ContactSchema.EmailAddress1,
+  ContactSchema.EmailAddress2,
+  ContactSchema.EmailAddress3,
+  ContactSchema.MobilePhone,
+  ContactSchema.BusinessPhone,
+  ContactSchema.HomePhone,
+);
+
+/** Dùng cho Bind (GetItem) — có thể dùng complex properties */
+const CONTACT_DETAIL_PROPS = new PropertySet(
+  BasePropertySet.FirstClassProperties,
+  ContactSchema.DisplayName,
+  ContactSchema.GivenName,
+  ContactSchema.Surname,
+  ContactSchema.CompanyName,
+  ContactSchema.JobTitle,
+  ContactSchema.EmailAddresses,
+  ContactSchema.PhoneNumbers,
+  ContactSchema.PhysicalAddresses,
+);
+
+const NOTE_LIST_PROPS = new PropertySet(
+  BasePropertySet.IdOnly,
+  ItemSchema.Subject,
+  ItemSchema.Body,
+  ItemSchema.DateTimeCreated,
+  ItemSchema.LastModifiedTime,
+  ItemSchema.ItemClass,
+);
+
+@Injectable({ scope: Scope.REQUEST })
+export class EwsMailProvider implements IMailProvider {
+  private readonly logger = new Logger(EwsMailProvider.name);
+  private service: ExchangeService | null = null;
+  private email: string | null = null;
+  private credentials: { email: string; password: string } | null = null;
+
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly cache: DragonflyService,
+    private readonly authService: ExchangeAuthService,
+    private readonly smtpSenderService: SmtpSenderService,
+    @Inject(REQUEST) private readonly request: any,
+  ) {}
+
+  private parseEmailAddress(value: string): { name: string; email: string } {
+    const trimmed = value?.trim?.() ?? '';
+    if (!trimmed) return { name: '', email: '' };
+
+    const angleMatch = trimmed.match(/^(.+?)<([^>]+)>$/);
+    if (angleMatch) {
+      return {
+        name: angleMatch[1].replace(/\"/g, '').trim(),
+        email: angleMatch[2].trim(),
+      };
+    }
+
+    const emailMatch = trimmed.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+    if (emailMatch) {
+      return { name: '', email: emailMatch[0] };
+    }
+
+    return { name: '', email: '' };
+  }
+
+  private toEmailAddress(value: string): EmailAddress | null {
+    const { name, email } = this.parseEmailAddress(value);
+    if (!email) return null;
+    const addr = name ? new EmailAddress(name, email) : new EmailAddress(email);
+    addr.RoutingType = 'SMTP';
+    return addr;
+  }
+
+  // ─── Config ───────────────────────────────────────────────────────────────
+
+  private get ewsConfig() {
+    return {
+      url: this.configService.get<string>('EWS_URL') ?? '',
+      version: this.configService.get<string>('EWS_VERSION') ?? 'Exchange2016',
+      tlsRejectUnauthorized:
+        this.configService.get<string>('EWS_TLS_REJECT_UNAUTHORIZED') !==
+        'false',
+    };
+  }
+
+  // ─── Connect / Disconnect ─────────────────────────────────────────────────
+
+  async connect(): Promise<void> {
+    const sessionToken = this.request.cookies?.['exchange_session'];
+    if (!sessionToken)
+      throw new UnauthorizedException('No session token provided');
+
+    const creds = await this.authService.getCredentials(sessionToken);
+    if (!creds) throw new UnauthorizedException('Session expired or invalid');
+    if (!creds.password)
+      throw new UnauthorizedException('Password not found in credentials');
+
+    this.email = creds.email;
+    this.credentials = { email: creds.email, password: creds.password };
+
+    const cfg = this.ewsConfig;
+    if (!cfg.url) throw new Error('EWS_URL is not configured');
+
+    if (!cfg.tlsRejectUnauthorized) {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    }
+
+    // Exchange 2019 on-premises tương thích với ExchangeVersion.Exchange2016
+    const version =
+      ExchangeVersion[cfg.version as keyof typeof ExchangeVersion] ??
+      ExchangeVersion.Exchange2016;
+
+    const service = new ExchangeService(version);
+    service.Url = new Uri(cfg.url);
+    service.Credentials = new WebCredentials(creds.email, creds.password);
+
+    this.service = service;
+  }
+
+  async disconnect(): Promise<void> {
+    this.service = null;
+    this.credentials = null;
+  }
+
+  // ─── Folder helpers ───────────────────────────────────────────────────────
+
+  private resolveFolderName(folderId: string): WellKnownFolderName {
+    const resolved = resolveFolderId(folderId, folderId).toLowerCase();
+    switch (resolved) {
+      case 'inbox':
+        return WellKnownFolderName.Inbox;
+      case 'sent items':
+      case 'sent':
+        return WellKnownFolderName.SentItems;
+      case 'drafts':
+        return WellKnownFolderName.Drafts;
+      case 'spam':
+      case 'junkemail':
+      case 'junk':
+        return WellKnownFolderName.JunkEmail;
+      case 'trash':
+      case 'deleteditems':
+      case 'deleted':
+        return WellKnownFolderName.DeletedItems;
+      default:
+        return WellKnownFolderName.Inbox;
+    }
+  }
+
+  private toFolderId(folder: WellKnownFolderName): FolderId {
+    return new FolderId(folder);
+  }
+
+  // ─── ID helpers ───────────────────────────────────────────────────────────
+
+  private encodeId(folder: string, itemId: string): string {
+    return Buffer.from(`${folder}:${itemId}`).toString('base64');
+  }
+
+  private decodeId(id: string): { folder: string; itemId: string } {
+    const decoded = Buffer.from(id, 'base64').toString('utf8');
+    const colonIndex = decoded.indexOf(':');
+    return {
+      folder: decoded.slice(0, colonIndex),
+      // Dùng indexOf tránh split sai nếu EWS UniqueId chứa ':'
+      itemId: decoded.slice(colonIndex + 1),
+    };
+  }
+
+  private encodeContactId(itemId: string): string {
+    return Buffer.from(`CONTACTS:${itemId}`).toString('base64');
+  }
+
+  private decodeContactId(id: string): string {
+    const decoded = Buffer.from(id, 'base64').toString('utf8');
+    if (!decoded.startsWith('CONTACTS:')) return decoded;
+    return decoded.slice('CONTACTS:'.length);
+  }
+
+  private encodeNoteId(itemId: string): string {
+    return Buffer.from(`NOTES:${itemId}`).toString('base64');
+  }
+
+  private decodeNoteId(id: string): string {
+    const decoded = Buffer.from(id, 'base64').toString('utf8');
+    if (!decoded.startsWith('NOTES:')) return decoded;
+    return decoded.slice('NOTES:'.length);
+  }
+
+  private normalizeEmail(email: string): string {
+    return (email || '').trim().toLowerCase();
+  }
+
+  /**
+   * Lấy email chính từ Contact.
+   * Hỗ trợ cả 2 trường hợp:
+   *   - Contact đến từ Bind (có EmailAddresses dictionary đầy đủ)
+   *   - Contact đến từ FindItems (có IndexedProperty EmailAddress1/2/3)
+   */
+  private getContactPrimaryEmail(contact: Contact): string {
+    try {
+      // Thử cách 1: lấy từ EmailAddresses dictionary (khả dụng sau Bind)
+      if (contact.EmailAddresses) {
+        const out1: IOutParam<EmailAddress> = { outValue: null as any };
+        const out2: IOutParam<EmailAddress> = { outValue: null as any };
+        const out3: IOutParam<EmailAddress> = { outValue: null as any };
+        contact.EmailAddresses.TryGetValue(EmailAddressKey.EmailAddress1, out1);
+        contact.EmailAddresses.TryGetValue(EmailAddressKey.EmailAddress2, out2);
+        contact.EmailAddresses.TryGetValue(EmailAddressKey.EmailAddress3, out3);
+        const addr =
+          out1.outValue?.Address ||
+          out2.outValue?.Address ||
+          out3.outValue?.Address;
+        if (addr) return addr;
+      }
+    } catch {
+      // fallthrough
+    }
+    try {
+      // Thử cách 2: lấy trực tiếp từ indexed property (khả dụng sau FindItems với CONTACT_LIST_PROPS)
+      const rawContact = contact as any;
+      const e1 = rawContact['EmailAddress1'];
+      const e2 = rawContact['EmailAddress2'];
+      const e3 = rawContact['EmailAddress3'];
+      // Indexed property trả về EmailAddressEntry hoặc string tùy version
+      const extract = (v: any): string => {
+        if (!v) return '';
+        if (typeof v === 'string') return v;
+        return v.Address || v.SmtpAddress || '';
+      };
+      return extract(e1) || extract(e2) || extract(e3) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * Lấy phone chính từ Contact.
+   * Hỗ trợ cả 2 trường hợp:
+   *   - Contact đến từ Bind (có PhoneNumbers dictionary đầy đủ)
+   *   - Contact đến từ FindItems (có IndexedProperty MobilePhone/BusinessPhone/HomePhone)
+   */
+  private getContactPrimaryPhone(contact: Contact): string {
+    try {
+      // Thử cách 1: lấy từ PhoneNumbers dictionary (khả dụng sau Bind)
+      if (contact.PhoneNumbers) {
+        const mobileOut: IOutParam<string> = { outValue: null as any };
+        const bizOut: IOutParam<string> = { outValue: null as any };
+        const homeOut: IOutParam<string> = { outValue: null as any };
+        contact.PhoneNumbers.TryGetValue(PhoneNumberKey.MobilePhone, mobileOut);
+        contact.PhoneNumbers.TryGetValue(PhoneNumberKey.BusinessPhone, bizOut);
+        contact.PhoneNumbers.TryGetValue(PhoneNumberKey.HomePhone, homeOut);
+        const phone = mobileOut.outValue || bizOut.outValue || homeOut.outValue;
+        if (phone) return phone;
+      }
+    } catch {
+      // fallthrough
+    }
+    try {
+      // Thử cách 2: lấy từ indexed property (khả dụng sau FindItems)
+      const rawContact = contact as any;
+      const mobile = rawContact['MobilePhone'];
+      const business = rawContact['BusinessPhone'];
+      const home = rawContact['HomePhone'];
+      const extract = (v: any): string => {
+        if (!v) return '';
+        if (typeof v === 'string') return v;
+        return v.PhoneNumber || String(v) || '';
+      };
+      return extract(mobile) || extract(business) || extract(home) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  private mapContactAddress(
+    entry: PhysicalAddressEntry | null,
+  ): ExchangeContactAddress | undefined {
+    if (!entry) return undefined;
+    const address: ExchangeContactAddress = {
+      street: entry.Street ?? '',
+      city: entry.City ?? '',
+      state: entry.State ?? '',
+      postalCode: entry.PostalCode ?? '',
+      country: entry.CountryOrRegion ?? '',
+    };
+    const hasValue = Object.values(address).some(
+      (v) => (v ?? '').toString().trim() !== '',
+    );
+    return hasValue ? address : undefined;
+  }
+
+  private getContactPrimaryAddress(
+    contact: Contact,
+  ): ExchangeContactAddress | undefined {
+    try {
+      if (contact.PhysicalAddresses) {
+        const outBiz: IOutParam<PhysicalAddressEntry> = {
+          outValue: null as any,
+        };
+        const outHome: IOutParam<PhysicalAddressEntry> = {
+          outValue: null as any,
+        };
+        const outOther: IOutParam<PhysicalAddressEntry> = {
+          outValue: null as any,
+        };
+        contact.PhysicalAddresses.TryGetValue(
+          PhysicalAddressKey.Business,
+          outBiz,
+        );
+        contact.PhysicalAddresses.TryGetValue(PhysicalAddressKey.Home, outHome);
+        contact.PhysicalAddresses.TryGetValue(
+          PhysicalAddressKey.Other,
+          outOther,
+        );
+
+        const entry = outBiz.outValue || outHome.outValue || outOther.outValue;
+        return this.mapContactAddress(entry);
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  // ─── Type helpers ─────────────────────────────────────────────────────────
+
+  private toJsDate(value: any): Date {
+    if (!value) return new Date();
+    if (value instanceof Date) return value;
+    if (typeof value.ToDate === 'function') return value.ToDate();
+    if (typeof value.ToISOString === 'function')
+      return new Date(value.ToISOString());
+    return new Date(value);
+  }
+
+  /**
+   * Kiểm tra xem address có phải X500/X400 DN không.
+   * Exchange on-premises lưu internal senders dưới dạng:
+   *   /O=ORGNAME/OU=GROUP/CN=RECIPIENTS/CN=hash-USERNAME
+   */
+  private isX500Address(address: string): boolean {
+    const upper = address.toUpperCase();
+    return (
+      upper.startsWith('/O=') ||
+      upper.startsWith('/OU=') ||
+      upper.startsWith('/CN=') ||
+      upper.startsWith('C=') ||
+      upper.startsWith('G=')
+    );
+  }
+
+  /**
+   * Lấy SMTP thực từ MAPI extended properties PR_SENDER_SMTP_ADDRESS (0x5D01)
+   * hoặc PR_SENT_REPRESENTING_SMTP_ADDRESS (0x5D02).
+   *
+   * Đây là cách đáng tin nhất để lấy email thật với Sent Items,
+   * vì EmailMessage.From.Address thường là X500 DN với Exchange on-premises.
+   */
+  private getSenderSmtpFromExtProps(item: any): string {
+    const extProps: any[] =
+      item?.ExtendedProperties?.items ?? item?.ExtendedProperties ?? [];
+    for (const ep of extProps) {
+      const tag = ep?.PropertyDefinition?.Tag ?? ep?.Tag;
+      // 0x5D01 = PR_SENDER_SMTP_ADDRESS, 0x5D02 = PR_SENT_REPRESENTING_SMTP_ADDRESS
+      if ((tag === 0x5d01 || tag === 0x5d02) && ep.Value) {
+        return String(ep.Value);
+      }
+    }
+    return '';
+  }
+
+  private getFrom(item: any): { name: string; email: string } {
+    const raw = item?.From ?? item?.Sender;
+    const name = raw?.Name ?? '';
+    const rawAddress = raw?.Address ?? '';
+    // Nếu address là X500 DN → thử lấy SMTP thực từ MAPI extended properties
+    if (!rawAddress || this.isX500Address(rawAddress)) {
+      const smtpFromMapi = this.getSenderSmtpFromExtProps(item);
+      // Fallback: nếu MAPI cũng không có, trả về X500 gốc để không mất data
+      return { name, email: smtpFromMapi || rawAddress };
+    }
+
+    return { name, email: rawAddress };
+  }
+
+  private getRecipients(collection: any): { name: string; email: string }[] {
+    const items: any[] = collection?.items ?? collection?.Items ?? [];
+    return items.map((a: any) => {
+      const addr = a.Address ?? '';
+      return {
+        name: a.Name ?? '',
+        // Recipients thường dùng SMTP, nhưng vẫn check X500 phòng trường hợp
+        email: this.isX500Address(addr) ? '' : addr,
+      };
+    });
+  }
+
+  // ─── Starred helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Đọc trạng thái starred từ MAPI PR_FLAG_STATUS.
+   * Fallback sang EmailMessageSchema.Flag rồi Categories.
+   *
+   * Trên Exchange 2019 on-premises, PR_FLAG_STATUS là nguồn đáng tin nhất.
+   * EmailMessageSchema.Flag đôi khi không serialize đúng qua ews-javascript-api.
+   */
+  private isItemStarred(item: any): boolean {
+    try {
+      // Ưu tiên: MAPI extended property PR_FLAG_STATUS
+      const extProps: any[] =
+        item.ExtendedProperties?.items ?? item.ExtendedProperties ?? [];
+
+      for (const ep of extProps) {
+        const tag = ep?.PropertyDefinition?.Tag ?? ep?.Tag;
+        if (tag === 0x1090) {
+          return Number(ep.Value) === FlagStatus.Flagged;
+        }
+      }
+
+      // Fallback 1: EmailMessageSchema.Flag object
+      const flagStatus = item.Flag?.FlagStatus ?? item.FlagStatus;
+      if (flagStatus !== undefined && flagStatus !== null) {
+        return Number(flagStatus) === FlagStatus.Flagged;
+      }
+
+      // Fallback 2: Categories chứa "Starred" (Outlook on mobile thường dùng cách này)
+      const cats: any[] = item.Categories?.items ?? item.Categories ?? [];
+      return cats.some((c) => String(c).toLowerCase() === 'starred');
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Set/unset flag trên message qua MAPI extended property PR_FLAG_STATUS.
+   * Chỉ dùng PR_FLAG_STATUS đơn lẻ — tránh lỗi "invalid extended property combination"
+   * khi Exchange 2019 on-prem từ chối tổ hợp PR_FLAG_STATUS + PR_TODO_TITLE + PR_FOLLOWUP_ICON.
+   */
+  private async setFlag(
+    message: EmailMessage,
+    starred: boolean,
+    minimal = false,
+  ): Promise<void> {
+    if (minimal) {
+      // Chế độ tối giản: chỉ set PR_FLAG_STATUS — Exchange 2019 on-prem chấp nhận
+      message.SetExtendedProperty(
+        PR_FLAG_STATUS,
+        starred ? FlagStatus.Flagged : FlagStatus.NoFlag,
+      );
+    } else {
+      // Chế độ đầy đủ: set cả 3 properties như Outlook client
+      if (starred) {
+        message.SetExtendedProperty(PR_FLAG_STATUS, FlagStatus.Flagged);
+        message.SetExtendedProperty(PR_TODO_TITLE, 'Follow up');
+        message.SetExtendedProperty(PR_FOLLOWUP_ICON, 6);
+      } else {
+        message.SetExtendedProperty(PR_FLAG_STATUS, FlagStatus.NoFlag);
+        message.SetExtendedProperty(PR_TODO_TITLE, '');
+        message.SetExtendedProperty(PR_FOLLOWUP_ICON, 0);
+      }
+    }
+    await message.Update(ConflictResolutionMode.AlwaysOverwrite);
+  }
+
+  // ─── Folders ──────────────────────────────────────────────────────────────
+
+  async getFolders(): Promise<MailFolder[]> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const folders: MailFolder[] = [];
+    for (const folder of MAIL_FOLDERS) {
+      if (folder.id === 'Starred') {
+        folders.push({ id: folder.id, name: folder.name });
+        continue;
+      }
+      try {
+        await Folder.Bind(
+          this.service,
+          new FolderId(this.resolveFolderName(folder.id)),
+        );
+        folders.push({ id: folder.id, name: folder.name });
+      } catch (err) {
+        this.logger.warn(`Cannot bind folder ${folder.id}: ${err.message}`);
+      }
+    }
+    return folders;
+  }
+
+  async getFolderCounts(): Promise<
+    Record<string, { total: number; unread: number }>
+  > {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const counts: Record<string, { total: number; unread: number }> = {};
+    const countProps = new PropertySet(
+      BasePropertySet.IdOnly,
+      FolderSchema.TotalCount,
+      FolderSchema.UnreadCount,
+    );
+
+    for (const folder of MAIL_FOLDERS) {
+      if (folder.id === 'Starred') {
+        counts[folder.id] = await this.getStarredCounts();
+        continue;
+      }
+      try {
+        const bound = await Folder.Bind(
+          this.service,
+          new FolderId(this.resolveFolderName(folder.id)),
+          countProps,
+        );
+        counts[folder.id] = {
+          total: bound.TotalCount ?? 0,
+          unread: bound.UnreadCount ?? 0,
+        };
+      } catch (err) {
+        this.logger.warn(`getFolderCounts ${folder.id}: ${err.message}`);
+        counts[folder.id] = { total: 0, unread: 0 };
+      }
+    }
+    return counts;
+  }
+
+  private async getStarredCounts(): Promise<{ total: number; unread: number }> {
+    if (!this.service) throw new Error('EWS service not connected');
+    try {
+      const countView = new ItemView(1, 0);
+      // Dùng MAPI filter để tìm đúng flagged items
+      const starredFilter = new SearchFilter.IsEqualTo(
+        PR_FLAG_STATUS,
+        FlagStatus.Flagged,
+      );
+
+      const totalResult = await this.service.FindItems(
+        WellKnownFolderName.Inbox,
+        starredFilter,
+        countView,
+      );
+
+      if (!totalResult.TotalCount) return { total: 0, unread: 0 };
+
+      const unreadResult = await this.service.FindItems(
+        WellKnownFolderName.Inbox,
+        new SearchFilter.SearchFilterCollection(LogicalOperator.And, [
+          starredFilter,
+          new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, false),
+        ]),
+        countView,
+      );
+
+      return {
+        total: totalResult.TotalCount ?? 0,
+        unread: unreadResult.TotalCount ?? 0,
+      };
+    } catch (err) {
+      this.logger.warn(`getStarredCounts: ${err.message}`);
+      return { total: 0, unread: 0 };
+    }
+  }
+
+  // ─── Messages ─────────────────────────────────────────────────────────────
+
+  async getMessages(
+    folderId: string,
+    page: number,
+    limit: number,
+  ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const resolvedId = resolveFolderId(folderId, folderId);
+    const resolvedFolder = this.resolveFolderName(folderId);
+    const offset = (page - 1) * limit;
+
+    const view = new ItemView(limit, offset);
+    view.OrderBy.Add(ItemSchema.DateTimeReceived, SortDirection.Descending);
+    view.PropertySet = LIST_PROPS;
+
+    let result: any;
+
+    if (resolvedId === 'Starred') {
+      try {
+        const filter = new SearchFilter.IsEqualTo(
+          PR_FLAG_STATUS,
+          FlagStatus.Flagged,
+        );
+        result = await this.service.FindItems(
+          WellKnownFolderName.Inbox,
+          filter,
+          view,
+        );
+      } catch (err) {
+        this.logger.warn(`Starred getMessages: ${err.message}`);
+        return { items: [], total: 0 };
+      }
+    } else {
+      result = await this.service.FindItems(resolvedFolder, view);
+    }
+
+    const items: Partial<MailMessage>[] = result.Items.map((item: any) => ({
+      id: this.encodeId(resolvedId, item.Id?.UniqueId ?? ''),
+      subject: item.Subject ?? '(No Subject)',
+      from: this.getFrom(item),
+      receivedAt: this.toJsDate(item.DateTimeReceived),
+      isRead: item.IsRead ?? false,
+      hasAttachments: item.HasAttachments ?? false,
+      preview: '',
+      isStarred: this.isItemStarred(item),
+    }));
+
+    return { items, total: result.TotalCount ?? 0 };
+  }
+
+  async getMessage(id: string): Promise<MailMessage> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const { itemId } = this.decodeId(id);
+    let message: EmailMessage;
+    try {
+      message = await EmailMessage.Bind(
+        this.service,
+        new ItemId(itemId),
+        DETAIL_PROPS,
+      );
+    } catch (err) {
+      if (
+        String(err?.message || '').includes(
+          'extended property attribute combination is invalid',
+        )
+      ) {
+        // Fallback to basic properties if extended properties are rejected by server
+        const basicProps = new PropertySet(
+          BasePropertySet.FirstClassProperties,
+        );
+        message = await EmailMessage.Bind(
+          this.service,
+          new ItemId(itemId),
+          basicProps,
+        );
+      } else {
+        throw err;
+      }
+    }
+
+    if (!(message as any).IsRead) {
+      (message as any).IsRead = true;
+      await message.Update(ConflictResolutionMode.AlwaysOverwrite);
+    }
+
+    const bodyText = message.Body?.Text ?? '';
+
+    // Đọc ConversationId nếu có — dùng để fetch toàn bộ luồng thư hội thoại
+    const rawConvId = (message as any).ConversationId?.UniqueId as
+      | string
+      | undefined;
+
+    console.log('rawConvId==', (message as any).ConversationId);
+    return {
+      id,
+      subject: message.Subject ?? '(No Subject)',
+      from: {
+        name: message.From?.Name ?? '',
+        email: message.From?.Address ?? '',
+      },
+      to: this.getRecipients(message.ToRecipients),
+      cc: this.getRecipients(message.CcRecipients),
+      receivedAt: this.toJsDate(message.DateTimeReceived),
+      body: bodyText,
+      isHtml: message.Body?.BodyType === BodyType.HTML,
+      hasAttachments: message.HasAttachments ?? false,
+      isRead: true,
+      isStarred: this.isItemStarred(message),
+      preview: bodyText.substring(0, 150),
+      conversationId: rawConvId,
+    };
+  }
+
+  // ─── Conversation Thread ───────────────────────────────────────────────────
+
+  /**
+   * Lấy toàn bộ email trong cùng luồng hội thoại từ messageId gốc.
+   * Luồng: messageId → Bind email → Lấy ConversationId → FindItems theo ConversationId.
+   * Tương thích Exchange 2019 on-premises.
+   * @param messageId - Composite ID (base64) của email gốc cần tìm thread
+   * @param maxItems  - Số lượng email tối đa trả về (mặc định 50)
+   */
+  async getConversationMessages(
+    messageId: string,
+    maxItems: number = 50,
+  ): Promise<{
+    items: Partial<import('../interfaces/mail-provider.interface').MailMessage>[];
+    total: number;
+    hasMore: boolean;
+  }> {
+    if (!this.service) {
+      throw new Error('EWS service not connected');
+    }
+
+    try {
+      // 1️⃣ Bind mail gốc để lấy ConversationId
+      const { itemId } = this.decodeId(messageId);
+
+      const baseMessage = await EmailMessage.Bind(
+        this.service,
+        new ItemId(itemId),
+        new PropertySet(
+          BasePropertySet.IdOnly,
+          ItemSchema.ConversationId,
+        ),
+      );
+
+      const conversationId =
+        (baseMessage as any).ConversationId?.UniqueId;
+
+      if (!conversationId) {
+        return { items: [], total: 0, hasMore: false };
+      }
+
+      const filter = new SearchFilter.IsEqualTo(
+        ItemSchema.ConversationId,
+        conversationId,
+      );
+
+      const allRawItems: { item: EmailMessage; folderLabel: string }[] = [];
+
+      // 3️⃣ Search từng folder — lưu kèm folder label
+      const folderDefs = [
+        { wellKnown: WellKnownFolderName.Inbox, label: 'INBOX' },
+        { wellKnown: WellKnownFolderName.SentItems, label: 'Sent Items' },
+        { wellKnown: WellKnownFolderName.Drafts, label: 'Drafts' },
+      ];
+
+      for (const folderDef of folderDefs) {
+        try {
+          const folderId = new FolderId(folderDef.wellKnown);
+
+          const view = new ItemView(maxItems);
+          view.PropertySet = new PropertySet(
+            BasePropertySet.IdOnly,
+            EmailMessageSchema.Subject,
+            ItemSchema.DateTimeReceived,
+            EmailMessageSchema.From,
+            ItemSchema.HasAttachments,
+            EmailMessageSchema.IsRead,
+          );
+          view.OrderBy.Add(ItemSchema.DateTimeReceived, SortDirection.Ascending);
+
+          const result = await this.service.FindItems(folderId, filter, view);
+          const found = (result?.Items ?? []).filter((i) => i instanceof EmailMessage) as EmailMessage[];
+          this.logger.log(`[ConvThread] ${folderDef.label}: tìm thấy ${found.length} item`);
+          allRawItems.push(...found.map((item) => ({ item, folderLabel: folderDef.label })));
+        } catch (folderErr) {
+          this.logger.warn(`[ConvThread] Lỗi ${folderDef.label}: ${(folderErr as any)?.message}`);
+        }
+      }
+
+      if (!allRawItems.length) {
+        return { items: [], total: 0, hasMore: false };
+      }
+
+      // 4️⃣ Deduplicate theo UniqueId — giữ lại folder label tương ứng
+      const uniqueMap = new Map<string, { item: EmailMessage; folderLabel: string }>();
+      for (const entry of allRawItems) {
+        const id = entry.item.Id?.UniqueId;
+        if (id && !uniqueMap.has(id)) uniqueMap.set(id, entry);
+      }
+
+      const uniqueEntries = Array.from(uniqueMap.values());
+
+      // 5️⃣ Bind song song để lấy full body — dùng đúng folder label khi encodeId
+      const detailed = await Promise.all(
+        uniqueEntries.map(async ({ item, folderLabel }) => {
+          const full = await EmailMessage.Bind(
+            this.service!,
+            item.Id,
+            new PropertySet(BasePropertySet.FirstClassProperties),
+          );
+
+          const compositeId = full.Id?.UniqueId
+            ? this.encodeId(folderLabel, full.Id.UniqueId)
+            : '';
+
+          const bodyText = full.Body?.Text ?? '';
+          return {
+            id: compositeId,
+            subject: full.Subject ?? '(No Subject)',
+            from: {
+              name: full.From?.Name ?? '',
+              email: full.From?.Address ?? '',
+            },
+            to: this.getRecipients(full.ToRecipients),
+            cc: this.getRecipients(full.CcRecipients),
+            receivedAt: this.toJsDate(full.DateTimeReceived),
+            body: bodyText,
+            isHtml: full.Body?.BodyType === BodyType.HTML,
+            hasAttachments: full.HasAttachments ?? false,
+            isRead: (full as any).IsRead ?? false,
+            isStarred: false,
+            preview: bodyText.substring(0, 200),
+            conversationId,
+          };
+        }),
+      );
+
+      // 6️⃣ Sort theo thời gian
+      detailed.sort((a, b) => {
+        const tA = a.receivedAt
+          ? new Date(a.receivedAt).getTime()
+          : 0;
+        const tB = b.receivedAt
+          ? new Date(b.receivedAt).getTime()
+          : 0;
+        return tA - tB;
+      });
+
+      return {
+        items: detailed.slice(0, maxItems),
+        total: detailed.length,
+        hasMore: detailed.length > maxItems,
+      };
+    } catch (error) {
+      this.logger.error(
+        `[ConvThread] Error: ${error?.message}`,
+      );
+      return { items: [], total: 0, hasMore: false };
+    }
+  }
+  // ─── Send ─────────────────────────────────────────────────────────────────
+
+  async saveDraft(
+    options: SaveDraftOptions,
+  ): Promise<{ success: boolean; messageId?: string }> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const message = new EmailMessage(this.service);
+    message.Subject = options.subject ?? '';
+    message.Body = new MessageBody(
+      options.html ? BodyType.HTML : BodyType.Text,
+      options.html ?? options.text ?? '',
+    );
+
+    if (this.email) {
+      const fromAddr = new EmailAddress(this.email);
+      fromAddr.RoutingType = 'SMTP';
+      message.From = fromAddr;
+    }
+
+    for (const r of options.to ?? []) {
+      const addr = this.toEmailAddress(r);
+      if (addr) message.ToRecipients.Add(addr);
+    }
+    for (const r of options.cc ?? []) {
+      const addr = this.toEmailAddress(r);
+      if (addr) message.CcRecipients.Add(addr);
+    }
+    for (const r of options.bcc ?? []) {
+      const addr = this.toEmailAddress(r);
+      if (addr) message.BccRecipients.Add(addr);
+    }
+    for (const r of options.replyTo ?? []) {
+      const addr = this.toEmailAddress(r);
+      if (addr) message.ReplyTo.Add(addr);
+    }
+
+    for (const att of options.attachments ?? []) {
+      const file = message.Attachments.AddFileAttachment(
+        att.filename,
+        att.content,
+      );
+      if (att.contentType) file.ContentType = att.contentType;
+    }
+
+    await message.Save(WellKnownFolderName.Drafts);
+
+    const messageId = message.Id?.UniqueId
+      ? this.encodeId('Drafts', message.Id.UniqueId)
+      : undefined;
+
+    return { success: true, messageId };
+  }
+
+  async sendMessage(
+    options: SendMailOptions,
+  ): Promise<{ success: boolean; messageId?: string }> {
+    if (!this.service) throw new Error('EWS service not connected');
+    if (!this.credentials) throw new Error('SMTP credentials not available');
+
+    const attachments = options.attachments?.map((att) => ({
+      filename: att.filename,
+      contentType: att.contentType,
+      content: Buffer.from(att.content, 'base64'),
+    }));
+
+    const mailOptions = {
+      from: this.credentials.email,
+      to: options.to,
+      cc: options.cc,
+      bcc: options.bcc,
+      replyTo: options.replyTo,
+      subject: options.subject,
+      text: options.text,
+      html: options.html,
+      attachments,
+    };
+
+    const info = await this.smtpSenderService.sendMail(
+      this.credentials,
+      mailOptions,
+    );
+
+    // Save a copy to Sent Items using EWS (do not re-send)
+    try {
+      const message = new EmailMessage(this.service);
+      message.Subject = options.subject ?? '';
+      message.Body = new MessageBody(
+        options.html ? BodyType.HTML : BodyType.Text,
+        options.html ?? options.text ?? '',
+      );
+
+      if (this.email) {
+        const fromAddr = new EmailAddress(this.email);
+        fromAddr.RoutingType = 'SMTP';
+        message.From = fromAddr;
+      }
+
+      for (const r of options.to ?? []) {
+        const addr = this.toEmailAddress(r);
+        if (addr) message.ToRecipients.Add(addr);
+      }
+      for (const r of options.cc ?? []) {
+        const addr = this.toEmailAddress(r);
+        if (addr) message.CcRecipients.Add(addr);
+      }
+      for (const r of options.bcc ?? []) {
+        const addr = this.toEmailAddress(r);
+        if (addr) message.BccRecipients.Add(addr);
+      }
+      for (const r of options.replyTo ?? []) {
+        const addr = this.toEmailAddress(r);
+        if (addr) message.ReplyTo.Add(addr);
+      }
+
+      for (const att of options.attachments ?? []) {
+        const file = message.Attachments.AddFileAttachment(
+          att.filename,
+          att.content,
+        );
+        if (att.contentType) file.ContentType = att.contentType;
+      }
+
+      await message.Save(WellKnownFolderName.SentItems);
+    } catch (error) {
+      this.logger.warn(`Failed to save sent copy via EWS: ${error.message}`);
+    }
+
+    return { success: true, messageId: info?.messageId };
+  }
+
+  // ─── Reply ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Trả lời một email. Sử dụng EWS CreateReply để giữ nguyên luồng hội thoại,
+   * các header quan trọng như In-Reply-To, References sẽ được Exchange tự xử lý.
+   * @param messageId - ID mã hoá của thư gốc cần trả lời
+   * @param html - Nội dung trả lời định dạng HTML (tuỳ chọn)
+   * @param text - Nội dung trả lời dạng plain text (tuỳ chọn)
+   * @param replyAll - true để reply tất cả, false/undefined để reply người gửi
+   * @param attachments - Tệp đính kèm mới thêm vào (tuỳ chọn)
+   */
+  async replyMessage(options: {
+    messageId: string;
+    html?: string;
+    text?: string;
+    replyAll?: boolean;
+    attachments?: Array<{
+      filename: string;
+      contentType?: string;
+      content: string;
+    }>;
+  }): Promise<{ success: boolean }> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const { itemId } = this.decodeId(options.messageId);
+
+    // ── Bước 0: Bind thư gốc để lấy thông tin hiển thị (From, Subject, Date) ──
+    const original = await EmailMessage.Bind(
+      this.service,
+      new ItemId(itemId),
+      new PropertySet(BasePropertySet.FirstClassProperties),
+    );
+
+    // ── Bước 1: Ghép nội dung body ────────────────────────────────────────────
+    const userHtml = options.html
+      ? options.html
+      : options.text
+        ? `<p>${options.text.replace(/\n/g, '<br>')}</p>`
+        : '';
+
+    // Định dạng ngày theo kiểu Outlook
+    let sentDateStr = '';
+    try {
+      const m = (original as any).DateTimeSent?.getMomentDate?.();
+      if (m) sentDateStr = m.format('dddd, MMMM D, YYYY h:mm:ss A');
+    } catch (_) {
+      sentDateStr = String((original as any).DateTimeSent ?? '');
+    }
+
+    const fromDisplay = original.From?.Name || original.From?.Address || '';
+    const toDisplay   = this.getRecipientsStr(original.ToRecipients);
+    const origSubject = original.Subject ?? '';
+
+    // Tạo bodyPrefix HTML: nội dung người dùng + header trích dẫn thư gốc kiểu Outlook
+    const bodyPrefixHtml = [
+      `<div>${userHtml}</div>`,
+      `<br>`,
+      `<hr style="border:none;border-top:1px solid #ccc;margin:8px 0;">`,
+      `<div style="font-size:12px;color:#333;line-height:1.8;">`,
+      `  <b>From:</b> ${this.escHtml(fromDisplay)}<br>`,
+      `  <b>Sent:</b> ${this.escHtml(sentDateStr)}<br>`,
+      `  <b>To:</b> ${this.escHtml(toDisplay)}<br>`,
+      `  <b>Subject:</b> ${this.escHtml(origSubject)}`,
+      `</div>`,
+    ].join('\n');
+
+    // ⚠️ XML-encode bắt buộc vì EwsServiceXmlWriter.WriteValue() không tự escape.
+    // Nếu không encode: <div>, <p>, <br>... phá vỡ SOAP XML → Exchange báo schema error.
+    const bodyPrefixEncoded = this.xmlEncodeForSoap(bodyPrefixHtml);
+
+    this.logger.log(`[Reply] userHtml length=${userHtml.length}, bodyPrefixEncoded length=${bodyPrefixEncoded.length}`);
+
+    // ── Bước 2: Bind IdOnly → CreateReply → set BodyPrefix → gửi thẳng ────────
+    const baseMsg = await EmailMessage.Bind(
+      this.service,
+      new ItemId(itemId),
+      new PropertySet(BasePropertySet.IdOnly),
+    );
+
+    // CreateReply tự xử lý: In-Reply-To, References, Subject "RE:", ToRecipients
+    const responseMsg = baseMsg.CreateReply(options.replyAll ?? false);
+
+    // Set BodyPrefix đã XML-encode → SOAP hợp lệ, Exchange decode lại HTML đúng
+    responseMsg.BodyPrefix = new MessageBody(BodyType.HTML, bodyPrefixEncoded);
+
+    // Đính kèm tệp nếu có
+    for (const att of options.attachments ?? []) {
+      try {
+        const file = (responseMsg as any).Attachments?.AddFileAttachment?.(att.filename, att.content);
+        if (file && att.contentType) file.ContentType = att.contentType;
+      } catch (_) {}
+    }
+
+    // Gửi thẳng, lưu bản sao vào SentItems — không qua bước Save/FindItems/Bind
+    await responseMsg.SendAndSaveCopy(WellKnownFolderName.SentItems);
+
+    this.logger.log(`[Reply] Gửi reply thành công cho messageId=${options.messageId}`);
+    return { success: true };
+  }
+
+  /**
+   * XML-encode HTML content để pass an toàn vào ews-javascript-api.
+   * Library KHÔNG tự escape → phải encode thủ công trước khi gọi MessageBody(HTML, ...).
+   * Exchange sẽ XML-decode lại khi xử lý SOAP request và lưu HTML đúng vào mailbox.
+   */
+  private xmlEncodeForSoap(html: string): string {
+    if (!html) return '';
+    return html
+      .replace(/&/g, '&amp;')   // & phải replace TRƯỚC
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+
+
+  /** Escape ký tự HTML đặc biệt để an toàn khi nhúng vào HTML */
+  private escHtml(text: string): string {
+    if (!text) return '';
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  /** Lấy tên/email người nhận dạng "Name; Name2" */
+  private getRecipientsStr(recipients: any): string {
+    if (!recipients) return '';
+    const out: string[] = [];
+    try {
+      for (const r of recipients.GetEnumerator?.() ?? []) {
+        out.push(r.Name || r.Address || '');
+      }
+    } catch (_) {}
+    return out.join('; ');
+  }
+
+  // ─── Forward ───────────────────────────────────────────────────────────────
+
+
+  /**
+   * Chuyển tiếp email đến người nhận khác. Sử dụng EWS CreateForward để
+   * đảm bảo tệp đính kèm gốc và nội dung gốc được giữ nguyên vẹn.
+   * @param messageId - ID mã hoá của thư gốc cần chuyển tiếp
+   * @param to - Danh sách email người nhận
+   * @param cc - Danh sách CC (tuỳ chọn)
+   * @param bcc - Danh sách BCC (tuỳ chọn)
+   * @param html - Lời nhắn thêm khi forward (tuỳ chọn)
+   * @param text - Lời nhắn dạng text (tuỳ chọn)
+   * @param attachments - Tệp đính kèm bổ sung (tuỳ chọn)
+   */
+  async forwardMessage(options: {
+    messageId: string;
+    to: string[];
+    cc?: string[];
+    bcc?: string[];
+    html?: string;
+    text?: string;
+    attachments?: Array<{
+      filename: string;
+      contentType?: string;
+      content: string;
+    }>;
+  }): Promise<{ success: boolean }> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const { itemId } = this.decodeId(options.messageId);
+
+    // Bind thư gốc — chỉ cần Id để tạo Forward
+    const originalMessage = await EmailMessage.Bind(
+      this.service,
+      new ItemId(itemId),
+      new PropertySet(BasePropertySet.IdOnly),
+    );
+
+    // Tạo đối tượng ForwardMessage từ thư gốc
+    const forwardMsg = originalMessage.CreateForward();
+
+    // Thêm người nhận To
+    for (const email of options.to) {
+      const addr = this.toEmailAddress(email);
+      if (addr) forwardMsg.ToRecipients.Add(addr);
+    }
+
+    // Thêm CC nếu có
+    for (const email of options.cc ?? []) {
+      const addr = this.toEmailAddress(email);
+      if (addr) forwardMsg.CcRecipients.Add(addr);
+    }
+
+    // Thêm BCC nếu có
+    for (const email of options.bcc ?? []) {
+      const addr = this.toEmailAddress(email);
+      if (addr) forwardMsg.BccRecipients.Add(addr);
+    }
+
+    // Ghép lời nhắn thêm vào trên nội dung thư gốc
+    // Phải dùng BodyPrefix — tương tự replyMessage, .Body bị bỏ qua trên ForwardResponse
+    const bodyContent = options.html || options.text || '';
+    const bodyType = options.html ? BodyType.HTML : BodyType.Text;
+    forwardMsg.BodyPrefix = new MessageBody(bodyType, bodyContent);
+
+    // Đính kèm tệp mới bổ sung nếu có
+    for (const att of options.attachments ?? []) {
+      const file = (forwardMsg as any).Attachments?.AddFileAttachment(
+        att.filename,
+        att.content,
+      );
+      if (file && att.contentType) file.ContentType = att.contentType;
+    }
+
+    // Gửi và lưu bản copy vào Sent Items
+    await forwardMsg.SendAndSaveCopy(WellKnownFolderName.SentItems);
+
+    return { success: true };
+  }
+
+  async search(
+    query: string,
+    page: number,
+    limit: number,
+  ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const view = new ItemView(limit, (page - 1) * limit);
+    view.OrderBy.Add(ItemSchema.DateTimeReceived, SortDirection.Descending);
+    view.PropertySet = LIST_PROPS;
+
+    // Tìm theo Subject và From.Name — tránh search Body (rất chậm trên Exchange on-premises)
+    // Lưu ý: không có SenderName schema; dùng EmailMessageSchema.From không support ContainsSubstring
+    // → chỉ search Subject; nếu muốn search sender thì dùng AQS string query (Exchange 2013+)
+    const filter = new SearchFilter.ContainsSubstring(
+      ItemSchema.Subject,
+      query,
+    );
+
+    try {
+      const result = await this.service.FindItems(
+        WellKnownFolderName.Inbox,
+        filter,
+        view,
+      );
+      const items: Partial<MailMessage>[] = result.Items.map((item: any) => ({
+        id: this.encodeId('INBOX', item.Id?.UniqueId ?? ''),
+        subject: item.Subject ?? '(No Subject)',
+        from: this.getFrom(item),
+        receivedAt: this.toJsDate(item.DateTimeReceived),
+        isRead: item.IsRead ?? false,
+        hasAttachments: item.HasAttachments ?? false,
+        isStarred: this.isItemStarred(item),
+      }));
+      return { items, total: result.TotalCount ?? 0 };
+    } catch (err) {
+      this.logger.error(`Search error: ${err.message}`);
+      return { items: [], total: 0 };
+    }
+  }
+
+  // ─── Move ─────────────────────────────────────────────────────────────────
+
+  async moveMessage(
+    messageId: string,
+    targetFolder: string,
+  ): Promise<{ success: boolean }> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const { itemId } = this.decodeId(messageId);
+    await this.service.MoveItems(
+      [new ItemId(itemId)],
+      this.toFolderId(this.resolveFolderName(targetFolder)),
+    );
+    return { success: true };
+  }
+
+  async moveMessagesBatch(ids: string[], targetFolder: string): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    await this.service.MoveItems(
+      ids.map((id) => new ItemId(this.decodeId(id).itemId)),
+      this.toFolderId(this.resolveFolderName(targetFolder)),
+    );
+  }
+
+  async moveAllMessages(
+    sourceFolder: string,
+    targetFolder: string,
+  ): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const source = this.resolveFolderName(sourceFolder);
+    const target = this.resolveFolderName(targetFolder);
+    let more = true;
+
+    while (more) {
+      // Luôn query offset=0 — sau khi move items đã bị remove khỏi source
+      const view = new ItemView(200, 0);
+      view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
+
+      const result = await this.service.FindItems(source, view);
+      if (!result.Items.length) break;
+
+      await this.service.MoveItems(
+        result.Items.map((item) => new ItemId(item.Id!.UniqueId)),
+        this.toFolderId(target),
+      );
+      more = result.MoreAvailable ?? false;
+    }
+  }
+
+  // ─── Mark read/unread ─────────────────────────────────────────────────────
+
+  async markMessages(ids: string[], isRead: boolean): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const props = new PropertySet(
+      BasePropertySet.IdOnly,
+      EmailMessageSchema.IsRead,
+    );
+    for (const id of ids) {
+      const { itemId } = this.decodeId(id);
+      const msg = await EmailMessage.Bind(
+        this.service,
+        new ItemId(itemId),
+        props,
+      );
+      if ((msg as any).IsRead !== isRead) {
+        (msg as any).IsRead = isRead;
+        await msg.Update(ConflictResolutionMode.AlwaysOverwrite);
+      }
+    }
+  }
+
+  async markAllMessages(folder: string, isRead: boolean): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const resolved = this.resolveFolderName(folder);
+    const props = new PropertySet(
+      BasePropertySet.IdOnly,
+      EmailMessageSchema.IsRead,
+    );
+    let offset = 0;
+    let more = true;
+
+    while (more) {
+      const view = new ItemView(200, offset);
+      view.PropertySet = props;
+
+      const result = await this.service.FindItems(resolved, view);
+      if (!result.Items.length) break;
+
+      for (const item of result.Items) {
+        const msg = await EmailMessage.Bind(
+          this.service,
+          new ItemId(item.Id!.UniqueId),
+          props,
+        );
+        if ((msg as any).IsRead !== isRead) {
+          (msg as any).IsRead = isRead;
+          await msg.Update(ConflictResolutionMode.AlwaysOverwrite);
+        }
+      }
+
+      offset += result.Items.length;
+      more = result.MoreAvailable ?? false;
+    }
+  }
+
+  // ─── Star / Unstar ────────────────────────────────────────────────────────
+
+  /**
+   * Bind message với fallback khi FLAG_ONLY_PROPS bị Exchange từ chối.
+   * Exchange 2019 on-prem đôi khi không chấp nhận kết hợp extended property
+   * phức tạp (IdOnly + Categories + Flag properties) trong một yêu cầu.
+   * Fallback xuống bộ property tối giản: chỉ IdOnly + PR_FLAG_STATUS.
+   */
+  private async bindForFlag(itemId: string): Promise<EmailMessage> {
+    try {
+      // Thử Bind với FLAG_ONLY_PROPS đầy đủ trước
+      return await EmailMessage.Bind(
+        this.service!,
+        new ItemId(itemId),
+        FLAG_ONLY_PROPS,
+      );
+    } catch (err) {
+      const errMsg = String((err as any)?.message ?? '');
+      if (
+        !errMsg.includes('extended property attribute combination is invalid')
+      ) {
+        throw err;
+      }
+      // Fallback: chỉ dùng IdOnly + PR_FLAG_STATUS tối giản nhất
+      this.logger.warn(
+        `FLAG_ONLY_PROPS bị từ chối, fallback tối giản: ${errMsg}`,
+      );
+      const minimalProps = new PropertySet(
+        BasePropertySet.IdOnly,
+        PR_FLAG_STATUS,
+      );
+      return await EmailMessage.Bind(
+        this.service!,
+        new ItemId(itemId),
+        minimalProps,
+      );
+    }
+  }
+
+  async markMessagesStar(ids: string[], starred: boolean): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    for (const id of ids) {
+      const { itemId } = this.decodeId(id);
+
+      // Thử bind với FLAG_ONLY_PROPS đầy đủ trước
+      let message: EmailMessage;
+      let useMinimal = false;
+
+      try {
+        message = await EmailMessage.Bind(
+          this.service,
+          new ItemId(itemId),
+          FLAG_ONLY_PROPS,
+        );
+      } catch (bindErr) {
+        const bindMsg = String((bindErr as any)?.message ?? '');
+        if (
+          !bindMsg.includes(
+            'extended property attribute combination is invalid',
+          )
+        ) {
+          throw bindErr;
+        }
+        // Fallback: chỉ bind IdOnly + PR_FLAG_STATUS
+        this.logger.warn(
+          `FLAG_ONLY_PROPS bị từ chối, fallback tối giản: ${bindMsg}`,
+        );
+        const minimalProps = new PropertySet(
+          BasePropertySet.IdOnly,
+          PR_FLAG_STATUS,
+        );
+        message = await EmailMessage.Bind(
+          this.service,
+          new ItemId(itemId),
+          minimalProps,
+        );
+        useMinimal = true;
+      }
+
+      // Thử update đầy đủ trước, nếu lỗi thì fallback sang chế độ tối giản
+      try {
+        await this.setFlag(message, starred, useMinimal);
+      } catch (updateErr) {
+        const updateMsg = String((updateErr as any)?.message ?? '');
+        if (
+          !useMinimal &&
+          updateMsg.includes(
+            'extended property attribute combination is invalid',
+          )
+        ) {
+          this.logger.warn(
+            `setFlag đầy đủ bị từ chối, thử lại với chế độ tối giản`,
+          );
+          // Rebind với property tối giản rồi update lại
+          const minimalProps2 = new PropertySet(
+            BasePropertySet.IdOnly,
+            PR_FLAG_STATUS,
+          );
+          const msg2 = await EmailMessage.Bind(
+            this.service,
+            new ItemId(itemId),
+            minimalProps2,
+          );
+          await this.setFlag(msg2, starred, true);
+        } else {
+          throw updateErr;
+        }
+      }
+    }
+  }
+
+  async markAllMessagesStar(folder: string, starred: boolean): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const resolved = this.resolveFolderName(folder);
+    let offset = 0;
+    let more = true;
+
+    while (more) {
+      // Dùng IdOnly cho FindItem để tránh lỗi extended property trên danh sách
+      const view = new ItemView(200, offset);
+      view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
+
+      const result = await this.service.FindItems(resolved, view);
+      if (!result.Items.length) break;
+
+      for (const item of result.Items) {
+        const message = await this.bindForFlag(item.Id!.UniqueId);
+        await this.setFlag(message, starred);
+      }
+
+      offset += result.Items.length;
+      more = result.MoreAvailable ?? false;
+    }
+  }
+
+  // ─── Delete ───────────────────────────────────────────────────────────────
+
+  async permanentlyDeleteMessages(ids: string[]): Promise<number> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const response: ServiceResponseCollection<any> =
+      await this.service.DeleteItems(
+        ids.map((id) => new ItemId(this.decodeId(id).itemId)),
+        DeleteMode.HardDelete,
+        SendCancellationsMode.SendToNone,
+        AffectedTaskOccurrence.AllOccurrences,
+      );
+    return response.Responses.filter(
+      (r) => r.ErrorCode === ServiceError.NoError,
+    ).length;
+  }
+
+  async permanentlyDeleteAllMessages(folder: string): Promise<number> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const resolved = this.resolveFolderName(folder);
+    let offset = 0;
+    let more = true;
+    let deleted = 0;
+
+    while (more) {
+      const view = new ItemView(200, offset);
+      view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
+
+      const result = await this.service.FindItems(resolved, view);
+      if (!result.Items.length) break;
+
+      const response: ServiceResponseCollection<any> =
+        await this.service.DeleteItems(
+          result.Items.map((item) => new ItemId(item.Id!.UniqueId)),
+          DeleteMode.HardDelete,
+          SendCancellationsMode.SendToNone,
+          AffectedTaskOccurrence.AllOccurrences,
+        );
+
+      deleted += response.Responses.filter(
+        (r) => r.ErrorCode === ServiceError.NoError,
+      ).length;
+      offset += result.Items.length;
+      more = result.MoreAvailable ?? false;
+    }
+
+    return deleted;
+  }
+
+  // ─── Contacts ───────────────────────────────────────────────────────────────
+
+  /**
+   * Tìm contact theo email.
+   *
+   * Dùng ContactSchema.EmailAddress1/2/3 (IndexedPropertyDefinition) trong filter
+   * — đây là cách duy nhất được EWS chấp nhận trong FindItem request.
+   * ContactSchema.EmailAddresses (complex dict) không được phép trong FindItem.
+   *
+   * Sau khi tìm thấy, thực hiện Contact.Bind để load đầy đủ data (bao gồm
+   * EmailAddresses dictionary và PhoneNumbers dictionary).
+   */
+  private async findContactByEmail(email: string): Promise<Contact | null> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const normalized = this.normalizeEmail(email);
+    if (!normalized) return null;
+
+    // Dùng IndexedPropertyDefinition — được EWS hỗ trợ trong FindItem
+    const filter = new SearchFilter.SearchFilterCollection(LogicalOperator.Or, [
+      new SearchFilter.IsEqualTo(ContactSchema.EmailAddress1, normalized),
+      new SearchFilter.IsEqualTo(ContactSchema.EmailAddress2, normalized),
+      new SearchFilter.IsEqualTo(ContactSchema.EmailAddress3, normalized),
+    ]);
+
+    // Chỉ cần Id để sau đó Bind — không cần load email lại ở đây
+    const view = new ItemView(2, 0);
+    view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
+
+    const result = await this.service.FindItems(
+      WellKnownFolderName.Contacts,
+      filter,
+      view,
+    );
+    if (!result.Items?.length) return null;
+
+    const item = result.Items[0];
+    // Bind để load đầy đủ properties bao gồm EmailAddresses và PhoneNumbers
+    return Contact.Bind(
+      this.service,
+      new ItemId(item.Id!.UniqueId),
+      CONTACT_DETAIL_PROPS,
+    );
+  }
+
+  async createContact(payload: {
+    displayName: string;
+    email: string;
+    givenName?: string;
+    surname?: string;
+    company?: string;
+    jobTitle?: string;
+    phone?: string;
+    address?: {
+      street?: string;
+      city?: string;
+      state?: string;
+      postalCode?: string;
+      country?: string;
+    };
+  }): Promise<ExchangeContact> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const existing = await this.findContactByEmail(payload.email);
+    if (existing) {
+      throw new BadRequestException('Contact email already exists');
+    }
+
+    const contact = new Contact(this.service);
+    contact.DisplayName = payload.displayName;
+    if (payload.givenName) contact.GivenName = payload.givenName;
+    if (payload.surname) contact.Surname = payload.surname;
+    if (payload.company) contact.CompanyName = payload.company;
+    if (payload.jobTitle) contact.JobTitle = payload.jobTitle;
+
+    const emailAddr = new EmailAddress(payload.email);
+    emailAddr.RoutingType = 'SMTP';
+    contact.EmailAddresses._setItem(EmailAddressKey.EmailAddress1, emailAddr);
+
+    if (payload.phone) {
+      contact.PhoneNumbers._setItem(PhoneNumberKey.MobilePhone, payload.phone);
+    }
+    if (payload.address) {
+      const addr = new PhysicalAddressEntry();
+      addr.Street = payload.address.street ?? '';
+      addr.City = payload.address.city ?? '';
+      addr.State = payload.address.state ?? '';
+      addr.PostalCode = payload.address.postalCode ?? '';
+      addr.CountryOrRegion = payload.address.country ?? '';
+      contact.PhysicalAddresses._setItem(PhysicalAddressKey.Business, addr);
+    }
+
+    await contact.Save(WellKnownFolderName.Contacts);
+
+    const uniqueId = contact.Id?.UniqueId;
+    if (!uniqueId) {
+      throw new Error('Contact saved but UniqueId not returned from Exchange');
+    }
+
+    return {
+      id: this.encodeContactId(uniqueId),
+      displayName: payload.displayName,
+      email: payload.email,
+      givenName: payload.givenName ?? '',
+      surname: payload.surname ?? '',
+      company: payload.company ?? '',
+      jobTitle: payload.jobTitle ?? '',
+      phone: payload.phone ?? '',
+      address: payload.address ?? undefined,
+    };
+  }
+
+  async updateContact(
+    id: string,
+    payload: {
+      displayName?: string;
+      email?: string;
+      givenName?: string;
+      surname?: string;
+      company?: string;
+      jobTitle?: string;
+      phone?: string;
+      address?: {
+        street?: string;
+        city?: string;
+        state?: string;
+        postalCode?: string;
+        country?: string;
+      };
+    },
+  ): Promise<ExchangeContact> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const itemId = this.decodeContactId(id);
+    const contact = await Contact.Bind(
+      this.service,
+      new ItemId(itemId),
+      CONTACT_DETAIL_PROPS,
+    );
+
+    if (
+      payload.email &&
+      this.normalizeEmail(payload.email) !==
+        this.normalizeEmail(this.getContactPrimaryEmail(contact))
+    ) {
+      const existing = await this.findContactByEmail(payload.email);
+      if (existing && existing.Id?.UniqueId !== contact.Id?.UniqueId) {
+        throw new BadRequestException('Contact email already exists');
+      }
+      const emailAddr = new EmailAddress(payload.email);
+      emailAddr.RoutingType = 'SMTP';
+      contact.EmailAddresses._setItem(EmailAddressKey.EmailAddress1, emailAddr);
+    }
+
+    if (payload.displayName !== undefined)
+      contact.DisplayName = payload.displayName;
+    if (payload.givenName !== undefined) contact.GivenName = payload.givenName;
+    if (payload.surname !== undefined) contact.Surname = payload.surname;
+    if (payload.company !== undefined) contact.CompanyName = payload.company;
+    if (payload.jobTitle !== undefined) contact.JobTitle = payload.jobTitle;
+    if (payload.phone !== undefined) {
+      if (payload.phone) {
+        contact.PhoneNumbers._setItem(
+          PhoneNumberKey.MobilePhone,
+          payload.phone,
+        );
+      } else {
+        contact.PhoneNumbers._setItem(PhoneNumberKey.MobilePhone, '');
+      }
+    }
+    if (payload.address !== undefined) {
+      const addr = new PhysicalAddressEntry();
+      addr.Street = payload.address?.street ?? '';
+      addr.City = payload.address?.city ?? '';
+      addr.State = payload.address?.state ?? '';
+      addr.PostalCode = payload.address?.postalCode ?? '';
+      addr.CountryOrRegion = payload.address?.country ?? '';
+      contact.PhysicalAddresses._setItem(PhysicalAddressKey.Business, addr);
+    }
+
+    await contact.Update(ConflictResolutionMode.AlwaysOverwrite);
+
+    return {
+      id: this.encodeContactId(contact.Id?.UniqueId ?? ''),
+      displayName: contact.DisplayName ?? '',
+      email: this.getContactPrimaryEmail(contact),
+      givenName: contact.GivenName ?? '',
+      surname: contact.Surname ?? '',
+      company: contact.CompanyName ?? '',
+      jobTitle: contact.JobTitle ?? '',
+      phone: this.getContactPrimaryPhone(contact),
+      address: this.getContactPrimaryAddress(contact),
+    };
+  }
+
+  async deleteContact(id: string): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+    const itemId = this.decodeContactId(id);
+    const contact = await Contact.Bind(
+      this.service,
+      new ItemId(itemId),
+      CONTACT_DETAIL_PROPS,
+    );
+    await contact.Delete(DeleteMode.MoveToDeletedItems);
+  }
+
+  async getContactByEmail(email: string): Promise<ExchangeContact | null> {
+    if (!this.service) throw new Error('EWS service not connected');
+    const contact = await this.findContactByEmail(email);
+    if (!contact) return null;
+
+    return {
+      id: this.encodeContactId(contact.Id?.UniqueId ?? ''),
+      displayName: contact.DisplayName ?? '',
+      email: this.getContactPrimaryEmail(contact),
+      givenName: contact.GivenName ?? '',
+      surname: contact.Surname ?? '',
+      company: contact.CompanyName ?? '',
+      jobTitle: contact.JobTitle ?? '',
+      phone: this.getContactPrimaryPhone(contact),
+      address: this.getContactPrimaryAddress(contact),
+    };
+  }
+
+  async getContactById(id: string): Promise<ExchangeContact | null> {
+    if (!this.service) throw new Error('EWS service not connected');
+    const itemId = this.decodeContactId(id);
+
+    try {
+      const contact = await Contact.Bind(
+        this.service,
+        new ItemId(itemId),
+        CONTACT_DETAIL_PROPS,
+      );
+
+      return {
+        id: this.encodeContactId(contact.Id?.UniqueId ?? ''),
+        displayName: contact.DisplayName ?? '',
+        email: this.getContactPrimaryEmail(contact),
+        givenName: contact.GivenName ?? '',
+        surname: contact.Surname ?? '',
+        company: contact.CompanyName ?? '',
+        jobTitle: contact.JobTitle ?? '',
+        phone: this.getContactPrimaryPhone(contact),
+        address: this.getContactPrimaryAddress(contact),
+      };
+    } catch (error) {
+      this.logger.warn(`Contact not found for id: ${id}`);
+      return null;
+    }
+  }
+
+  async searchContacts(
+    keyword: string,
+    page: number,
+    limit: number,
+  ): Promise<ExchangeSearchResult<ExchangeContact>> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const trimmed = (keyword || '').trim();
+    const offset = (page - 1) * limit;
+
+    // CONTACT_LIST_PROPS chỉ dùng IndexedPropertyDefinitions — hợp lệ trong FindItem
+    const view = new ItemView(limit, offset);
+    view.PropertySet = CONTACT_LIST_PROPS;
+
+    const mapContact = async (item: any): Promise<ExchangeContact> => {
+      try {
+        const contact = await Contact.Bind(
+          this.service!,
+          new ItemId(item.Id!.UniqueId),
+          CONTACT_DETAIL_PROPS,
+        );
+        return {
+          id: this.encodeContactId(contact.Id?.UniqueId ?? ''),
+          displayName: contact.DisplayName ?? '',
+          email: this.getContactPrimaryEmail(contact),
+          givenName: contact.GivenName ?? '',
+          surname: contact.Surname ?? '',
+          company: contact.CompanyName ?? '',
+          jobTitle: contact.JobTitle ?? '',
+          phone: this.getContactPrimaryPhone(contact),
+          address: this.getContactPrimaryAddress(contact),
+        };
+      } catch {
+        const contact = item as Contact;
+        return {
+          id: this.encodeContactId(contact.Id?.UniqueId ?? ''),
+          displayName: contact.DisplayName ?? '',
+          email: this.getContactPrimaryEmail(contact),
+          givenName: contact.GivenName ?? '',
+          surname: contact.Surname ?? '',
+          company: contact.CompanyName ?? '',
+          jobTitle: contact.JobTitle ?? '',
+          phone: this.getContactPrimaryPhone(contact),
+          address: this.getContactPrimaryAddress(contact),
+        };
+      }
+    };
+
+    if (!trimmed) {
+      // Không filter — lấy toàn bộ contacts
+      const result = await this.service.FindItems(
+        WellKnownFolderName.Contacts,
+        view,
+      );
+      const items = await Promise.all(result.Items.map(mapContact));
+      return { items, total: result.TotalCount ?? items.length };
+    }
+
+    // Filter theo DisplayName hoặc email — dùng IndexedPropertyDefinition cho email
+    // ContactSchema.EmailAddresses (complex) KHÔNG được phép trong FindItem filter.
+    const filter = new SearchFilter.SearchFilterCollection(LogicalOperator.Or, [
+      new SearchFilter.ContainsSubstring(ContactSchema.DisplayName, trimmed),
+      new SearchFilter.ContainsSubstring(ContactSchema.EmailAddress1, trimmed),
+      new SearchFilter.ContainsSubstring(ContactSchema.EmailAddress2, trimmed),
+      new SearchFilter.ContainsSubstring(ContactSchema.EmailAddress3, trimmed),
+    ]);
+
+    const result = await this.service.FindItems(
+      WellKnownFolderName.Contacts,
+      filter,
+      view,
+    );
+    const items = await Promise.all(result.Items.map(mapContact));
+    return { items, total: result.TotalCount ?? items.length };
+  }
+
+  async getContactsCount(): Promise<number> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const view = new ItemView(1, 0);
+    view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
+
+    const result = await this.service.FindItems(
+      WellKnownFolderName.Contacts,
+      view,
+    );
+
+    return result.TotalCount ?? result.Items.length ?? 0;
+  }
+
+  async listNotes(
+    page: number,
+    limit: number,
+  ): Promise<ExchangeSearchResult<ExchangeNote>> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const view = new ItemView(limit, (page - 1) * limit);
+    view.PropertySet = NOTE_LIST_PROPS;
+
+    const filter = new SearchFilter.IsEqualTo(
+      ItemSchema.ItemClass,
+      'IPM.StickyNote',
+    );
+    const result = await this.service.FindItems(
+      WellKnownFolderName.Notes,
+      filter,
+      view,
+    );
+
+    const items = result.Items.map((item: any) => ({
+      id: this.encodeNoteId(item.Id?.UniqueId ?? ''),
+      subject: item.Subject ?? '',
+      content: item.Body?.Text ?? '',
+      createdAt: this.toJsDate(item.DateTimeCreated),
+      updatedAt: this.toJsDate(item.LastModifiedTime),
+    }));
+
+    return { items, total: result.TotalCount ?? items.length };
+  }
+
+  async createNote(payload: {
+    subject?: string;
+    content: string;
+  }): Promise<ExchangeNote> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const note = new (Item as any)(this.service) as Item;
+    note.Subject = payload.subject ?? '';
+    note.Body = new MessageBody(BodyType.Text, payload.content);
+    note.ItemClass = 'IPM.StickyNote';
+
+    await note.Save(WellKnownFolderName.Notes);
+
+    return {
+      id: this.encodeNoteId(note.Id?.UniqueId ?? ''),
+      subject: note.Subject ?? '',
+      content: payload.content,
+      createdAt: this.toJsDate(note.DateTimeCreated),
+      updatedAt: this.toJsDate(note.LastModifiedTime),
+    };
+  }
+
+  async updateNote(
+    id: string,
+    payload: { subject?: string; content?: string },
+  ): Promise<ExchangeNote> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const itemId = this.decodeNoteId(id);
+    const note = await Item.Bind(
+      this.service,
+      new ItemId(itemId),
+      NOTE_LIST_PROPS,
+    );
+
+    if (payload.subject !== undefined) note.Subject = payload.subject;
+    if (payload.content !== undefined) {
+      note.Body = new MessageBody(BodyType.Text, payload.content);
+    }
+
+    await note.Update(ConflictResolutionMode.AlwaysOverwrite);
+
+    return {
+      id: this.encodeNoteId(note.Id?.UniqueId ?? ''),
+      subject: note.Subject ?? '',
+      content: note.Body?.Text ?? '',
+      createdAt: this.toJsDate(note.DateTimeCreated),
+      updatedAt: this.toJsDate(note.LastModifiedTime),
+    };
+  }
+
+  async deleteNote(id: string): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+    const itemId = this.decodeNoteId(id);
+    const note = await Item.Bind(
+      this.service,
+      new ItemId(itemId),
+      NOTE_LIST_PROPS,
+    );
+    await note.Delete(DeleteMode.MoveToDeletedItems);
+  }
+}
 ````
 
 ## File: src/auth/auth.module.ts
@@ -6724,9 +9793,14 @@ export class AuthService {
     exchangeRefreshToken: string;
   }> {
     const user = await this.em.findOne(User, { email });
-    if (!user || !user.isActive || !user.password) {
+    if (!user || !user.password) {
       await this.auditLogService.logAuth(null, 'login_failed', { email });
       throw new UnauthorizedException('Thông tin đăng nhập không hợp lệ!');
+    }
+
+    if (!user.isActive) {
+      await this.auditLogService.logAuth(user.id, 'login_failed', { email });
+      throw new UnauthorizedException('Tài khoản đã bị vô hiệu hoá');
     }
 
     const isValid = await argon2.verify(user.password, password);
@@ -6880,6 +9954,8 @@ export interface MailMessage {
   preview: string;
   importance?: string;
   isStarred?: boolean;
+  /** ConversationId nhóm các email cùng luồng hội thoại */
+  conversationId?: string;
 }
 
 export interface MailFolder {
@@ -6902,6 +9978,18 @@ export interface SendMailOptions {
   subject: string;
   text?: string; // Plain text version
   html?: string; // HTML version
+  attachments?: Attachment[];
+}
+
+export interface SaveDraftOptions {
+  from?: string;
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
+  replyTo?: string[];
+  subject?: string;
+  text?: string;
+  html?: string;
   attachments?: Attachment[];
 }
 
@@ -6943,6 +10031,13 @@ export interface IMailProvider {
   ): Promise<{ success: boolean; messageId?: string }>;
 
   /**
+   * Save a draft
+   */
+  saveDraft(
+    options: SaveDraftOptions,
+  ): Promise<{ success: boolean; messageId?: string }>;
+
+  /**
    * Search messages
    */
   search(
@@ -6963,7 +10058,7 @@ export interface IMailProvider {
 
 ## File: src/exchange/services/exchange-auth.service.ts
 ````typescript
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EntityManager } from '@mikro-orm/core';
 import { User } from 'src/database/entities/user.entity';
@@ -7071,6 +10166,9 @@ export class ExchangeAuthService {
       });
       await this.em.persistAndFlush(user);
     } else {
+      if (!user.isActive) {
+        throw new ForbiddenException('Tài khoản đã bị vô hiệu hoá');
+      }
       if (!user.password) {
         user.password = await argon2.hash(password);
         await this.em.persistAndFlush(user);
@@ -7527,67 +10625,6 @@ export class ExchangeAuthService {
 }
 ````
 
-## File: src/app.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { MikroOrmModule } from '@mikro-orm/nestjs';
-import databaseConfig from './config/database.config';
-import authConfig from './config/auth.config';
-import queryConfig from './config/query.config';
-import storageConfig from './config/storage.config';
-import ewsConfig from './config/ews.config';
-import { MetaModule } from './meta/meta.module';
-import { CommonModule } from './common/common.module';
-import { AuthModule } from './auth/auth.module';
-import { FilesModule } from './files/files.module';
-import { User } from './database/entities/user.entity';
-import { File } from './database/entities/file.entity';
-import { AuditLog } from './database/entities/audit-log.entity';
-import { Role } from './database/entities/role.entity';
-import { Permission } from './database/entities/permission.entity';
-import { AuditLogModule } from './audit/audit.module';
-import { ExchangeModule } from './exchange/exchange.module';
-import { PostgreSqlDriver } from '@mikro-orm/postgresql';
-
-@Module({
-  imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      load: [databaseConfig, authConfig, queryConfig, storageConfig, ewsConfig],
-    }),
-    MikroOrmModule.forRootAsync({
-      imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        driver: PostgreSqlDriver,
-        entities: [User, File, AuditLog, Role, Permission],
-        dbName: configService.get<string>('database.name'),
-        host: configService.get<string>('database.host'),
-        port: configService.get<number>('database.port'),
-        user: configService.get<string>('database.user'),
-        password: configService.get<string>('database.password'),
-        debug: configService.get<string>('NODE_ENV') !== 'production',
-        allowGlobalContext: configService.get<boolean>('database.allowGlobalContext'),
-        migrations: {
-            path: './src/database/migrations',
-            pathTs: './src/database/migrations',
-        },
-      }),
-      inject: [ConfigService],
-    }),
-    MetaModule,
-    CommonModule,
-    AuthModule,
-    FilesModule,
-    AuditLogModule,
-    ExchangeModule,
-  ],
-  controllers: [],
-  providers: [],
-})
-export class AppModule {}
-````
-
 ## File: src/exchange/services/mail.service.ts
 ````typescript
 import { BadRequestException, Inject, Injectable, Logger, Scope } from '@nestjs/common';
@@ -7596,11 +10633,15 @@ import { EwsMailProvider } from './ews-mail.provider';
 import { MailMessage } from '../interfaces/mail-provider.interface';
 import {
   SendMailDto,
+  SaveDraftDto,
   MarkReadDto,
   MoveBatchDto,
   PermanentDeleteMailDto,
   StarMailDto,
+  ReplyMailDto,
+  ForwardMailDto,
 } from '../dto/exchange.dto';
+
 import { DragonflyService } from '../../common/cache/dragonfly.service';
 import { ExchangeAuthService } from './exchange-auth.service';
 import {
@@ -7741,6 +10782,17 @@ export class MailService {
     if (email && this.dragonfly.enabled) {
       await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
       await this.dragonfly.del(`exchange:count:${email}:INBOX`);
+    }
+
+    return result;
+  }
+
+  async saveDraft(dto: SaveDraftDto) {
+    const result = await this.withProvider(() => this.provider.saveDraft(dto));
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      // Dọn cache thư mục Nháp (Drafts)
+      await this.dragonfly.del(`exchange:count:${email}:Drafts`);
     }
 
     return result;
@@ -8008,7 +11060,140 @@ export class MailService {
 
     return { success: true };
   }
+
+  /**
+   * Trả lời một email dựa trên ID của thư gốc.
+   * EWS sẽ tự động kết nối luồng hội thoại (In-Reply-To, References headers).
+   */
+  async replyMessage(dto: ReplyMailDto) {
+    const result = await this.withProvider(() =>
+      this.provider.replyMessage({
+        messageId: dto.messageId,
+        html: dto.html,
+        text: dto.text,
+        replyAll: dto.replyAll,
+        attachments: dto.attachments?.map((att) => ({
+          filename: att.filename,
+          contentType: att.contentType,
+          content: att.content,
+        })),
+      }),
+    );
+
+    // Xóa cache Sent Items để cập nhật số lượng mới
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Chuyển tiếp một email đến người nhận khác.
+   * EWS giữ nguyên thư, tệp đính kèm cũ được chuyển theo tự động.
+   */
+  async forwardMessage(dto: ForwardMailDto) {
+    const result = await this.withProvider(() =>
+      this.provider.forwardMessage({
+        messageId: dto.messageId,
+        to: dto.to,
+        cc: dto.cc,
+        bcc: dto.bcc,
+        html: dto.html,
+        text: dto.text,
+        attachments: dto.attachments?.map((att) => ({
+          filename: att.filename,
+          contentType: att.contentType,
+          content: att.content,
+        })),
+      }),
+    );
+
+    // Xóa cache Sent Items để cập nhận số lượng mới
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Lấy toàn bộ email trong cùng luồng hội thoại theo messageId gốc.
+   * Backend tự bind email để lấy ConversationId, sau đó tìm xuyên Inbox/Sent/Drafts.
+   * @param messageId - Composite ID (base64) của email cần load thread
+   * @param maxItems  - Số lượng email tối đa (mặc định 50)
+   */
+  async getConversationMessages(messageId: string, maxItems: number = 50) {
+    return this.withProvider(() =>
+      this.provider.getConversationMessages(messageId, maxItems),
+    );
+  }
 }
+````
+
+## File: src/app.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
+import databaseConfig from './config/database.config';
+import authConfig from './config/auth.config';
+import queryConfig from './config/query.config';
+import storageConfig from './config/storage.config';
+import ewsConfig from './config/ews.config';
+import { MetaModule } from './meta/meta.module';
+import { CommonModule } from './common/common.module';
+import { AuthModule } from './auth/auth.module';
+import { FilesModule } from './files/files.module';
+import { User } from './database/entities/user.entity';
+import { File } from './database/entities/file.entity';
+import { AuditLog } from './database/entities/audit-log.entity';
+import { Role } from './database/entities/role.entity';
+import { Permission } from './database/entities/permission.entity';
+import { AuditLogModule } from './audit/audit.module';
+import { ExchangeModule } from './exchange/exchange.module';
+import { PostgreSqlDriver } from '@mikro-orm/postgresql';
+import { MailboxModule } from './mailbox/mailbox.module';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      load: [databaseConfig, authConfig, queryConfig, storageConfig, ewsConfig],
+    }),
+    MikroOrmModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: (configService: ConfigService) => ({
+        driver: PostgreSqlDriver,
+        entities: [User, File, AuditLog, Role, Permission],
+        dbName: configService.get<string>('database.name'),
+        host: configService.get<string>('database.host'),
+        port: configService.get<number>('database.port'),
+        user: configService.get<string>('database.user'),
+        password: configService.get<string>('database.password'),
+        debug: configService.get<string>('NODE_ENV') !== 'production',
+        allowGlobalContext: configService.get<boolean>('database.allowGlobalContext'),
+        migrations: {
+            path: './src/database/migrations',
+            pathTs: './src/database/migrations',
+        },
+      }),
+      inject: [ConfigService],
+    }),
+    MetaModule,
+    CommonModule,
+    AuthModule,
+    FilesModule,
+    AuditLogModule,
+    ExchangeModule,
+    MailboxModule,
+  ],
+  controllers: [],
+  providers: [],
+})
+export class AppModule {}
 ````
 
 ## File: src/exchange/controllers/exchange.controller.ts
@@ -8020,10 +11205,10 @@ import {
   Get,
   UseGuards,
   Query,
-  Param,
   UseInterceptors,
   Req,
   Res,
+  Param,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { ExchangeAuthService } from '../services/exchange-auth.service';
@@ -8031,12 +11216,16 @@ import { MailService } from '../services/mail.service';
 import {
   ExchangeLoginDto,
   SendMailDto,
+  SaveDraftDto,
   MoveMailDto,
   MarkReadDto,
   MoveBatchDto,
   PermanentDeleteMailDto,
   StarMailDto,
+  ReplyMailDto,
+  ForwardMailDto,
 } from '../dto/exchange.dto';
+
 import { ExchangeErrorInterceptor } from '../interceptors/exchange-error.interceptor';
 import type { Request, Response } from 'express';
 import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
@@ -8168,6 +11357,21 @@ export class ExchangeController {
   }
 
   @UseGuards(ExchangeAuthGuard)
+  @Get('mail/conversation')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Lấy toàn bộ email trong cùng một luồng hội thoại theo messageId gốc' })
+  async getConversation(
+    @Query('messageId') messageId: string,
+    @Query('maxItems') maxItems?: string,
+  ) {
+    if (!messageId) {
+      throw new Error('messageId là bắt buộc');
+    }
+    const max = maxItems ? parseInt(maxItems, 10) : 50;
+    return this.mailService.getConversationMessages(messageId, max);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
   @Get('mail/:id')
   @ApiBearerAuth('exchange_cookie')
   @ApiOperation({ summary: 'Chi tiết mail' })
@@ -8182,6 +11386,15 @@ export class ExchangeController {
   @ApiBody({ type: SendMailDto })
   async send(@Body() dto: SendMailDto) {
     return this.mailService.sendMessage(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/draft')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Lưu nháp' })
+  @ApiBody({ type: SaveDraftDto })
+  async saveDraft(@Body() dto: SaveDraftDto) {
+    return this.mailService.saveDraft(dto);
   }
 
   @UseGuards(ExchangeAuthGuard)
@@ -8237,6 +11450,26 @@ export class ExchangeController {
   async unstar(@Body() dto: StarMailDto) {
     return this.mailService.unmarkStar(dto);
   }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/reply')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Trả lời email (Reply / Reply All)' })
+  @ApiBody({ type: ReplyMailDto })
+  async reply(@Body() dto: ReplyMailDto) {
+    return this.mailService.replyMessage(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/forward')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Chuyển tiếp email (Forward)' })
+  @ApiBody({ type: ForwardMailDto })
+  async forward(@Body() dto: ForwardMailDto) {
+    return this.mailService.forwardMessage(dto);
+  }
+
+
 }
 ````
 
@@ -8315,6 +11548,55 @@ export class SendMailDto {
   @IsString()
   @IsOptional()
   html?: string; // HTML version
+
+  @ApiProperty({ type: [AttachmentDto], required: false })
+  @IsArray()
+  @IsOptional()
+  attachments?: AttachmentDto[];
+}
+
+export class SaveDraftDto {
+  @ApiProperty({ example: ['to@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsEmail({}, {
+    each: true,
+    message: 'Thong tin nguoi nhan khong hop le!'
+  })
+  to?: string[];
+
+  @ApiProperty({ example: ['cc@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsEmail({}, { each: true, message: 'Thong tin CC khong hop le!' })
+  cc?: string[];
+
+  @ApiProperty({ example: ['bcc@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsEmail({}, { each: true, message: 'Thong tin BCC khong hop le!' })
+  bcc?: string[];
+
+  @ApiProperty({ example: ['reply@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsEmail({}, { each: true, message: 'Thong tin Reply-To khong hop le!' })
+  replyTo?: string[];
+
+  @ApiProperty({ example: 'Tieu de email', required: false })
+  @IsString()
+  @IsOptional()
+  subject?: string;
+
+  @ApiProperty({ example: 'Noi dung text', required: false })
+  @IsString()
+  @IsOptional()
+  text?: string;
+
+  @ApiProperty({ example: '<p>Noi dung HTML</p>', required: false })
+  @IsString()
+  @IsOptional()
+  html?: string;
 
   @ApiProperty({ type: [AttachmentDto], required: false })
   @IsArray()
@@ -8415,6 +11697,73 @@ export class StarMailDto {
     @IsOptional()
     folder?: string;
 }
+
+/** DTO dùng cho API trả lời thư (Reply / Reply All) */
+export class ReplyMailDto {
+  @ApiProperty({ example: 'SU5CT1g6MTIzNDU=', description: 'ID của thư gốc cần trả lời' })
+  @IsString()
+  @IsNotEmpty({ message: 'messageId không được để trống!' })
+  messageId!: string;
+
+  @ApiProperty({ example: '<p>Nội dung trả lời</p>', required: false })
+  @IsString()
+  @IsOptional()
+  html?: string;
+
+  @ApiProperty({ example: 'Nội dung trả lời dạng text', required: false })
+  @IsString()
+  @IsOptional()
+  text?: string;
+
+  @ApiProperty({ example: true, required: false, description: 'true = reply all, false = reply to sender only' })
+  @IsOptional()
+  replyAll?: boolean;
+
+  @ApiProperty({ type: [AttachmentDto], required: false })
+  @IsArray()
+  @IsOptional()
+  attachments?: AttachmentDto[];
+}
+
+/** DTO dùng cho API chuyển tiếp thư (Forward) */
+export class ForwardMailDto {
+  @ApiProperty({ example: 'SU5CT1g6MTIzNDU=', description: 'ID của thư gốc cần chuyển tiếp' })
+  @IsString()
+  @IsNotEmpty({ message: 'messageId không được để trống!' })
+  messageId!: string;
+
+  @ApiProperty({ example: ['forwardto@example.com'], description: 'Danh sách người nhận chuyển tiếp' })
+  @IsArray()
+  @IsEmail({}, { each: true, message: 'Thông tin người nhận không hợp lệ!' })
+  to!: string[];
+
+  @ApiProperty({ example: ['cc@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsEmail({}, { each: true })
+  cc?: string[];
+
+  @ApiProperty({ example: ['bcc@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsEmail({}, { each: true })
+  bcc?: string[];
+
+  @ApiProperty({ example: '<p>Nội dung ghi thêm khi forward</p>', required: false })
+  @IsString()
+  @IsOptional()
+  html?: string;
+
+  @ApiProperty({ example: 'Nội dung ghi thêm dạng text', required: false })
+  @IsString()
+  @IsOptional()
+  text?: string;
+
+  @ApiProperty({ type: [AttachmentDto], required: false })
+  @IsArray()
+  @IsOptional()
+  attachments?: AttachmentDto[];
+}
 ````
 
 ## File: src/exchange/services/imap-mail.provider.ts
@@ -8435,6 +11784,7 @@ import {
   MailFolder,
   MailMessage,
   SendMailOptions,
+  SaveDraftOptions,
 } from '../interfaces/mail-provider.interface';
 import {
   getFolderAliases,
@@ -9187,6 +12537,51 @@ export class ImapMailProvider implements IMailProvider {
       };
     } catch (error) {
       this.logger.error(`Error sending email: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async saveDraft(
+    options: SaveDraftOptions,
+  ): Promise<{ success: boolean; messageId?: string }> {
+    if (!this.client) {
+      throw new Error('IMAP client not connected. Call connect() first.');
+    }
+
+    try {
+      // Build attachments array if provided
+      const attachments = options.attachments?.map((att) => ({
+        filename: att.filename,
+        contentType: att.contentType,
+        content: Buffer.from(att.content, 'base64'),
+      }));
+
+      const mailOptions = {
+        from: this.credentials.email,
+        to: options.to ?? [],
+        cc: options.cc ?? [],
+        bcc: options.bcc ?? [],
+        replyTo: options.replyTo ?? [],
+        subject: options.subject ?? '',
+        text: options.text,
+        html: options.html,
+        attachments,
+      };
+
+      const draftsFolder = (await this.resolveMailboxPath('Drafts')) ?? 'Drafts';
+      const messageId = `<${Date.now()}.${Math.random().toString(36).substring(2)}@drafts>`;
+      const draftData = this.buildRFC822Message(mailOptions, messageId);
+
+      const appendRes = await this.client.append(draftsFolder, draftData, ['\\Seen', '\\Draft'], new Date());
+      let resId: string | undefined;
+
+      if (appendRes && appendRes.uid) {
+        resId = this.encodeId(draftsFolder, appendRes.uid.toString());
+      }
+
+      return { success: true, messageId: resId };
+    } catch (error) {
+      this.logger.error(`Error saving draft via IMAP: ${error.message}`);
       throw error;
     }
   }

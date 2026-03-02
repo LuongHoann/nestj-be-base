@@ -12,6 +12,8 @@ export interface MailMessage {
   preview: string;
   importance?: string;
   isStarred?: boolean;
+  /** ConversationId nhóm các email cùng luồng hội thoại */
+  conversationId?: string;
 }
 
 export interface MailFolder {
@@ -34,6 +36,18 @@ export interface SendMailOptions {
   subject: string;
   text?: string; // Plain text version
   html?: string; // HTML version
+  attachments?: Attachment[];
+}
+
+export interface SaveDraftOptions {
+  from?: string;
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
+  replyTo?: string[];
+  subject?: string;
+  text?: string;
+  html?: string;
   attachments?: Attachment[];
 }
 
@@ -72,6 +86,13 @@ export interface IMailProvider {
    */
   sendMessage(
     options: SendMailOptions,
+  ): Promise<{ success: boolean; messageId?: string }>;
+
+  /**
+   * Save a draft
+   */
+  saveDraft(
+    options: SaveDraftOptions,
   ): Promise<{ success: boolean; messageId?: string }>;
 
   /**
