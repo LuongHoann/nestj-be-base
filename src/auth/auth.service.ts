@@ -1,4 +1,9 @@
-﻿import { Injectable, UnauthorizedException, Logger, ConflictException } from '@nestjs/common';
+﻿import {
+  Injectable,
+  UnauthorizedException,
+  Logger,
+  ConflictException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { EntityManager } from '@mikro-orm/core';
 import { User } from '../database/entities/user.entity';
@@ -89,7 +94,10 @@ export class AuthService {
     });
 
     await this.em.persistAndFlush(user);
-    await this.auditLogService.logAuth(user.id, 'login', { email, action: 'register' });
+    await this.auditLogService.logAuth(user.id, 'login', {
+      email,
+      action: 'register',
+    });
     return user;
   }
 

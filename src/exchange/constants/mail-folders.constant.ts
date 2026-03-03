@@ -58,7 +58,10 @@ function normalize(input: string): string {
   return input.trim().toLowerCase();
 }
 
-export function resolveFolderId(input: string, fallback = DEFAULT_FOLDER_ID): string {
+export function resolveFolderId(
+  input: string,
+  fallback = DEFAULT_FOLDER_ID,
+): string {
   const normalized = normalize(input);
 
   for (const folder of MAIL_FOLDERS) {

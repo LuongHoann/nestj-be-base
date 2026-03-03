@@ -1,4 +1,9 @@
-import { ForbiddenException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EntityManager } from '@mikro-orm/core';
 import { User } from 'src/database/entities/user.entity';
@@ -51,7 +56,7 @@ export class ExchangeAuthService {
     if (!secret) {
       throw new Error('EXCHANGE_CRED_SECRET is not configured');
     }
-    
+
     const hash = await argon2.hash(secret, {
       salt: Buffer.from(sessionToken.slice(0, 16)), // Use part of token as salt
       raw: true,
@@ -59,9 +64,9 @@ export class ExchangeAuthService {
       timeCost: 3,
       memoryCost: 65536, // 64 MB
       parallelism: 1,
-      type: argon2.argon2id
+      type: argon2.argon2id,
     });
-    
+
     return hash;
   }
 
@@ -80,7 +85,11 @@ export class ExchangeAuthService {
       throw new Error('Invalid encrypted format');
     }
 
-    const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'));
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      key,
+      Buffer.from(ivHex, 'hex'),
+    );
     decipher.setAuthTag(Buffer.from(authTagHex, 'hex'));
     let decrypted = decipher.update(contentHex, 'hex', 'utf8');
     decrypted += decipher.final('utf8');
@@ -90,7 +99,10 @@ export class ExchangeAuthService {
   /**
    * Login and return access and refresh tokens
    */
-  async login(email: string, password: string): Promise<{ accessToken: string, refreshToken: string ,email: string}> {
+  async login(
+    email: string,
+    password: string,
+  ): Promise<{ accessToken: string; refreshToken: string; email: string }> {
     // Ensure user exists and verify password in DB
     let user = await this.em.findOne(User, { email });
     if (!user) {
@@ -120,7 +132,8 @@ export class ExchangeAuthService {
       }
     }
 
-    const ssoEnabled = this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
+    const ssoEnabled =
+      this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
     if (ssoEnabled) {
       // 1. Verify credentials against Exchange/EWS (SSO)
       await this.verifyExchangeCredentials(email);
@@ -139,7 +152,10 @@ export class ExchangeAuthService {
   /**
    * Internal helper to issue both tokens
    */
-  private async issueTokens(email: string, password: string): Promise<{ accessToken: string, refreshToken: string ,email: string}> {
+  private async issueTokens(
+    email: string,
+    password: string,
+  ): Promise<{ accessToken: string; refreshToken: string; email: string }> {
     // A. Issue Access Token (Session)
     const accessToken = this.generateSessionToken();
     const accessKey = await this.deriveKey(accessToken);
@@ -147,16 +163,16 @@ export class ExchangeAuthService {
     const encryptedPass = this.encrypt(password, accessKey);
 
     await this.cache.set(
-      `exchange:session:${accessToken}`, 
-      { e: encryptedEmail, p: encryptedPass, createdAt: Date.now() }, 
-      this.SESSION_TTL
+      `exchange:session:${accessToken}`,
+      { e: encryptedEmail, p: encryptedPass, createdAt: Date.now() },
+      this.SESSION_TTL,
     );
 
     // B. Issue Refresh Token
     const tokenId = ulid();
     const tokenSecret = crypto.randomBytes(32).toString('base64url');
     const secretHash = await argon2.hash(tokenSecret);
-    
+
     // We encrypt credentials for the refresh token record too, using tokenId as salt basis
     const refreshKey = await this.deriveKey(tokenId);
     const re = this.encrypt(email, refreshKey);
@@ -165,28 +181,30 @@ export class ExchangeAuthService {
     await this.cache.set(
       `exchange:refresh:${tokenId}`,
       { h: secretHash, e: re, p: rp },
-      this.REFRESH_TTL
+      this.REFRESH_TTL,
     );
 
-    return { 
+    return {
       email,
-      accessToken, 
-      refreshToken: `${tokenId}.${tokenSecret}` 
+      accessToken,
+      refreshToken: `${tokenId}.${tokenSecret}`,
     };
   }
 
   /**
    * Rotate refresh token
    */
-  async rotateRefreshToken(fullToken: string): Promise<{ accessToken: string, refreshToken: string }> {
+  async rotateRefreshToken(
+    fullToken: string,
+  ): Promise<{ accessToken: string; refreshToken: string }> {
     const [tokenId, tokenSecret] = fullToken.split('.');
-    
+
     if (!tokenId || !tokenSecret) {
       throw new UnauthorizedException('Token không hợp lệ !');
     }
 
-    const stored = await this.cache.get<{ h: string, e: string, p: string }>(
-      `exchange:refresh:${tokenId}`
+    const stored = await this.cache.get<{ h: string; e: string; p: string }>(
+      `exchange:refresh:${tokenId}`,
     );
 
     if (!stored) {
@@ -221,7 +239,8 @@ export class ExchangeAuthService {
    * Verify Exchange credentials
    */
   private async verifyExchangeCredentials(email: string): Promise<void> {
-    const ssoEnabled = this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
+    const ssoEnabled =
+      this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
     if (!ssoEnabled) {
       return;
     }
@@ -236,12 +255,17 @@ export class ExchangeAuthService {
       await Folder.Bind(service, WellKnownFolderName.Inbox);
       this.logger.log(`EWS authentication successful for ${email}`);
     } catch (error) {
-      this.logger.warn(`EWS authentication failed for ${email}: ${error.message}`);
+      this.logger.warn(
+        `EWS authentication failed for ${email}: ${error.message}`,
+      );
       throw new UnauthorizedException('Invalid Exchange credentials');
     }
   }
 
-  private async initializeMailboxIfNeeded(email: string, password: string): Promise<void> {
+  private async initializeMailboxIfNeeded(
+    email: string,
+    password: string,
+  ): Promise<void> {
     let user = await this.em.findOne(User, { email });
 
     if (!user) {
@@ -314,7 +338,8 @@ export class ExchangeAuthService {
       ExchangeVersion[version as keyof typeof ExchangeVersion] ||
         ExchangeVersion.Exchange2016,
     );
-    const ssoEnabled = this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
+    const ssoEnabled =
+      this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
     if (ssoEnabled) {
       if (!tokenUrl || !clientId || !clientSecret) {
         throw new Error('EWS OAuth2 config is missing');
@@ -351,7 +376,10 @@ export class ExchangeAuthService {
     }
     service.Url = new Uri(url);
 
-    if (this.configService.get<string>('EWS_IMPERSONATE') === 'true' && ssoEnabled) {
+    if (
+      this.configService.get<string>('EWS_IMPERSONATE') === 'true' &&
+      ssoEnabled
+    ) {
       service.ImpersonatedUserId = new ImpersonatedUserId(
         ConnectingIdType.SmtpAddress,
         email,
@@ -361,13 +389,18 @@ export class ExchangeAuthService {
     return service;
   }
 
-  private async verifyExchangeCredentialsBasic(email: string, password: string): Promise<void> {
+  private async verifyExchangeCredentialsBasic(
+    email: string,
+    password: string,
+  ): Promise<void> {
     const service = await this.createEwsService(email, password);
     try {
       await Folder.Bind(service, WellKnownFolderName.Inbox);
       this.logger.log(`EWS basic authentication successful for ${email}`);
     } catch (error) {
-      this.logger.warn(`EWS basic authentication failed for ${email}: ${error.message}`);
+      this.logger.warn(
+        `EWS basic authentication failed for ${email}: ${error.message}`,
+      );
       throw new UnauthorizedException('Invalid Exchange credentials');
     }
   }
@@ -382,7 +415,10 @@ export class ExchangeAuthService {
     ];
 
     const view = new FolderView(200);
-    view.PropertySet = new PropertySet(BasePropertySet.IdOnly, FolderSchema.DisplayName);
+    view.PropertySet = new PropertySet(
+      BasePropertySet.IdOnly,
+      FolderSchema.DisplayName,
+    );
 
     const result = await service.FindFolders(
       WellKnownFolderName.MsgFolderRoot,
@@ -404,11 +440,15 @@ export class ExchangeAuthService {
   /**
    * Get credentials by session token
    */
-  async getCredentials(sessionToken: string): Promise<{email: string, password: string} | null> {
-    const session = await this.cache.get<{e: string, p: string, createdAt: number}>(
-      `exchange:session:${sessionToken}`
-    );
-    
+  async getCredentials(
+    sessionToken: string,
+  ): Promise<{ email: string; password: string } | null> {
+    const session = await this.cache.get<{
+      e: string;
+      p: string;
+      createdAt: number;
+    }>(`exchange:session:${sessionToken}`);
+
     if (!session) {
       return null;
     }
@@ -417,10 +457,12 @@ export class ExchangeAuthService {
       const key = await this.deriveKey(sessionToken);
       const email = this.decrypt(session.e, key);
       const password = this.decrypt(session.p, key);
-      
+
       return { email, password };
     } catch (error) {
-      this.logger.error(`Failed to decrypt credentials for session ${sessionToken}`);
+      this.logger.error(
+        `Failed to decrypt credentials for session ${sessionToken}`,
+      );
       await this.logout(sessionToken); // Clean up corrupted session
       return null;
     }
@@ -434,8 +476,11 @@ export class ExchangeAuthService {
     if (!session) {
       return false;
     }
-    
-    await this.cache.expire(`exchange:session:${sessionToken}`, this.SESSION_TTL);
+
+    await this.cache.expire(
+      `exchange:session:${sessionToken}`,
+      this.SESSION_TTL,
+    );
     return true;
   }
 

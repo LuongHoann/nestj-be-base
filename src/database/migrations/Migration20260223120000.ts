@@ -41,10 +41,18 @@ export class Migration20260223120000 extends Migration {
   }
 
   override async down(): Promise<void> {
-    this.addSql(`alter table "user_roles" drop constraint "user_roles_role_id_foreign";`);
-    this.addSql(`alter table "user_roles" drop constraint "user_roles_user_id_foreign";`);
-    this.addSql(`alter table "roles_permissions" drop constraint "roles_permissions_permission_id_foreign";`);
-    this.addSql(`alter table "roles_permissions" drop constraint "roles_permissions_role_id_foreign";`);
+    this.addSql(
+      `alter table "user_roles" drop constraint "user_roles_role_id_foreign";`,
+    );
+    this.addSql(
+      `alter table "user_roles" drop constraint "user_roles_user_id_foreign";`,
+    );
+    this.addSql(
+      `alter table "roles_permissions" drop constraint "roles_permissions_permission_id_foreign";`,
+    );
+    this.addSql(
+      `alter table "roles_permissions" drop constraint "roles_permissions_role_id_foreign";`,
+    );
 
     this.addSql(`drop table if exists "user_roles" cascade;`);
     this.addSql(`drop table if exists "roles_permissions" cascade;`);

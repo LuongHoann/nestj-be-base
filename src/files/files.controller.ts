@@ -17,7 +17,13 @@ import type { Response } from 'express';
 import { FilesService } from './files.service';
 import { CommitFileDto } from './dto/commit-file.dto';
 import { TempUploadResponseDto } from './dto/temp-upload-response.dto';
-import { ApiBody, ApiConsumes, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBody,
+  ApiConsumes,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 
 @ApiTags('Files')
 @Controller('files')
@@ -83,7 +89,11 @@ export class FilesController {
   @ApiOperation({ summary: 'Commit file từ temp sang permanent' })
   @ApiResponse({ status: 200, description: 'Commit thành công' })
   async commitFile(@Body() dto: CommitFileDto) {
-    return this.filesService.commitFile(dto.id, dto.extraMetadata, dto.originalName);
+    return this.filesService.commitFile(
+      dto.id,
+      dto.extraMetadata,
+      dto.originalName,
+    );
   }
 
   /**

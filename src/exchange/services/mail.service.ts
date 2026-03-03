@@ -1,4 +1,10 @@
-import { BadRequestException, Inject, Injectable, Logger, Scope } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  Scope,
+} from '@nestjs/common';
 import { REQUEST } from '@nestjs/core';
 import { EwsMailProvider } from './ews-mail.provider';
 import { MailMessage } from '../interfaces/mail-provider.interface';
@@ -67,7 +73,9 @@ export class MailService {
     }
 
     const standardFolders = MAIL_FOLDERS.map((f) => f.id);
-    const cacheKeys = standardFolders.map((f) => `exchange:count:${email}:${f}`);
+    const cacheKeys = standardFolders.map(
+      (f) => `exchange:count:${email}:${f}`,
+    );
 
     if (this.dragonfly.enabled) {
       const cachedValues = await Promise.all(
@@ -91,7 +99,9 @@ export class MailService {
       }
     }
 
-    const counts = await this.withProvider(() => this.provider.getFolderCounts());
+    const counts = await this.withProvider(() =>
+      this.provider.getFolderCounts(),
+    );
 
     if (this.dragonfly.enabled) {
       const ttl = 300;
@@ -115,7 +125,11 @@ export class MailService {
     return this.withProvider(() => this.provider.getFolders());
   }
 
-  async getMessages(folderType: string, page: number = 1, pageSize: number = 20) {
+  async getMessages(
+    folderType: string,
+    page: number = 1,
+    pageSize: number = 20,
+  ) {
     const folderId = this.mapFolderTypeToId(folderType);
     return this.withProvider(() =>
       this.provider.getMessages(folderId, page, pageSize),
@@ -133,7 +147,10 @@ export class MailService {
         const folder = resolveFolderId(rawFolder, rawFolder);
 
         const key = `exchange:count:${email}:${folder}`;
-        const current = await this.dragonfly.get<{ total: number; unread: number }>(key);
+        const current = await this.dragonfly.get<{
+          total: number;
+          unread: number;
+        }>(key);
 
         if (current && current.unread > 0) {
           await this.dragonfly.del(key);
@@ -147,7 +164,9 @@ export class MailService {
   }
 
   async sendMessage(dto: SendMailDto) {
-    const result = await this.withProvider(() => this.provider.sendMessage(dto));
+    const result = await this.withProvider(() =>
+      this.provider.sendMessage(dto),
+    );
 
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
@@ -169,12 +188,22 @@ export class MailService {
     return result;
   }
 
-  async searchMessages(query: string, page: number = 1, pageSize: number = 20) {
-    return this.withProvider(() => this.provider.search(query, page, pageSize));
+  async searchMessages(
+    query: string,
+    page: number = 1,
+    pageSize: number = 20,
+    folder: string = 'inbox',
+  ) {
+    return this.withProvider(() =>
+      this.provider.search(query, page, pageSize, folder),
+    );
   }
 
   async moveMessage(messageId: string, targetFolderType: string) {
-    const targetFolderId = this.mapFolderTypeToId(targetFolderType, targetFolderType);
+    const targetFolderId = this.mapFolderTypeToId(
+      targetFolderType,
+      targetFolderType,
+    );
     return this.withProvider(() =>
       this.provider.moveMessage(messageId, targetFolderId),
     );
@@ -234,12 +263,8 @@ export class MailService {
         await this.provider.moveAllMessages(sourceFolderId, targetFolderId);
 
         if (email && this.dragonfly.enabled) {
-          await this.dragonfly.del(
-            `exchange:count:${email}:${sourceFolderId}`,
-          );
-          await this.dragonfly.del(
-            `exchange:count:${email}:${targetFolderId}`,
-          );
+          await this.dragonfly.del(`exchange:count:${email}:${sourceFolderId}`);
+          await this.dragonfly.del(`exchange:count:${email}:${targetFolderId}`);
         }
       } else if (dto.ids && dto.ids.length > 0) {
         await this.provider.moveMessagesBatch(dto.ids, targetFolderId);
@@ -277,7 +302,9 @@ export class MailService {
     const hasMany = Array.isArray(dto.ids) && dto.ids.length > 0;
     const hasDeleteAll = !!dto.all && !!dto.sourceFolder;
 
-    const selectedModes = [hasSingle, hasMany, hasDeleteAll].filter(Boolean).length;
+    const selectedModes = [hasSingle, hasMany, hasDeleteAll].filter(
+      Boolean,
+    ).length;
     if (selectedModes !== 1) {
       throw new BadRequestException(
         'Payload khong hop le. Chon dung 1 mode: messageId, ids, hoac all + sourceFolder',
@@ -378,7 +405,9 @@ export class MailService {
           }
         }
       } else {
-        throw new BadRequestException('Payload khong hop le. Can ids hoac all + folder');
+        throw new BadRequestException(
+          'Payload khong hop le. Can ids hoac all + folder',
+        );
       }
     });
 
@@ -421,7 +450,9 @@ export class MailService {
           }
         }
       } else {
-        throw new BadRequestException('Payload khong hop le. Can ids hoac all + folder');
+        throw new BadRequestException(
+          'Payload khong hop le. Can ids hoac all + folder',
+        );
       }
     });
 
@@ -500,5 +531,44 @@ export class MailService {
     return this.withProvider(() =>
       this.provider.getConversationMessages(messageId, maxItems),
     );
+  }
+
+  // ─── CALENDAR & REMINDERS ────────────────────────────────────────────────────────
+
+  async createEvent(payload: {
+    subject: string;
+    body: string;
+    start: string;
+    end: string;
+    location?: string;
+    isAllDayEvent?: boolean;
+    isReminderSet?: boolean;
+    reminderMinutesBeforeStart?: number;
+  }) {
+    return this.withProvider(() => this.provider.createEvent(payload));
+  }
+
+  async getEvents(startDate: string, endDate: string) {
+    return this.withProvider(() => this.provider.getEvents(startDate, endDate));
+  }
+
+  async getEventDetails(eventId: string) {
+    return this.withProvider(() => this.provider.getEventDetails(eventId));
+  }
+
+  async updateEvent(eventId: string, payload: any) {
+    return this.withProvider(() => this.provider.updateEvent(eventId, payload));
+  }
+
+  async deleteEvent(eventId: string) {
+    return this.withProvider(() => this.provider.deleteEvent(eventId));
+  }
+
+  async getActiveReminders() {
+    return this.withProvider(() => this.provider.getActiveReminders());
+  }
+
+  async dismissReminder(eventId: string) {
+    return this.withProvider(() => this.provider.dismissReminder(eventId));
   }
 }

@@ -6,7 +6,7 @@ import { User } from '../database/entities/user.entity';
 
 /**
  * AuditLogService - Quản lý User Logs (Business Audit Trail)
- * 
+ *
  * User Logs được lưu vào database để:
  * - Tracking ai đã làm gì, lúc nào
  * - Compliance và security audit
@@ -24,7 +24,7 @@ export class AuditLogService {
 
   /**
    * Ghi một User Log entry vào database
-   * 
+   *
    * @param user - User object hoặc { id } object, null nếu anonymous
    * @param action - Hành động: 'create', 'update', 'delete', 'login', 'logout', etc.
    * @param collection - Collection/entity bị ảnh hưởng
@@ -40,7 +40,7 @@ export class AuditLogService {
   ): Promise<void> {
     try {
       const logEntry = this.em.create(AuditLog, {
-        user: user ? { id: String((user as any).id) } as User : undefined,
+        user: user ? ({ id: String((user as any).id) } as User) : undefined,
         action,
         collection,
         targetId: String(targetId),
@@ -49,7 +49,7 @@ export class AuditLogService {
       });
 
       await this.em.persistAndFlush(logEntry);
-      
+
       this.logger.debug(
         `📝 Audit: [${action}] ${collection}/${targetId} by user ${(user as any)?.id || 'anonymous'}`,
       );
@@ -64,7 +64,12 @@ export class AuditLogService {
    */
   async logAuth(
     userId: string | number | null,
-    action: 'login' | 'logout' | 'login_failed' | 'token_refresh' | 'password_reset',
+    action:
+      | 'login'
+      | 'logout'
+      | 'login_failed'
+      | 'token_refresh'
+      | 'password_reset',
     details?: Record<string, any>,
   ): Promise<void> {
     await this.logAction(
@@ -136,7 +141,10 @@ export class AuditLogService {
   /**
    * Lấy logs của một record cụ thể (history của 1 item)
    */
-  async getLogsByTarget(collection: string, targetId: string): Promise<AuditLog[]> {
+  async getLogsByTarget(
+    collection: string,
+    targetId: string,
+  ): Promise<AuditLog[]> {
     return this.auditLogRepository.find(
       { collection, targetId },
       {

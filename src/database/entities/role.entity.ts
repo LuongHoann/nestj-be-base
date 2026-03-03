@@ -1,4 +1,10 @@
-import { Entity, PrimaryKey, Property, ManyToMany, Collection } from '@mikro-orm/core';
+import {
+  Entity,
+  PrimaryKey,
+  Property,
+  ManyToMany,
+  Collection,
+} from '@mikro-orm/core';
 import { Permission } from './permission.entity';
 import { User } from './user.entity';
 

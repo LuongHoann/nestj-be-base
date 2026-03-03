@@ -27,10 +27,12 @@ export class GalService {
     );
 
     const resolutions = response?.GetEnumerator?.() ?? [];
-    return resolutions.map((r: any) => ({
-      name: r?.Mailbox?.Name ?? '',
-      email: r?.Mailbox?.Address ?? '',
-    })).filter((r: any) => r.email);
+    return resolutions
+      .map((r: any) => ({
+        name: r?.Mailbox?.Name ?? '',
+        email: r?.Mailbox?.Address ?? '',
+      }))
+      .filter((r: any) => r.email);
   }
 
   private async createService(): Promise<ExchangeService> {
@@ -54,7 +56,8 @@ export class GalService {
     );
     service.Url = new Uri(url);
 
-    const ssoEnabled = this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
+    const ssoEnabled =
+      this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
     if (ssoEnabled) {
       const tokenUrl = this.configService.get<string>('EWS_TOKEN_URL');
       const clientId = this.configService.get<string>('EWS_CLIENT_ID');

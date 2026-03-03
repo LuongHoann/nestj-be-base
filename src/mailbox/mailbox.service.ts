@@ -155,7 +155,11 @@ export class MailboxService {
         });
         results.push({ email: record.email, success: true });
       } catch (error) {
-        results.push({ email: record.email, success: false, error: error.message });
+        results.push({
+          email: record.email,
+          success: false,
+          error: error.message,
+        });
       }
     }
 
@@ -199,8 +203,13 @@ export class MailboxService {
     return { success: true, action: 'update' };
   }
 
-  private parseCsv(csv: string): { email: string; name: string; password: string }[] {
-    const lines = csv.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  private parseCsv(
+    csv: string,
+  ): { email: string; name: string; password: string }[] {
+    const lines = csv
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
     if (!lines.length) return [];
 
     const header = this.parseCsvLine(lines[0]);
@@ -209,7 +218,9 @@ export class MailboxService {
     const passwordIndex = header.indexOf('password');
 
     if (emailIndex < 0 || nameIndex < 0 || passwordIndex < 0) {
-      throw new BadRequestException('CSV must include headers: email,name,password');
+      throw new BadRequestException(
+        'CSV must include headers: email,name,password',
+      );
     }
 
     const records: { email: string; name: string; password: string }[] = [];

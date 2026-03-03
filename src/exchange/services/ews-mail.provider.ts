@@ -50,6 +50,12 @@ import {
   ConversationId,
   ConversationIndexedItemView,
   ConversationSchema,
+  Appointment,
+  CalendarFolder,
+  CalendarView,
+  SendInvitationsMode,
+  SendInvitationsOrCancellationsMode,
+  DateTime,
 } from 'ews-javascript-api';
 
 import { XhrApi } from '@ewsjs/xhr';
@@ -192,6 +198,9 @@ const NOTE_LIST_PROPS = new PropertySet(
   ItemSchema.ItemClass,
 );
 
+// Lưu trữ các kết nối EWS dùng chung thay vì tạo mới liên tục ở từng Request gây lố concurrent limit.
+const globalExchangeServices = new Map<string, ExchangeService>();
+
 @Injectable({ scope: Scope.REQUEST })
 export class EwsMailProvider implements IMailProvider {
   private readonly logger = new Logger(EwsMailProvider.name);
@@ -262,27 +271,37 @@ export class EwsMailProvider implements IMailProvider {
     this.email = creds.email;
     this.credentials = { email: creds.email, password: creds.password };
 
-    const cfg = this.ewsConfig;
-    if (!cfg.url) throw new Error('EWS_URL is not configured');
+    // Kiểm tra global service cache để tránh tạo quá nhiều connections (lỗi concurrent limit)
+    let service = globalExchangeServices.get(creds.email);
 
-    if (!cfg.tlsRejectUnauthorized) {
-      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    if (!service) {
+      const cfg = this.ewsConfig;
+      if (!cfg.url) throw new Error('EWS_URL is not configured');
+
+      if (!cfg.tlsRejectUnauthorized) {
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+      }
+
+      // Exchange 2019 on-premises tương thích với ExchangeVersion.Exchange2016
+      const version =
+        ExchangeVersion[cfg.version as keyof typeof ExchangeVersion] ??
+        ExchangeVersion.Exchange2016;
+
+      service = new ExchangeService(version);
+      service.Url = new Uri(cfg.url);
+      service.Credentials = new WebCredentials(creds.email, creds.password);
+
+      // Lưu lại để dùng chung
+      globalExchangeServices.set(creds.email, service);
     }
-
-    // Exchange 2019 on-premises tương thích với ExchangeVersion.Exchange2016
-    const version =
-      ExchangeVersion[cfg.version as keyof typeof ExchangeVersion] ??
-      ExchangeVersion.Exchange2016;
-
-    const service = new ExchangeService(version);
-    service.Url = new Uri(cfg.url);
-    service.Credentials = new WebCredentials(creds.email, creds.password);
 
     this.service = service;
   }
 
   async disconnect(): Promise<void> {
+    // Không cần set service = null nữa vì ta muốn giữ map để tái sử dụng connection
     this.service = null;
+    this.email = null;
     this.credentials = null;
   }
 
@@ -852,7 +871,9 @@ export class EwsMailProvider implements IMailProvider {
     messageId: string,
     maxItems: number = 50,
   ): Promise<{
-    items: Partial<import('../interfaces/mail-provider.interface').MailMessage>[];
+    items: Partial<
+      import('../interfaces/mail-provider.interface').MailMessage
+    >[];
     total: number;
     hasMore: boolean;
   }> {
@@ -867,14 +888,10 @@ export class EwsMailProvider implements IMailProvider {
       const baseMessage = await EmailMessage.Bind(
         this.service,
         new ItemId(itemId),
-        new PropertySet(
-          BasePropertySet.IdOnly,
-          ItemSchema.ConversationId,
-        ),
+        new PropertySet(BasePropertySet.IdOnly, ItemSchema.ConversationId),
       );
 
-      const conversationId =
-        (baseMessage as any).ConversationId?.UniqueId;
+      const conversationId = (baseMessage as any).ConversationId?.UniqueId;
 
       if (!conversationId) {
         return { items: [], total: 0, hasMore: false };
@@ -907,14 +924,25 @@ export class EwsMailProvider implements IMailProvider {
             ItemSchema.HasAttachments,
             EmailMessageSchema.IsRead,
           );
-          view.OrderBy.Add(ItemSchema.DateTimeReceived, SortDirection.Ascending);
+          view.OrderBy.Add(
+            ItemSchema.DateTimeReceived,
+            SortDirection.Ascending,
+          );
 
           const result = await this.service.FindItems(folderId, filter, view);
-          const found = (result?.Items ?? []).filter((i) => i instanceof EmailMessage) as EmailMessage[];
-          this.logger.log(`[ConvThread] ${folderDef.label}: tìm thấy ${found.length} item`);
-          allRawItems.push(...found.map((item) => ({ item, folderLabel: folderDef.label })));
+          const found = (result?.Items ?? []).filter(
+            (i) => i instanceof EmailMessage,
+          );
+          this.logger.log(
+            `[ConvThread] ${folderDef.label}: tìm thấy ${found.length} item`,
+          );
+          allRawItems.push(
+            ...found.map((item) => ({ item, folderLabel: folderDef.label })),
+          );
         } catch (folderErr) {
-          this.logger.warn(`[ConvThread] Lỗi ${folderDef.label}: ${(folderErr as any)?.message}`);
+          this.logger.warn(
+            `[ConvThread] Lỗi ${folderDef.label}: ${folderErr?.message}`,
+          );
         }
       }
 
@@ -923,7 +951,10 @@ export class EwsMailProvider implements IMailProvider {
       }
 
       // 4️⃣ Deduplicate theo UniqueId — giữ lại folder label tương ứng
-      const uniqueMap = new Map<string, { item: EmailMessage; folderLabel: string }>();
+      const uniqueMap = new Map<
+        string,
+        { item: EmailMessage; folderLabel: string }
+      >();
       for (const entry of allRawItems) {
         const id = entry.item.Id?.UniqueId;
         if (id && !uniqueMap.has(id)) uniqueMap.set(id, entry);
@@ -968,12 +999,8 @@ export class EwsMailProvider implements IMailProvider {
 
       // 6️⃣ Sort theo thời gian
       detailed.sort((a, b) => {
-        const tA = a.receivedAt
-          ? new Date(a.receivedAt).getTime()
-          : 0;
-        const tB = b.receivedAt
-          ? new Date(b.receivedAt).getTime()
-          : 0;
+        const tA = a.receivedAt ? new Date(a.receivedAt).getTime() : 0;
+        const tB = b.receivedAt ? new Date(b.receivedAt).getTime() : 0;
         return tA - tB;
       });
 
@@ -983,9 +1010,7 @@ export class EwsMailProvider implements IMailProvider {
         hasMore: detailed.length > maxItems,
       };
     } catch (error) {
-      this.logger.error(
-        `[ConvThread] Error: ${error?.message}`,
-      );
+      this.logger.error(`[ConvThread] Error: ${error?.message}`);
       return { items: [], total: 0, hasMore: false };
     }
   }
@@ -1170,7 +1195,7 @@ export class EwsMailProvider implements IMailProvider {
     }
 
     const fromDisplay = original.From?.Name || original.From?.Address || '';
-    const toDisplay   = this.getRecipientsStr(original.ToRecipients);
+    const toDisplay = this.getRecipientsStr(original.ToRecipients);
     const origSubject = original.Subject ?? '';
 
     // Tạo bodyPrefix HTML: nội dung người dùng + header trích dẫn thư gốc kiểu Outlook
@@ -1190,7 +1215,9 @@ export class EwsMailProvider implements IMailProvider {
     // Nếu không encode: <div>, <p>, <br>... phá vỡ SOAP XML → Exchange báo schema error.
     const bodyPrefixEncoded = this.xmlEncodeForSoap(bodyPrefixHtml);
 
-    this.logger.log(`[Reply] userHtml length=${userHtml.length}, bodyPrefixEncoded length=${bodyPrefixEncoded.length}`);
+    this.logger.log(
+      `[Reply] userHtml length=${userHtml.length}, bodyPrefixEncoded length=${bodyPrefixEncoded.length}`,
+    );
 
     // ── Bước 2: Bind IdOnly → CreateReply → set BodyPrefix → gửi thẳng ────────
     const baseMsg = await EmailMessage.Bind(
@@ -1208,7 +1235,10 @@ export class EwsMailProvider implements IMailProvider {
     // Đính kèm tệp nếu có
     for (const att of options.attachments ?? []) {
       try {
-        const file = (responseMsg as any).Attachments?.AddFileAttachment?.(att.filename, att.content);
+        const file = (responseMsg as any).Attachments?.AddFileAttachment?.(
+          att.filename,
+          att.content,
+        );
         if (file && att.contentType) file.ContentType = att.contentType;
       } catch (_) {}
     }
@@ -1216,7 +1246,9 @@ export class EwsMailProvider implements IMailProvider {
     // Gửi thẳng, lưu bản sao vào SentItems — không qua bước Save/FindItems/Bind
     await responseMsg.SendAndSaveCopy(WellKnownFolderName.SentItems);
 
-    this.logger.log(`[Reply] Gửi reply thành công cho messageId=${options.messageId}`);
+    this.logger.log(
+      `[Reply] Gửi reply thành công cho messageId=${options.messageId}`,
+    );
     return { success: true };
   }
 
@@ -1228,14 +1260,12 @@ export class EwsMailProvider implements IMailProvider {
   private xmlEncodeForSoap(html: string): string {
     if (!html) return '';
     return html
-      .replace(/&/g, '&amp;')   // & phải replace TRƯỚC
+      .replace(/&/g, '&amp;') // & phải replace TRƯỚC
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&apos;');
   }
-
-
 
   /** Escape ký tự HTML đặc biệt để an toàn khi nhúng vào HTML */
   private escHtml(text: string): string {
@@ -1260,7 +1290,6 @@ export class EwsMailProvider implements IMailProvider {
   }
 
   // ─── Forward ───────────────────────────────────────────────────────────────
-
 
   /**
    * Chuyển tiếp email đến người nhận khác. Sử dụng EWS CreateForward để
@@ -1290,15 +1319,57 @@ export class EwsMailProvider implements IMailProvider {
 
     const { itemId } = this.decodeId(options.messageId);
 
-    // Bind thư gốc — chỉ cần Id để tạo Forward
-    const originalMessage = await EmailMessage.Bind(
+    // ── Bước 1: Bind thư gốc để lấy thông tin hiển thị ở phần Header ────────
+    const original = await EmailMessage.Bind(
+      this.service,
+      new ItemId(itemId),
+      new PropertySet(BasePropertySet.FirstClassProperties),
+    );
+
+    const userHtml = options.html
+      ? options.html
+      : options.text
+        ? `<p>${options.text.replace(/\n/g, '<br>')}</p>`
+        : '';
+
+    let sentDateStr = '';
+    try {
+      const m = (original as any).DateTimeSent?.getMomentDate?.();
+      if (m) sentDateStr = m.format('dddd, MMMM D, YYYY h:mm:ss A');
+    } catch (_) {
+      sentDateStr = String((original as any).DateTimeSent ?? '');
+    }
+
+    const fromDisplay = original.From?.Name || original.From?.Address || '';
+    const toDisplay = this.getRecipientsStr(original.ToRecipients);
+    const origSubject = original.Subject ?? '';
+
+    // HTML bodyPrefix: nội dung người dùng + block thông tin của thư được Forward
+    const bodyPrefixHtml = [
+      `<div>${userHtml}</div>`,
+      `<br>`,
+      `<div style="font-family: Arial, sans-serif; font-size: 13px;">`,
+      `  <div style="margin-bottom: 4px;">---------- Forwarded message ---------</div>`,
+      `  <div style="color: #333; line-height: 1.6;">`,
+      `    <b>From:</b> ${this.escHtml(fromDisplay)}<br>`,
+      `    <b>Date:</b> ${this.escHtml(sentDateStr)}<br>`,
+      `    <b>Subject:</b> ${this.escHtml(origSubject)}<br>`,
+      `    <b>To:</b> ${this.escHtml(toDisplay)}<br>`,
+      `  </div>`,
+      `</div><br>`,
+    ].join('\n');
+
+    // Chống lỗi Schema validation error bằng cách XML-Encode an toàn
+    const bodyPrefixXmlEncoded = this.xmlEncodeForSoap(bodyPrefixHtml);
+
+    // ── Bước 2: Bind IdOnly → CreateForward → set BodyPrefix ───────────────
+    const baseMsg = await EmailMessage.Bind(
       this.service,
       new ItemId(itemId),
       new PropertySet(BasePropertySet.IdOnly),
     );
 
-    // Tạo đối tượng ForwardMessage từ thư gốc
-    const forwardMsg = originalMessage.CreateForward();
+    const forwardMsg = baseMsg.CreateForward();
 
     // Thêm người nhận To
     for (const email of options.to) {
@@ -1318,24 +1389,28 @@ export class EwsMailProvider implements IMailProvider {
       if (addr) forwardMsg.BccRecipients.Add(addr);
     }
 
-    // Ghép lời nhắn thêm vào trên nội dung thư gốc
-    // Phải dùng BodyPrefix — tương tự replyMessage, .Body bị bỏ qua trên ForwardResponse
-    const bodyContent = options.html || options.text || '';
-    const bodyType = options.html ? BodyType.HTML : BodyType.Text;
-    forwardMsg.BodyPrefix = new MessageBody(bodyType, bodyContent);
+    // Truyền phần text HTML (đã được encode) vào BodyPrefix
+    forwardMsg.BodyPrefix = new MessageBody(
+      BodyType.HTML,
+      bodyPrefixXmlEncoded,
+    );
 
-    // Đính kèm tệp mới bổ sung nếu có
+    // Đính kèm tệp bổ sung (nếu có) trực tiếp vào ResponseObject (có thể được xử lý ngầm bởi ews-javascript-api)
     for (const att of options.attachments ?? []) {
-      const file = (forwardMsg as any).Attachments?.AddFileAttachment(
-        att.filename,
-        att.content,
-      );
-      if (file && att.contentType) file.ContentType = att.contentType;
+      try {
+        const file = (forwardMsg as any).Attachments?.AddFileAttachment?.(
+          att.filename,
+          att.content,
+        );
+        if (file && att.contentType) file.ContentType = att.contentType;
+      } catch (_) {}
     }
 
-    // Gửi và lưu bản copy vào Sent Items
+    // Gửi trực tiếp và lưu Sent Items, không cần Save() sang Draft để tránh race condition
     await forwardMsg.SendAndSaveCopy(WellKnownFolderName.SentItems);
-
+    this.logger.log(
+      `[Forward] Chuyển tiếp thành công cho messageId=${options.messageId}`,
+    );
     return { success: true };
   }
 
@@ -1343,6 +1418,7 @@ export class EwsMailProvider implements IMailProvider {
     query: string,
     page: number,
     limit: number,
+    folder: string = 'inbox',
   ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
     if (!this.service) throw new Error('EWS service not connected');
 
@@ -1350,22 +1426,29 @@ export class EwsMailProvider implements IMailProvider {
     view.OrderBy.Add(ItemSchema.DateTimeReceived, SortDirection.Descending);
     view.PropertySet = LIST_PROPS;
 
-    // Tìm theo Subject và From.Name — tránh search Body (rất chậm trên Exchange on-premises)
-    // Lưu ý: không có SenderName schema; dùng EmailMessageSchema.From không support ContainsSubstring
-    // → chỉ search Subject; nếu muốn search sender thì dùng AQS string query (Exchange 2013+)
-    const filter = new SearchFilter.ContainsSubstring(
-      ItemSchema.Subject,
-      query,
-    );
+    // Xác định thư mục cần tìm kiếm (hỗ trợ inbox, sent, trash, v.v.)
+    let resolveFolder: FolderId | WellKnownFolderName;
+    if (folder.toLowerCase() === 'all') {
+      // EWS AQS không hỗ trợ Deep Traversal ở MsgFolderRoot
+      // Tạm thời fallback về Inbox hoặc AllItems nếu hệ thống map được
+      // Theo mặc định với EWS, nếu muốn tìm toàn mailbox thường dùng Inbox làm chính
+      // Hoặc sử dụng tìm kiếm nhiều thư mục nhưng ews-javascript-api không hỗ trợ truy vấn mảng FolderId dễ dàng
+      resolveFolder = WellKnownFolderName.Inbox;
+    } else {
+      resolveFolder = this.resolveFolderName(folder);
+    }
 
     try {
-      const result = await this.service.FindItems(
-        WellKnownFolderName.Inbox,
-        filter,
-        view,
-      );
+      // Dùng queryString (tham số thứ 2 là string) để bật AQS (Advanced Query Syntax)
+      // Điều này tự động hỗ trợ lọc: has:attachment, subject:"...", from:"..."
+      // Không cần dùng SearchFilter thủ công cho từng field.
+      const result = await this.service.FindItems(resolveFolder, query, view);
+
       const items: Partial<MailMessage>[] = result.Items.map((item: any) => ({
-        id: this.encodeId('INBOX', item.Id?.UniqueId ?? ''),
+        id: this.encodeId(
+          folder.toLowerCase() === 'all' ? 'INBOX' : folder.toUpperCase(),
+          item.Id?.UniqueId ?? '',
+        ),
         subject: item.Subject ?? '(No Subject)',
         from: this.getFrom(item),
         receivedAt: this.toJsDate(item.DateTimeReceived),
@@ -1424,7 +1507,7 @@ export class EwsMailProvider implements IMailProvider {
       if (!result.Items.length) break;
 
       await this.service.MoveItems(
-        result.Items.map((item) => new ItemId(item.Id!.UniqueId)),
+        result.Items.map((item) => new ItemId(item.Id.UniqueId)),
         this.toFolderId(target),
       );
       more = result.MoreAvailable ?? false;
@@ -1475,7 +1558,7 @@ export class EwsMailProvider implements IMailProvider {
       for (const item of result.Items) {
         const msg = await EmailMessage.Bind(
           this.service,
-          new ItemId(item.Id!.UniqueId),
+          new ItemId(item.Id.UniqueId),
           props,
         );
         if ((msg as any).IsRead !== isRead) {
@@ -1506,7 +1589,7 @@ export class EwsMailProvider implements IMailProvider {
         FLAG_ONLY_PROPS,
       );
     } catch (err) {
-      const errMsg = String((err as any)?.message ?? '');
+      const errMsg = String(err?.message ?? '');
       if (
         !errMsg.includes('extended property attribute combination is invalid')
       ) {
@@ -1545,7 +1628,7 @@ export class EwsMailProvider implements IMailProvider {
           FLAG_ONLY_PROPS,
         );
       } catch (bindErr) {
-        const bindMsg = String((bindErr as any)?.message ?? '');
+        const bindMsg = String(bindErr?.message ?? '');
         if (
           !bindMsg.includes(
             'extended property attribute combination is invalid',
@@ -1573,7 +1656,7 @@ export class EwsMailProvider implements IMailProvider {
       try {
         await this.setFlag(message, starred, useMinimal);
       } catch (updateErr) {
-        const updateMsg = String((updateErr as any)?.message ?? '');
+        const updateMsg = String(updateErr?.message ?? '');
         if (
           !useMinimal &&
           updateMsg.includes(
@@ -1617,7 +1700,7 @@ export class EwsMailProvider implements IMailProvider {
       if (!result.Items.length) break;
 
       for (const item of result.Items) {
-        const message = await this.bindForFlag(item.Id!.UniqueId);
+        const message = await this.bindForFlag(item.Id.UniqueId);
         await this.setFlag(message, starred);
       }
 
@@ -1660,7 +1743,7 @@ export class EwsMailProvider implements IMailProvider {
 
       const response: ServiceResponseCollection<any> =
         await this.service.DeleteItems(
-          result.Items.map((item) => new ItemId(item.Id!.UniqueId)),
+          result.Items.map((item) => new ItemId(item.Id.UniqueId)),
           DeleteMode.HardDelete,
           SendCancellationsMode.SendToNone,
           AffectedTaskOccurrence.AllOccurrences,
@@ -1716,7 +1799,7 @@ export class EwsMailProvider implements IMailProvider {
     // Bind để load đầy đủ properties bao gồm EmailAddresses và PhoneNumbers
     return Contact.Bind(
       this.service,
-      new ItemId(item.Id!.UniqueId),
+      new ItemId(item.Id.UniqueId),
       CONTACT_DETAIL_PROPS,
     );
   }
@@ -2108,5 +2191,178 @@ export class EwsMailProvider implements IMailProvider {
       NOTE_LIST_PROPS,
     );
     await note.Delete(DeleteMode.MoveToDeletedItems);
+  }
+
+  // ─── CALENDAR & REMINDERS ────────────────────────────────────────────────────────
+
+  async createEvent(payload: {
+    subject: string;
+    body: string;
+    start: string; // ISO String
+    end: string; // ISO String
+    location?: string;
+    isAllDayEvent?: boolean;
+    isReminderSet?: boolean;
+    reminderMinutesBeforeStart?: number;
+  }): Promise<string> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const appointment = new Appointment(this.service);
+    appointment.Subject = payload.subject;
+    appointment.Body = new MessageBody(BodyType.HTML, payload.body);
+    appointment.Start = new DateTime(payload.start);
+    appointment.End = new DateTime(payload.end);
+
+    if (payload.location) appointment.Location = payload.location;
+    if (payload.isAllDayEvent !== undefined)
+      appointment.IsAllDayEvent = payload.isAllDayEvent;
+
+    if (payload.isReminderSet) {
+      appointment.IsReminderSet = true;
+      appointment.ReminderMinutesBeforeStart =
+        payload.reminderMinutesBeforeStart ?? 15;
+    } else {
+      appointment.IsReminderSet = false;
+    }
+
+    // Save to Calendar. SendToNone nếu không có attendees
+    await appointment.Save(SendInvitationsMode.SendToNone);
+
+    return appointment.Id?.UniqueId ?? '';
+  }
+
+  async getEvents(startDate: string, endDate: string): Promise<any[]> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const folder = await CalendarFolder.Bind(
+      this.service,
+      WellKnownFolderName.Calendar,
+    );
+    const view = new CalendarView(
+      new DateTime(startDate),
+      new DateTime(endDate),
+    );
+
+    const results = await folder.FindAppointments(view);
+
+    return results.Items.map((apt: Appointment) => ({
+      id: apt.Id?.UniqueId ?? '',
+      subject: apt.Subject ?? '',
+      start: apt.Start?.ToISOString() ?? '',
+      end: apt.End?.ToISOString() ?? '',
+      location: apt.Location ?? '',
+      isAllDayEvent: apt.IsAllDayEvent ?? false,
+      isReminderSet: apt.IsReminderSet ?? false,
+      reminderMinutesBeforeStart: apt.ReminderMinutesBeforeStart ?? 0,
+      bodyPreview: apt.Body?.Text ?? '',
+    }));
+  }
+
+  async getEventDetails(id: string): Promise<any> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const appointment = await Appointment.Bind(this.service, new ItemId(id));
+    return {
+      id: appointment.Id?.UniqueId ?? '',
+      subject: appointment.Subject ?? '',
+      body: appointment.Body?.Text ?? '',
+      start: appointment.Start?.ToISOString() ?? '',
+      end: appointment.End?.ToISOString() ?? '',
+      location: appointment.Location ?? '',
+      isAllDayEvent: appointment.IsAllDayEvent ?? false,
+      isReminderSet: appointment.IsReminderSet ?? false,
+      reminderMinutesBeforeStart: appointment.ReminderMinutesBeforeStart ?? 0,
+    };
+  }
+
+  async updateEvent(id: string, payload: any): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const appointment = await Appointment.Bind(this.service, new ItemId(id));
+
+    if (payload.subject !== undefined) appointment.Subject = payload.subject;
+    if (payload.body !== undefined)
+      appointment.Body = new MessageBody(BodyType.HTML, payload.body);
+    if (payload.start) appointment.Start = new DateTime(payload.start);
+    if (payload.end) appointment.End = new DateTime(payload.end);
+    if (payload.location !== undefined) appointment.Location = payload.location;
+    if (payload.isAllDayEvent !== undefined)
+      appointment.IsAllDayEvent = payload.isAllDayEvent;
+
+    if (payload.isReminderSet !== undefined) {
+      appointment.IsReminderSet = payload.isReminderSet;
+      if (
+        payload.isReminderSet &&
+        payload.reminderMinutesBeforeStart !== undefined
+      ) {
+        appointment.ReminderMinutesBeforeStart =
+          payload.reminderMinutesBeforeStart;
+      }
+    }
+
+    await appointment.Update(
+      ConflictResolutionMode.AlwaysOverwrite,
+      SendInvitationsOrCancellationsMode.SendToNone,
+    );
+  }
+
+  async deleteEvent(id: string): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const appointment = await Appointment.Bind(this.service, new ItemId(id));
+    await appointment.Delete(
+      DeleteMode.MoveToDeletedItems,
+      SendCancellationsMode.SendToNone,
+    );
+  }
+
+  async getActiveReminders(): Promise<any[]> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    // Tìm lịch trình trong 24h qua và 1 độ trễ nhỏ để không sót nhắc nhở
+    const start = DateTime.Now;
+    const end = start.AddDays(1);
+
+    const folder = await CalendarFolder.Bind(
+      this.service,
+      WellKnownFolderName.Calendar,
+    );
+    const view = new CalendarView(start, end);
+
+    const results = await folder.FindAppointments(view);
+
+    const now = new Date();
+
+    const activeReminders = results.Items.filter((apt: Appointment) => {
+      if (!apt.IsReminderSet) return false;
+
+      const aptStart = new Date(apt.Start.ToISOString());
+      const reminderMinutes = apt.ReminderMinutesBeforeStart || 15;
+      const reminderTime = new Date(
+        aptStart.getTime() - reminderMinutes * 60000,
+      );
+      const aptEnd = new Date(apt.End.ToISOString());
+
+      return now >= reminderTime && now <= aptEnd;
+    });
+
+    return activeReminders.map((apt: Appointment) => ({
+      id: apt.Id?.UniqueId ?? '',
+      subject: apt.Subject ?? '',
+      start: apt.Start?.ToISOString() ?? '',
+      end: apt.End?.ToISOString() ?? '',
+      reminderMinutesBeforeStart: apt.ReminderMinutesBeforeStart ?? 0,
+    }));
+  }
+
+  async dismissReminder(id: string): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const appointment = await Appointment.Bind(this.service, new ItemId(id));
+    appointment.IsReminderSet = false;
+    await appointment.Update(
+      ConflictResolutionMode.AlwaysOverwrite,
+      SendInvitationsOrCancellationsMode.SendToNone,
+    );
   }
 }

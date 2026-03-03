@@ -1,4 +1,10 @@
-import { IsString, IsEmail, IsNotEmpty, IsOptional, IsArray } from 'class-validator';
+import {
+  IsString,
+  IsEmail,
+  IsNotEmpty,
+  IsOptional,
+  IsArray,
+} from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class ExchangeLoginDto {
@@ -33,10 +39,13 @@ export class AttachmentDto {
 export class SendMailDto {
   @ApiProperty({ example: ['to@example.com'] })
   @IsArray()
-  @IsEmail({}, {
-    each: true,
-    message: 'Thong tin nguoi nhan khong hop le!'
-  })
+  @IsEmail(
+    {},
+    {
+      each: true,
+      message: 'Thong tin nguoi nhan khong hop le!',
+    },
+  )
   to!: string[];
 
   @ApiProperty({ example: ['cc@example.com'], required: false })
@@ -82,10 +91,13 @@ export class SaveDraftDto {
   @ApiProperty({ example: ['to@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, {
-    each: true,
-    message: 'Thong tin nguoi nhan khong hop le!'
-  })
+  @IsEmail(
+    {},
+    {
+      each: true,
+      message: 'Thong tin nguoi nhan khong hop le!',
+    },
+  )
   to?: string[];
 
   @ApiProperty({ example: ['cc@example.com'], required: false })
@@ -199,31 +211,34 @@ export class PermanentDeleteMailDto {
   all?: boolean;
 
   @ApiProperty({ example: 'trash', required: false })
-    @IsString()
-    @IsOptional()
-    sourceFolder?: string;
+  @IsString()
+  @IsOptional()
+  sourceFolder?: string;
 }
 
 export class StarMailDto {
-    @ApiProperty({ example: ['SU5CT1g6MTIzNDU='], required: false })
-    @IsArray()
-    @IsOptional()
-    @IsString({ each: true })
-    ids?: string[];
+  @ApiProperty({ example: ['SU5CT1g6MTIzNDU='], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsString({ each: true })
+  ids?: string[];
 
-    @ApiProperty({ example: true, required: false })
-    @IsOptional()
-    all?: boolean;
+  @ApiProperty({ example: true, required: false })
+  @IsOptional()
+  all?: boolean;
 
-    @ApiProperty({ example: 'inbox', required: false })
-    @IsString()
-    @IsOptional()
-    folder?: string;
+  @ApiProperty({ example: 'inbox', required: false })
+  @IsString()
+  @IsOptional()
+  folder?: string;
 }
 
 /** DTO dùng cho API trả lời thư (Reply / Reply All) */
 export class ReplyMailDto {
-  @ApiProperty({ example: 'SU5CT1g6MTIzNDU=', description: 'ID của thư gốc cần trả lời' })
+  @ApiProperty({
+    example: 'SU5CT1g6MTIzNDU=',
+    description: 'ID của thư gốc cần trả lời',
+  })
   @IsString()
   @IsNotEmpty({ message: 'messageId không được để trống!' })
   messageId!: string;
@@ -238,7 +253,11 @@ export class ReplyMailDto {
   @IsOptional()
   text?: string;
 
-  @ApiProperty({ example: true, required: false, description: 'true = reply all, false = reply to sender only' })
+  @ApiProperty({
+    example: true,
+    required: false,
+    description: 'true = reply all, false = reply to sender only',
+  })
   @IsOptional()
   replyAll?: boolean;
 
@@ -250,12 +269,18 @@ export class ReplyMailDto {
 
 /** DTO dùng cho API chuyển tiếp thư (Forward) */
 export class ForwardMailDto {
-  @ApiProperty({ example: 'SU5CT1g6MTIzNDU=', description: 'ID của thư gốc cần chuyển tiếp' })
+  @ApiProperty({
+    example: 'SU5CT1g6MTIzNDU=',
+    description: 'ID của thư gốc cần chuyển tiếp',
+  })
   @IsString()
   @IsNotEmpty({ message: 'messageId không được để trống!' })
   messageId!: string;
 
-  @ApiProperty({ example: ['forwardto@example.com'], description: 'Danh sách người nhận chuyển tiếp' })
+  @ApiProperty({
+    example: ['forwardto@example.com'],
+    description: 'Danh sách người nhận chuyển tiếp',
+  })
   @IsArray()
   @IsEmail({}, { each: true, message: 'Thông tin người nhận không hợp lệ!' })
   to!: string[];
@@ -272,7 +297,10 @@ export class ForwardMailDto {
   @IsEmail({}, { each: true })
   bcc?: string[];
 
-  @ApiProperty({ example: '<p>Nội dung ghi thêm khi forward</p>', required: false })
+  @ApiProperty({
+    example: '<p>Nội dung ghi thêm khi forward</p>',
+    required: false,
+  })
   @IsString()
   @IsOptional()
   html?: string;

@@ -99,13 +99,15 @@ export class FilesService {
     originalName?: string,
   ): Promise<File> {
     // Find existing temp file
-    const tempFile = await this.fileRepository.findOne({ 
+    const tempFile = await this.fileRepository.findOne({
       id,
-      status: FileStatus.TEMP 
+      status: FileStatus.TEMP,
     });
-    
+
     if (!tempFile) {
-      throw new NotFoundException('Temporary file not found or already committed');
+      throw new NotFoundException(
+        'Temporary file not found or already committed',
+      );
     }
 
     const tempPath = `temp/${id}`;

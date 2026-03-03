@@ -1,9 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import {
-  BadRequestException,
-  ValidationPipe,
-} from '@nestjs/common';
+import { BadRequestException, ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
@@ -23,7 +20,10 @@ async function bootstrap() {
           const messages = Object.values(err.constraints || {});
           errors[field] = messages.length === 1 ? messages[0] : messages;
         }
-        console.log('Validation Errors:', JSON.stringify(validationErrors, null, 2));
+        console.log(
+          'Validation Errors:',
+          JSON.stringify(validationErrors, null, 2),
+        );
         return new BadRequestException({
           errors,
         });
@@ -37,11 +37,18 @@ async function bootstrap() {
     .setTitle('Webmail API')
     .setDescription('API tài liệu cho frontend')
     .setVersion('1.0')
-    .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'jwt')
-    .addCookieAuth('exchange_session', {
-      type: 'apiKey',
-      in: 'cookie',
-    }, 'exchange_cookie')
+    .addBearerAuth(
+      { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
+      'jwt',
+    )
+    .addCookieAuth(
+      'exchange_session',
+      {
+        type: 'apiKey',
+        in: 'cookie',
+      },
+      'exchange_cookie',
+    )
     .build();
 
   const document = SwaggerModule.createDocument(app, config);

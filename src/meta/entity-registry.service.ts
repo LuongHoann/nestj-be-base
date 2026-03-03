@@ -1,4 +1,9 @@
-import { Injectable, OnModuleInit, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  OnModuleInit,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { MikroORM, EntityMetadata } from '@mikro-orm/core';
 
 @Injectable()
@@ -26,8 +31,10 @@ export class EntityRegistryService implements OnModuleInit {
 
       this.collectionMap.set(collectionName, entityName);
       this.entityMap.set(entityName, meta);
-      
-      this.logger.log(`Registered collection: ${collectionName} -> ${entityName}`);
+
+      this.logger.log(
+        `Registered collection: ${collectionName} -> ${entityName}`,
+      );
     }
   }
 
@@ -45,7 +52,7 @@ export class EntityRegistryService implements OnModuleInit {
   }
 
   hasCollection(collection: string): boolean {
-    console.log("collectionMap",this.collectionMap);
+    console.log('collectionMap', this.collectionMap);
     return this.collectionMap.has(collection);
   }
 }

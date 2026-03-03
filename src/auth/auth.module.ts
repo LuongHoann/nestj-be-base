@@ -17,11 +17,13 @@ import { ExchangeModule } from '../exchange/exchange.module';
     CommonModule,
     AuditLogModule,
     ExchangeModule,
-    PassportModule.register({defaultStrategy: 'jwt'}),
+    PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET') || 'your-secret-key-change-in-production',
+        secret:
+          configService.get<string>('JWT_SECRET') ||
+          'your-secret-key-change-in-production',
         signOptions: {
           expiresIn: configService.get<any>('JWT_EXPIRES_IN') || '15m',
         },
@@ -29,8 +31,8 @@ import { ExchangeModule } from '../exchange/exchange.module';
     }),
     MikroOrmModule.forFeature([User]),
   ],
-  providers: [AuthService, JwtStrategy,JwtAuthGuard],
+  providers: [AuthService, JwtStrategy, JwtAuthGuard],
   controllers: [AuthController],
-  exports: [AuthService, JwtStrategy, PassportModule,JwtModule,JwtAuthGuard],
+  exports: [AuthService, JwtStrategy, PassportModule, JwtModule, JwtAuthGuard],
 })
 export class AuthModule {}

@@ -1,4 +1,10 @@
-import { Injectable, Logger, Scope, BadRequestException, Inject } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Scope,
+  BadRequestException,
+  Inject,
+} from '@nestjs/common';
 import { REQUEST } from '@nestjs/core';
 import { EwsMailProvider } from './ews-mail.provider';
 import { DragonflyService } from '../../common/cache/dragonfly.service';
@@ -26,7 +32,10 @@ export class ContactNoteService {
       await this.provider.connect();
       return await operation();
     } catch (error) {
-      this.logger.error(`Exchange operation failed: ${error.message}`, error.stack);
+      this.logger.error(
+        `Exchange operation failed: ${error.message}`,
+        error.stack,
+      );
       throw error;
     } finally {
       await this.provider.disconnect();
@@ -46,7 +55,9 @@ export class ContactNoteService {
 
   private async refreshContactsCountCache(email: string): Promise<void> {
     if (!this.dragonfly.enabled) return;
-    const total = await this.withProvider(() => this.provider.getContactsCount());
+    const total = await this.withProvider(() =>
+      this.provider.getContactsCount(),
+    );
     await this.dragonfly.set(
       this.getContactsCountCacheKey(email),
       total,
@@ -73,7 +84,9 @@ export class ContactNoteService {
     if (!payload.email) {
       throw new BadRequestException('Email is required');
     }
-    const result = await this.withProvider(() => this.provider.createContact(payload));
+    const result = await this.withProvider(() =>
+      this.provider.createContact(payload),
+    );
 
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
@@ -129,7 +142,9 @@ export class ContactNoteService {
     page: number,
     pageSize: number,
   ): Promise<ExchangeSearchResult<ExchangeContact>> {
-    return this.withProvider(() => this.provider.searchContacts(keyword, page, pageSize));
+    return this.withProvider(() =>
+      this.provider.searchContacts(keyword, page, pageSize),
+    );
   }
 
   async getContactsCount(): Promise<{ total: number }> {
@@ -141,27 +156,40 @@ export class ContactNoteService {
         return { total: cached };
       }
 
-      const total = await this.withProvider(() => this.provider.getContactsCount());
+      const total = await this.withProvider(() =>
+        this.provider.getContactsCount(),
+      );
       await this.dragonfly.set(key, total, this.CONTACT_COUNT_TTL);
       return { total };
     }
 
-    const total = await this.withProvider(() => this.provider.getContactsCount());
+    const total = await this.withProvider(() =>
+      this.provider.getContactsCount(),
+    );
     return { total };
   }
 
-  async listNotes(page: number, pageSize: number): Promise<ExchangeSearchResult<ExchangeNote>> {
+  async listNotes(
+    page: number,
+    pageSize: number,
+  ): Promise<ExchangeSearchResult<ExchangeNote>> {
     return this.withProvider(() => this.provider.listNotes(page, pageSize));
   }
 
-  async createNote(payload: { subject?: string; content: string }): Promise<ExchangeNote> {
+  async createNote(payload: {
+    subject?: string;
+    content: string;
+  }): Promise<ExchangeNote> {
     if (!payload.content) {
       throw new BadRequestException('Content is required');
     }
     return this.withProvider(() => this.provider.createNote(payload));
   }
 
-  async updateNote(id: string, payload: { subject?: string; content?: string }): Promise<ExchangeNote> {
+  async updateNote(
+    id: string,
+    payload: { subject?: string; content?: string },
+  ): Promise<ExchangeNote> {
     return this.withProvider(() => this.provider.updateNote(id, payload));
   }
 

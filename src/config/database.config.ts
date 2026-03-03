@@ -6,5 +6,7 @@ export default registerAs('database', () => ({
   user: process.env.DB_USER || 'postgres',
   password: process.env.DB_PASSWORD || '123',
   name: process.env.DB_NAME || 'postgres',
-  allowGlobalContext: process.env.DB_ALLOW_GLOBAL_CONTEXT === 'true' || process.env.NODE_ENV !== 'production',
+  allowGlobalContext:
+    process.env.DB_ALLOW_GLOBAL_CONTEXT === 'true' ||
+    process.env.NODE_ENV !== 'production',
 }));

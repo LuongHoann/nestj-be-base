@@ -8,6 +8,8 @@ import {
   UseInterceptors,
   Req,
   Res,
+  Put,
+  Delete,
   Param,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
@@ -25,10 +27,11 @@ import {
   ReplyMailDto,
   ForwardMailDto,
 } from '../dto/exchange.dto';
+import { CreateEventDto, UpdateEventDto } from '../dto/calendar.dto';
 
 import { ExchangeErrorInterceptor } from '../interceptors/exchange-error.interceptor';
 import type { Request, Response } from 'express';
-import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
+import { ExchangeAuthGuard } from '../../auth/guards/exchange-auth.guard';
 import {
   ApiBearerAuth,
   ApiBody,
@@ -55,8 +58,10 @@ export class ExchangeController {
     @Body() dto: ExchangeLoginDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { accessToken, refreshToken, email } =
-      await this.authService.login(dto.email, dto.password);
+    const { accessToken, refreshToken, email } = await this.authService.login(
+      dto.email,
+      dto.password,
+    );
 
     res.cookie('exchange_session', accessToken, {
       httpOnly: true,
@@ -107,7 +112,9 @@ export class ExchangeController {
     if (refreshToken) {
       const [tokenId] = refreshToken.split('.');
       if (tokenId) {
-        await (this.authService as any).cache.del(`exchange:refresh:${tokenId}`);
+        await (this.authService as any).cache.del(
+          `exchange:refresh:${tokenId}`,
+        );
       }
     }
 
@@ -149,17 +156,32 @@ export class ExchangeController {
   @UseGuards(ExchangeAuthGuard)
   @Get('mail/search')
   @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Tim kiem mail' })
+  @ApiOperation({ summary: 'Tim kiem mail nang cao' })
   @ApiQuery({ name: 'q', required: true })
   @ApiQuery({ name: 'page', required: false })
-  async search(@Query('q') q: string, @Query('page') page: number = 1) {
-    return this.mailService.searchMessages(q, Number(page));
+  @ApiQuery({ name: 'pageSize', required: false })
+  @ApiQuery({ name: 'folder', required: false })
+  async search(
+    @Query('q') q: string,
+    @Query('page') page: number = 1,
+    @Query('pageSize') pageSize: number = 20,
+    @Query('folder') folder: string = 'inbox',
+  ) {
+    return this.mailService.searchMessages(
+      q,
+      Number(page),
+      Number(pageSize),
+      folder,
+    );
   }
 
   @UseGuards(ExchangeAuthGuard)
   @Get('mail/conversation')
   @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Lấy toàn bộ email trong cùng một luồng hội thoại theo messageId gốc' })
+  @ApiOperation({
+    summary:
+      'Lấy toàn bộ email trong cùng một luồng hội thoại theo messageId gốc',
+  })
   async getConversation(
     @Query('messageId') messageId: string,
     @Query('maxItems') maxItems?: string,
@@ -269,5 +291,72 @@ export class ExchangeController {
     return this.mailService.forwardMessage(dto);
   }
 
+  // ─── LỊCH & SỰ KIỆN (CALENDAR & REMINDERS) ───────────────────────────────────
 
+  @UseGuards(ExchangeAuthGuard)
+  @Get('calendar')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Lấy các sự kiện trong khoảng thời gian' })
+  async getEvents(
+    @Query('startDate') startDate: string,
+    @Query('endDate') endDate: string,
+  ) {
+    return this.mailService.getEvents(startDate, endDate);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Get('calendar/reminders/active')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({
+    summary: 'Lấy danh sách lời nhắc (Reminders) đang kích hoạt',
+  })
+  async getActiveReminders() {
+    return this.mailService.getActiveReminders();
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('calendar/reminders/dismiss/:id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Ẩn/Tắt lời nhắc cho một sự kiện cụ thể' })
+  async dismissReminder(@Param('id') id: string) {
+    await this.mailService.dismissReminder(id);
+    return { success: true };
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('calendar')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Tạo một sự kiện mới' })
+  @ApiBody({ type: CreateEventDto })
+  async createEvent(@Body() dto: CreateEventDto) {
+    const id = await this.mailService.createEvent(dto);
+    return { success: true, id };
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Get('calendar/:id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Xem chi tiết một sự kiện' })
+  async getEventDetails(@Param('id') id: string) {
+    return this.mailService.getEventDetails(id);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Put('calendar/:id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Cập nhật sự kiện' })
+  @ApiBody({ type: UpdateEventDto })
+  async updateEvent(@Param('id') id: string, @Body() dto: UpdateEventDto) {
+    await this.mailService.updateEvent(id, dto);
+    return { success: true };
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Delete('calendar/:id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Xoá sự kiện' })
+  async deleteEvent(@Param('id') id: string) {
+    await this.mailService.deleteEvent(id);
+    return { success: true };
+  }
 }

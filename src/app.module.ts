@@ -37,10 +37,12 @@ import { MailboxModule } from './mailbox/mailbox.module';
         user: configService.get<string>('database.user'),
         password: configService.get<string>('database.password'),
         debug: configService.get<string>('NODE_ENV') !== 'production',
-        allowGlobalContext: configService.get<boolean>('database.allowGlobalContext'),
+        allowGlobalContext: configService.get<boolean>(
+          'database.allowGlobalContext',
+        ),
         migrations: {
-            path: './src/database/migrations',
-            pathTs: './src/database/migrations',
+          path: './src/database/migrations',
+          pathTs: './src/database/migrations',
         },
       }),
       inject: [ConfigService],

@@ -63,7 +63,6 @@ export class ImapMailProvider implements IMailProvider {
     };
   }
 
-
   async connect(): Promise<void> {
     // Get session token from cookie
     this.sessionToken = this.request.cookies?.['exchange_session'];
@@ -89,7 +88,6 @@ export class ImapMailProvider implements IMailProvider {
     this.client = new ImapFlow(this.getImapConfig() as any);
     await this.client.connect();
     this.logger.log(`IMAP connected for ${this.credentials.email}`);
-
   }
 
   async disconnect(): Promise<void> {
@@ -166,8 +164,10 @@ export class ImapMailProvider implements IMailProvider {
         const specialUse = mailbox?.specialUse;
         const flags = mailbox?.flags;
         const hasSpecialUse =
-          (typeof specialUse === 'string' && specialUseHints.includes(specialUse)) ||
-          (flags && typeof flags.has === 'function' &&
+          (typeof specialUse === 'string' &&
+            specialUseHints.includes(specialUse)) ||
+          (flags &&
+            typeof flags.has === 'function' &&
             specialUseHints.some((hint) => flags.has(hint)));
 
         if (hasSpecialUse) {
@@ -270,7 +270,9 @@ export class ImapMailProvider implements IMailProvider {
     return folders;
   }
 
-  async getFolderCounts(): Promise<Record<string, { total: number; unread: number }>> {
+  async getFolderCounts(): Promise<
+    Record<string, { total: number; unread: number }>
+  > {
     if (!this.client) {
       throw new Error('Client not connected. Call connect() first.');
     }
@@ -442,7 +444,10 @@ export class ImapMailProvider implements IMailProvider {
     const lock = await this.client.getMailboxLock(inboxPath);
     try {
       const flaggedUids: number[] = [];
-      for await (const msg of this.client.fetch('1:*', { uid: true, flags: true })) {
+      for await (const msg of this.client.fetch('1:*', {
+        uid: true,
+        flags: true,
+      })) {
         if (msg.flags?.has('\\Flagged')) {
           flaggedUids.push(msg.uid);
         }
@@ -537,9 +542,7 @@ export class ImapMailProvider implements IMailProvider {
 
   private extractEmailFromHeader(value: unknown): string {
     if (typeof value !== 'string') return '';
-    const match = value.match(
-      /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i,
-    );
+    const match = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
     return match ? match[0] : '';
   }
 
@@ -557,10 +560,7 @@ export class ImapMailProvider implements IMailProvider {
     const email = this.extractEmailFromHeader(value);
     if (!email) return value;
 
-    const name = value
-      .replace(email, '')
-      .replace(/[<>"]/g, '')
-      .trim();
+    const name = value.replace(email, '').replace(/[<>"]/g, '').trim();
 
     return name ? `"${name}" <${email}>` : `<${email}>`;
   }
@@ -578,7 +578,11 @@ export class ImapMailProvider implements IMailProvider {
     const parsedName = parsedFrom?.name || '';
     const parsedEmail = parsedFrom?.address || '';
 
-    if (parsedEmail && parsedEmail.includes('@') && !parsedEmail.startsWith('/')) {
+    if (
+      parsedEmail &&
+      parsedEmail.includes('@') &&
+      !parsedEmail.startsWith('/')
+    ) {
       return { name: parsedName, email: parsedEmail };
     }
     if (preferFallback && parsedEmail.startsWith('/') && fallbackEmail) {
@@ -758,7 +762,9 @@ export class ImapMailProvider implements IMailProvider {
           );
         }
       } else {
-        this.logger.warn('Skip appending to Sent Items because messageId is missing');
+        this.logger.warn(
+          'Skip appending to Sent Items because messageId is missing',
+        );
       }
 
       return {
@@ -798,11 +804,17 @@ export class ImapMailProvider implements IMailProvider {
         attachments,
       };
 
-      const draftsFolder = (await this.resolveMailboxPath('Drafts')) ?? 'Drafts';
+      const draftsFolder =
+        (await this.resolveMailboxPath('Drafts')) ?? 'Drafts';
       const messageId = `<${Date.now()}.${Math.random().toString(36).substring(2)}@drafts>`;
       const draftData = this.buildRFC822Message(mailOptions, messageId);
 
-      const appendRes = await this.client.append(draftsFolder, draftData, ['\\Seen', '\\Draft'], new Date());
+      const appendRes = await this.client.append(
+        draftsFolder,
+        draftData,
+        ['\\Seen', '\\Draft'],
+        new Date(),
+      );
       let resId: string | undefined;
 
       if (appendRes && appendRes.uid) {
@@ -828,7 +840,7 @@ export class ImapMailProvider implements IMailProvider {
     if (senderEmail) {
       lines.push(`Sender: <${senderEmail}>`);
     }
-    
+
     if (mailOptions.to) {
       const toAddresses = Array.isArray(mailOptions.to)
         ? mailOptions.to.join(', ')
@@ -856,7 +868,7 @@ export class ImapMailProvider implements IMailProvider {
       const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(7)}`;
       lines.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
       lines.push('');
-      
+
       // Text/HTML part
       lines.push(`--${boundary}`);
       if (mailOptions.html) {
@@ -874,9 +886,13 @@ export class ImapMailProvider implements IMailProvider {
       // Attachments
       for (const att of mailOptions.attachments) {
         lines.push(`--${boundary}`);
-        lines.push(`Content-Type: ${att.contentType || 'application/octet-stream'}`);
+        lines.push(
+          `Content-Type: ${att.contentType || 'application/octet-stream'}`,
+        );
         lines.push(`Content-Transfer-Encoding: base64`);
-        lines.push(`Content-Disposition: attachment; filename="${att.filename}"`);
+        lines.push(
+          `Content-Disposition: attachment; filename="${att.filename}"`,
+        );
         lines.push('');
         lines.push(att.content.toString('base64'));
       }
@@ -902,10 +918,14 @@ export class ImapMailProvider implements IMailProvider {
   /**
    * Append sent email to Sent Items folder using IMAP APPEND
    */
-  private async appendToSentFolder(mailOptions: any, messageId: string): Promise<void> {
+  private async appendToSentFolder(
+    mailOptions: any,
+    messageId: string,
+  ): Promise<void> {
     // Find the Sent Items folder
     const sentData = this.buildRFC822Message(mailOptions, messageId);
-    const sentFolder = (await this.resolveMailboxPath('Sent Items')) ?? 'Sent Items';
+    const sentFolder =
+      (await this.resolveMailboxPath('Sent Items')) ?? 'Sent Items';
 
     try {
       // Append message to Sent Items
@@ -1135,7 +1155,9 @@ export class ImapMailProvider implements IMailProvider {
       const lock = await this.client.getMailboxLock(sourceFolder);
       try {
         const uidSet = uids.join(',');
-        await this.client.messageMove(uidSet, resolvedTargetFolder, { uid: true });
+        await this.client.messageMove(uidSet, resolvedTargetFolder, {
+          uid: true,
+        });
         this.logger.log(
           `Moved ${uids.length} messages from ${sourceFolder} to ${resolvedTargetFolder}`,
         );
@@ -1229,7 +1251,10 @@ export class ImapMailProvider implements IMailProvider {
       const lock = await this.client.getMailboxLock(inboxPath);
       try {
         const flaggedUids: number[] = [];
-        for await (const msg of this.client.fetch('1:*', { uid: true, flags: true })) {
+        for await (const msg of this.client.fetch('1:*', {
+          uid: true,
+          flags: true,
+        })) {
           if (msg.flags?.has('\\Flagged')) {
             flaggedUids.push(msg.uid);
           }
@@ -1246,11 +1271,14 @@ export class ImapMailProvider implements IMailProvider {
       }
     }
 
-    const resolvedFolder = (await this.resolveMailboxPath(canonicalFolderId)) ?? canonicalFolderId;
+    const resolvedFolder =
+      (await this.resolveMailboxPath(canonicalFolderId)) ?? canonicalFolderId;
     const lock = await this.client.getMailboxLock(resolvedFolder);
 
     try {
-      const status = await this.client.status(resolvedFolder, { messages: true });
+      const status = await this.client.status(resolvedFolder, {
+        messages: true,
+      });
       const total = status.messages || 0;
       if (!total) {
         return 0;
@@ -1268,4 +1296,3 @@ export class ImapMailProvider implements IMailProvider {
     }
   }
 }
-

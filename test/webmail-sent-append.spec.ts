@@ -43,7 +43,10 @@ describe('ImapMailProvider sent append', () => {
       text: 'hello',
     });
 
-    expect(result).toEqual({ success: true, messageId: '<msg-1@mailex.local>' });
+    expect(result).toEqual({
+      success: true,
+      messageId: '<msg-1@mailex.local>',
+    });
     expect((provider as any).client.append).toHaveBeenCalledTimes(1);
     expect((provider as any).client.append).toHaveBeenCalledWith(
       'Sent Items',

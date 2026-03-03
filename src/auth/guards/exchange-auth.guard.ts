@@ -1,5 +1,10 @@
 // guards/exchange-auth.guard.ts
-import { Injectable, CanActivate, ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  CanActivate,
+  ExecutionContext,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Request } from 'express';
 import { ExchangeAuthService } from '../../exchange/services/exchange-auth.service';
 
@@ -22,17 +27,17 @@ export class ExchangeAuthGuard implements CanActivate {
     }
 
     const isValid = await this.authService.validateSession(sessionToken);
-    
+
     if (!isValid) {
       throw new UnauthorizedException('Invalid or expired session');
     }
 
     // Refresh session on each request
     await this.authService.refreshSession(sessionToken);
-    
+
     // Attach session token to request
     request['exchangeSession'] = sessionToken;
-    
+
     return true;
   }
 }

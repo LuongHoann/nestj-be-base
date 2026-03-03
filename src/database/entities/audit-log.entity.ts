@@ -1,4 +1,10 @@
-import { Entity, PrimaryKey, Property, ManyToOne, Index } from '@mikro-orm/core';
+import {
+  Entity,
+  PrimaryKey,
+  Property,
+  ManyToOne,
+  Index,
+} from '@mikro-orm/core';
 import { User } from './user.entity';
 
 @Entity({ tableName: 'audit_logs' })

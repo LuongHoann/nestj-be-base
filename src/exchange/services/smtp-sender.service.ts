@@ -84,9 +84,13 @@ export class SmtpSenderService implements OnModuleDestroy {
   }
 
   private buildSmtpConfig(credentials: SmtpCredentials) {
-    const host = this.configService.get<string>('SMTP_HOST', 'smtp.office365.com');
+    const host = this.configService.get<string>(
+      'SMTP_HOST',
+      'smtp.office365.com',
+    );
     const port = this.configService.get<number>('SMTP_PORT', 587);
-    const secure = this.configService.get<string>('SMTP_SECURE', 'false') === 'true';
+    const secure =
+      this.configService.get<string>('SMTP_SECURE', 'false') === 'true';
     const maxConnections = this.configService.get<number>(
       'SMTP_POOL_MAX_CONNECTIONS',
       2,
@@ -96,7 +100,10 @@ export class SmtpSenderService implements OnModuleDestroy {
       100,
     );
     const rateLimit = this.configService.get<number>('SMTP_RATE_LIMIT', 3);
-    const rateDelta = this.configService.get<number>('SMTP_RATE_DELTA_MS', 1000);
+    const rateDelta = this.configService.get<number>(
+      'SMTP_RATE_DELTA_MS',
+      1000,
+    );
 
     return {
       host,
@@ -111,7 +118,7 @@ export class SmtpSenderService implements OnModuleDestroy {
         minVersion: 'TLSv1.2',
         rejectUnauthorized: false,
       },
-      debug: true, 
+      debug: true,
       logger: true,
       pool: true,
       maxConnections,

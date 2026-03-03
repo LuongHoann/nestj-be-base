@@ -13,11 +13,11 @@ import { RequestContext } from '../common/context/request.context';
 
 /**
  * AuditLogInterceptor - Tự động ghi log cho các thao tác CUD
- * 
+ *
  * Phân loại logs:
  * 1. DEV LOGS (Console/Logger): Chi tiết kỹ thuật, response time, errors
  * 2. USER LOGS (Database): Audit trail cho business - ai làm gì, lúc nào
- * 
+ *
  * Chỉ ghi User Log cho các thao tác thay đổi dữ liệu (POST, PATCH, PUT, DELETE)
  * GET requests chỉ ghi Dev Log
  */
@@ -45,9 +45,7 @@ export class AuditLogInterceptor implements NestInterceptor {
     const userId = user?.id || 'anonymous';
 
     // ========== DEV LOG: Request Start ==========
-    this.logger.log(
-      `📥 [${method}] ${url} | User: ${userId} | IP: ${ip}`,
-    );
+    this.logger.log(`📥 [${method}] ${url} | User: ${userId} | IP: ${ip}`);
 
     if (method !== 'GET' && body && Object.keys(body).length > 0) {
       // Mask sensitive fields in dev log
@@ -140,13 +138,13 @@ export class AuditLogInterceptor implements NestInterceptor {
   private extractCollectionFromUrl(url: string): string {
     const parts = url.split('/').filter(Boolean);
     // Remove query params
-    const cleanParts = parts.map(p => p.split('?')[0]);
-    
+    const cleanParts = parts.map((p) => p.split('?')[0]);
+
     // If URL starts with /items/, the collection is the next part
     if (cleanParts[0] === 'items' && cleanParts[1]) {
       return cleanParts[1];
     }
-    
+
     // Otherwise use the first part as collection (e.g., /auth/login -> auth)
     return cleanParts[0] || 'unknown';
   }
@@ -167,7 +165,14 @@ export class AuditLogInterceptor implements NestInterceptor {
   private sanitizeForDevLog(body: any): any {
     if (!body || typeof body !== 'object') return body;
 
-    const sensitiveFields = ['password', 'token', 'refreshToken', 'secret', 'apiKey', 'accessToken'];
+    const sensitiveFields = [
+      'password',
+      'token',
+      'refreshToken',
+      'secret',
+      'apiKey',
+      'accessToken',
+    ];
     const sanitized = { ...body };
 
     for (const field of sensitiveFields) {
@@ -188,7 +193,14 @@ export class AuditLogInterceptor implements NestInterceptor {
 
     // Chỉ log các fields quan trọng, không log sensitive data
     if (body && typeof body === 'object') {
-      const allowedFields = ['title', 'name', 'email', 'status', 'role', 'collection'];
+      const allowedFields = [
+        'title',
+        'name',
+        'email',
+        'status',
+        'role',
+        'collection',
+      ];
       for (const field of allowedFields) {
         if (body[field] !== undefined) {
           details[`input_${field}`] = body[field];
@@ -220,7 +232,7 @@ export class AuditLogInterceptor implements NestInterceptor {
   }): Promise<void> {
     try {
       await this.auditLogService.logAction(
-        data.userId !== 'anonymous' ? { id: data.userId } as any : null,
+        data.userId !== 'anonymous' ? ({ id: data.userId } as any) : null,
         data.action,
         data.collection,
         data.targetId || 'new',

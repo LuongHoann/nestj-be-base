@@ -2,7 +2,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { spawn } from 'child_process';
 
-export type ScriptAction = 'create' | 'update' | 'disable' | 'restore' | 'delete';
+export type ScriptAction =
+  | 'create'
+  | 'update'
+  | 'disable'
+  | 'restore'
+  | 'delete';
 
 @Injectable()
 export class ScriptRunnerService {
@@ -10,10 +15,16 @@ export class ScriptRunnerService {
   private readonly timeoutMs: number;
 
   constructor(private readonly configService: ConfigService) {
-    this.timeoutMs = this.configService.get<number>('MAILBOX_SCRIPT_TIMEOUT_MS', 60000);
+    this.timeoutMs = this.configService.get<number>(
+      'MAILBOX_SCRIPT_TIMEOUT_MS',
+      60000,
+    );
   }
 
-  async run(action: ScriptAction, payload: Record<string, any>): Promise<{ stdout: string; stderr: string }> {
+  async run(
+    action: ScriptAction,
+    payload: Record<string, any>,
+  ): Promise<{ stdout: string; stderr: string }> {
     const scriptPath = this.getScriptPath(action);
     if (!scriptPath) {
       throw new Error(`Script path not configured for action ${action}`);
@@ -55,9 +66,14 @@ export class ScriptRunnerService {
       try {
         const enrichedPayload = {
           ...payload,
-          ExchangeServer: this.configService.get<string>('EXCHANGE_SERVER') || 'mail-ex.mailex.local',
-          UserAdmin: this.configService.get<string>('EXCHANGE_USER_ADMIN') || 'mailex\\Administrator',
-          Password: this.configService.get<string>('EXCHANGE_PASSWORD') || '123456a@',
+          ExchangeServer:
+            this.configService.get<string>('EXCHANGE_SERVER') ||
+            'mail-ex.mailex.local',
+          UserAdmin:
+            this.configService.get<string>('EXCHANGE_USER_ADMIN') ||
+            'mailex\\Administrator',
+          Password:
+            this.configService.get<string>('EXCHANGE_PASSWORD') || '123456a@',
         };
         child.stdin.write(JSON.stringify(enrichedPayload));
         child.stdin.end();
@@ -84,7 +100,10 @@ export class ScriptRunnerService {
     }
   }
 
-  private buildCommand(scriptPath: string): { command: string; args: string[] } {
+  private buildCommand(scriptPath: string): {
+    command: string;
+    args: string[];
+  } {
     if (scriptPath.toLowerCase().endsWith('.ps1')) {
       return {
         command: 'powershell',

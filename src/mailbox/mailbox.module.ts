@@ -9,6 +9,11 @@ import { ExchangeAuthService } from 'src/exchange/services/exchange-auth.service
 @Module({
   imports: [AuthModule],
   controllers: [MailboxController],
-  providers: [MailboxService, ScriptRunnerService, GalService, ExchangeAuthService],
+  providers: [
+    MailboxService,
+    ScriptRunnerService,
+    GalService,
+    ExchangeAuthService,
+  ],
 })
 export class MailboxModule {}

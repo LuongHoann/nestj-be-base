@@ -11,9 +11,13 @@ export class PermissionService {
   ) {}
 
   private async loadUserWithPermissions(userId: string) {
-    return this.em.findOne(User, { id: userId }, {
-      populate: ['roles', 'roles.permissions'],
-    });
+    return this.em.findOne(
+      User,
+      { id: userId },
+      {
+        populate: ['roles', 'roles.permissions'],
+      },
+    );
   }
 
   async hasRole(roleName: string): Promise<boolean> {
@@ -39,11 +43,13 @@ export class PermissionService {
     }
 
     const hasPermission = roles.some((role) =>
-      role.permissions.getItems().some(
-        (permission) =>
-          permission.collection === collection &&
-          permission.action === action,
-      ),
+      role.permissions
+        .getItems()
+        .some(
+          (permission) =>
+            permission.collection === collection &&
+            permission.action === action,
+        ),
     );
 
     return hasPermission ? {} : false;

@@ -1,5 +1,22 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiBody, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiOperation,
+  ApiParam,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
 import { ContactNoteService } from '../services/contact-note.service';
 import { CreateContactDto, UpdateContactDto } from '../dto/contact-note.dto';
@@ -67,6 +84,10 @@ export class ContactsController {
     @Query('page') page: number = 1,
     @Query('pageSize') pageSize: number = 20,
   ) {
-    return this.contactNoteService.searchContacts(q, Number(page), Number(pageSize));
+    return this.contactNoteService.searchContacts(
+      q,
+      Number(page),
+      Number(pageSize),
+    );
   }
 }

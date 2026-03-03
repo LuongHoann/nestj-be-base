@@ -18,8 +18,10 @@ export class DragonflyService implements OnModuleDestroy {
   }
 
   private initClient() {
-    this.logger.log(`Initializing DragonflyDB connection to ${this.config.host}:${this.config.port}`);
-    
+    this.logger.log(
+      `Initializing DragonflyDB connection to ${this.config.host}:${this.config.port}`,
+    );
+
     this.client = new Redis({
       host: this.config.host,
       port: this.config.port,
@@ -30,12 +32,14 @@ export class DragonflyService implements OnModuleDestroy {
         return delay;
       },
       // Don't crash on connection error
-      enableOfflineQueue: false, 
+      enableOfflineQueue: false,
       lazyConnect: true, // Don't connect immediately in constructor
     });
 
-    this.client.connect().catch(err => {
-        this.logger.error(`Failed to connect to DragonflyDB initialy: ${err.message}`);
+    this.client.connect().catch((err) => {
+      this.logger.error(
+        `Failed to connect to DragonflyDB initialy: ${err.message}`,
+      );
     });
 
     this.client.on('connect', () => {
@@ -47,12 +51,12 @@ export class DragonflyService implements OnModuleDestroy {
       this.logger.error(`❌ DragonflyDB Error: ${err.message}`);
       this.isConnected = false;
     });
-    
+
     this.client.on('close', () => {
-       if (this.isConnected) {
-           this.logger.warn('DragonflyDB connection closed');
-           this.isConnected = false;
-       }
+      if (this.isConnected) {
+        this.logger.warn('DragonflyDB connection closed');
+        this.isConnected = false;
+      }
     });
   }
 
@@ -91,7 +95,7 @@ export class DragonflyService implements OnModuleDestroy {
     try {
       const serialized = JSON.stringify(value);
       const effectiveTTL = ttl || this.config.ttl;
-      
+
       if (effectiveTTL > 0) {
         await this.client.set(key, serialized, 'EX', effectiveTTL);
       } else {
@@ -106,12 +110,12 @@ export class DragonflyService implements OnModuleDestroy {
    * Delete key from cache safely
    */
   async del(key: string): Promise<void> {
-     if (!this.enabled || !this.client) return;
-     try {
-         await this.client.del(key);
-     } catch (error) {
-         this.logger.warn(`Failed to del cache key ${key}: ${error.message}`);
-     }
+    if (!this.enabled || !this.client) return;
+    try {
+      await this.client.del(key);
+    } catch (error) {
+      this.logger.warn(`Failed to del cache key ${key}: ${error.message}`);
+    }
   }
   /**
    * Check if a key exists in cache
@@ -125,11 +129,13 @@ export class DragonflyService implements OnModuleDestroy {
       const result = await this.client.exists(key);
       return result === 1; // Redis EXISTS returns number of keys that exist (1 or 0 for single key)
     } catch (error) {
-      this.logger.warn(`Failed to check existence of key ${key}: ${error.message}`);
+      this.logger.warn(
+        `Failed to check existence of key ${key}: ${error.message}`,
+      );
       return false;
     }
   }
-   /**
+  /**
    * Set expiration time for a key (in seconds)
    * @param key - The cache key
    * @param ttl - Time to live in seconds
@@ -142,7 +148,9 @@ export class DragonflyService implements OnModuleDestroy {
       const result = await this.client.expire(key, ttl);
       return result === 1; // Redis EXPIRE returns 1 if successful, 0 if key doesn't exist
     } catch (error) {
-      this.logger.warn(`Failed to set expiration for key ${key}: ${error.message}`);
+      this.logger.warn(
+        `Failed to set expiration for key ${key}: ${error.message}`,
+      );
       return false;
     }
   }
@@ -150,12 +158,22 @@ export class DragonflyService implements OnModuleDestroy {
    * Set value ONLY if it does not exist (SET NX).
    * @returns true if set, false if already exists
    */
-  async setIfNotExist(key: string, value: any, ttlSeconds: number): Promise<boolean> {
+  async setIfNotExist(
+    key: string,
+    value: any,
+    ttlSeconds: number,
+  ): Promise<boolean> {
     if (!this.enabled || !this.client) return false;
 
     try {
       const serialized = JSON.stringify(value);
-      const result = await this.client.set(key, serialized, 'EX', ttlSeconds, 'NX');
+      const result = await this.client.set(
+        key,
+        serialized,
+        'EX',
+        ttlSeconds,
+        'NX',
+      );
       return result === 'OK';
     } catch (error) {
       this.logger.warn(`Failed to set NX cache key ${key}: ${error.message}`);

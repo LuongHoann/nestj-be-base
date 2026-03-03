@@ -11,7 +11,11 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
       let message = (info?.message || info).toLowerCase();
       if (message === 'jwt expired') {
         message = 'Token hết hạn vui lòng đăng nhập lại !';
-      } else if (message === 'invalid signature' || message === 'jwt malformed' || message === 'no auth token') {
+      } else if (
+        message === 'invalid signature' ||
+        message === 'jwt malformed' ||
+        message === 'no auth token'
+      ) {
         message = 'Token không hợp lệ !';
       }
       throw err || new UnauthorizedException(message);

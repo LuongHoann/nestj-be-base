@@ -7,10 +7,7 @@ import { AuditLogInterceptor } from './audit-log.interceptor';
 import { CommonModule } from '../common/common.module';
 
 @Module({
-  imports: [
-    MikroOrmModule.forFeature([AuditLog]),
-    CommonModule,
-  ],
+  imports: [MikroOrmModule.forFeature([AuditLog]), CommonModule],
   providers: [
     AuditLogService,
     {

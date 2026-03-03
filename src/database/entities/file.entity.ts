@@ -1,10 +1,4 @@
-import {
-  Entity,
-  PrimaryKey,
-  Property,
-  Enum,
-  Index,
-} from '@mikro-orm/core';
+import { Entity, PrimaryKey, Property, Enum, Index } from '@mikro-orm/core';
 
 /**
  * File status enum for tracking lifecycle
@@ -22,7 +16,7 @@ export enum FileStatus {
  * File entity for managing uploaded files
  * Uses ULID as primary key for globally unique, sortable IDs
  */
-@Entity({ tableName: 'files'})
+@Entity({ tableName: 'files' })
 export class File {
   /**
    * Primary key using PostgreSQL UUID

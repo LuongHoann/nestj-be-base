@@ -12,7 +12,11 @@ import {
 import { ApiBody, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { GalService } from './gal.service';
 import { MailboxService } from './mailbox.service';
-import { CreateMailboxDto, ImportMailboxDto, UpdateMailboxDto } from './mailbox.dto';
+import {
+  CreateMailboxDto,
+  ImportMailboxDto,
+  UpdateMailboxDto,
+} from './mailbox.dto';
 import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
 
 @ApiTags('Mailbox')

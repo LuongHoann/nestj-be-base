@@ -9,7 +9,10 @@ import {
 import { Role } from './role.entity';
 
 @Entity({ tableName: 'permissions' })
-@Index({ name: 'permissions_collection_action_index', properties: ['collection', 'action'] })
+@Index({
+  name: 'permissions_collection_action_index',
+  properties: ['collection', 'action'],
+})
 export class Permission {
   @PrimaryKey()
   id!: number;

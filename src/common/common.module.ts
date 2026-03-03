@@ -10,7 +10,7 @@ import { PermissionService } from './permissions/permission.service';
 @Module({
   imports: [CacheModule],
   providers: [
-    RequestContext, 
+    RequestContext,
     {
       provide: APP_INTERCEPTOR,
       useClass: RequestContextInterceptor,

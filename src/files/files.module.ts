@@ -11,7 +11,12 @@ import { LocalStorageAdapter } from '../storage/local-storage.adapter';
 @Module({
   imports: [MikroOrmModule.forFeature([File]), ScheduleModule.forRoot()],
   controllers: [FilesController, AssetsController],
-  providers: [FilesService, FilesScheduler, StorageService, LocalStorageAdapter],
+  providers: [
+    FilesService,
+    FilesScheduler,
+    StorageService,
+    LocalStorageAdapter,
+  ],
   exports: [FilesService],
 })
 export class FilesModule {}

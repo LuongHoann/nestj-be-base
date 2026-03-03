@@ -20,7 +20,6 @@ export class RequestContext {
     this._user = user;
   }
 
-  
   get tenantId(): string | null {
     return this._tenantId;
   }

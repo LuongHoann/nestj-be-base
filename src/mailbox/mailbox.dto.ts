@@ -1,5 +1,11 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsBoolean, IsEmail, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import {
+  IsBoolean,
+  IsEmail,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 
 export class CreateMailboxDto {
   @ApiProperty({ example: 'user@domain.local' })
@@ -35,7 +41,9 @@ export class UpdateMailboxDto {
 }
 
 export class ImportMailboxDto {
-  @ApiProperty({ example: 'email,name,password\nuser@domain.local,User Name,Temp@123' })
+  @ApiProperty({
+    example: 'email,name,password\nuser@domain.local,User Name,Temp@123',
+  })
   @IsString()
   @IsNotEmpty()
   csv!: string;
