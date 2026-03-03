@@ -785,7 +785,7 @@ export class EwsMailProvider implements IMailProvider {
 
     const items: Partial<MailMessage>[] = result.Items.map((item: any) => ({
       id: this.encodeId(resolvedId, item.Id?.UniqueId ?? ''),
-      subject: item.Subject ?? '(No Subject)',
+      subject: item.Subject ?? '(không có chủ đề)',
       from: this.getFrom(item),
       receivedAt: this.toJsDate(item.DateTimeReceived),
       isRead: item.IsRead ?? false,
@@ -836,6 +836,8 @@ export class EwsMailProvider implements IMailProvider {
     const bodyText = message.Body?.Text ?? '';
     const attachments = this.extractAttachmentMetas(message);
 
+    this.logger.log(`[getMessage] bodyText length: ${bodyText.length}, sample: ${bodyText.substring(0, 50).trim()}`);
+
     // Đọc ConversationId nếu có — dùng để fetch toàn bộ luồng thư hội thoại
     const rawConvId = (message as any).ConversationId?.UniqueId as
       | string
@@ -843,7 +845,7 @@ export class EwsMailProvider implements IMailProvider {
 
     return {
       id,
-      subject: message.Subject ?? '(No Subject)',
+      subject: message.Subject ?? '(không có chủ đề)',
       from: {
         name: message.From?.Name ?? '',
         email: message.From?.Address ?? '',
@@ -1053,7 +1055,7 @@ export class EwsMailProvider implements IMailProvider {
           const bodyText = full.Body?.Text ?? '';
           return {
             id: compositeId,
-            subject: full.Subject ?? '(No Subject)',
+            subject: full.Subject ?? '(không có chủ đề)',
             from: {
               name: full.From?.Name ?? '',
               email: full.From?.Address ?? '',
@@ -1096,11 +1098,21 @@ export class EwsMailProvider implements IMailProvider {
   ): Promise<{ success: boolean; messageId?: string }> {
     if (!this.service) throw new Error('EWS service not connected');
 
+    this.logger.debug(`[SaveDraft] Payload: ${JSON.stringify({
+      subject: options.subject,
+      htmlLen: options.html?.length,
+      textLen: options.text?.length,
+      htmlSample: options.html?.substring(0, 50),
+    })}`);
+
     const message = new EmailMessage(this.service);
     message.Subject = options.subject ?? '';
+    const bodyString = options.html ?? options.text ?? '';
+    const encodedBody = this.xmlEncodeForSoap(bodyString);
+    
     message.Body = new MessageBody(
       options.html ? BodyType.HTML : BodyType.Text,
-      options.html ?? options.text ?? '',
+      encodedBody,
     );
 
     if (this.email) {
@@ -1176,9 +1188,12 @@ export class EwsMailProvider implements IMailProvider {
     try {
       const message = new EmailMessage(this.service);
       message.Subject = options.subject ?? '';
+      const bodyString = options.html ?? options.text ?? '';
+      const encodedBody = this.xmlEncodeForSoap(bodyString);
+
       message.Body = new MessageBody(
         options.html ? BodyType.HTML : BodyType.Text,
-        options.html ?? options.text ?? '',
+        encodedBody,
       );
 
       if (this.email) {
@@ -1524,7 +1539,7 @@ export class EwsMailProvider implements IMailProvider {
           folder.toLowerCase() === 'all' ? 'INBOX' : folder.toUpperCase(),
           item.Id?.UniqueId ?? '',
         ),
-        subject: item.Subject ?? '(No Subject)',
+        subject: item.Subject ?? '(không có chủ đề)',
         from: this.getFrom(item),
         receivedAt: this.toJsDate(item.DateTimeReceived),
         isRead: item.IsRead ?? false,

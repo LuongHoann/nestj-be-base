@@ -46,37 +46,38 @@ export class SendMailDto {
       message: 'Thong tin nguoi nhan khong hop le!',
     },
   )
-  to!: string[];
+  @IsOptional()
+  to?: string[];
 
   @ApiProperty({ example: ['cc@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thong tin CC khong hop le!' })
+  @IsEmail({}, { each: true, message: 'Thông tin CC không hợp lệ!' })
   cc?: string[];
 
   @ApiProperty({ example: ['bcc@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thong tin BCC khong hop le!' })
+  @IsEmail({}, { each: true, message: 'Thông tin BCC không hợp lệ!' })
   bcc?: string[];
 
   @ApiProperty({ example: ['reply@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thong tin Reply-To khong hop le!' })
+  @IsEmail({}, { each: true, message: 'Thông tin Reply-To không hợp lệ!' })
   replyTo?: string[];
 
-  @ApiProperty({ example: 'Tieu de email' })
+  @ApiProperty({ example: 'Tiêu đề email' })
   @IsString()
-  @IsNotEmpty({ message: 'Tieu de email khong duoc de trong!' })
-  subject!: string;
+  @IsOptional()
+  subject?: string;
 
-  @ApiProperty({ example: 'Noi dung text', required: false })
+  @ApiProperty({ example: 'Nội dung text', required: false })
   @IsString()
   @IsOptional()
   text?: string; // Plain text version
 
-  @ApiProperty({ example: '<p>Noi dung HTML</p>', required: false })
+  @ApiProperty({ example: '<p>Nội dung HTML</p>', required: false })
   @IsString()
   @IsOptional()
   html?: string; // HTML version
@@ -95,7 +96,7 @@ export class SaveDraftDto {
     {},
     {
       each: true,
-      message: 'Thong tin nguoi nhan khong hop le!',
+      message: 'Thông tin người nhận không hợp lệ!',
     },
   )
   to?: string[];
@@ -103,32 +104,32 @@ export class SaveDraftDto {
   @ApiProperty({ example: ['cc@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thong tin CC khong hop le!' })
+  @IsEmail({}, { each: true, message: 'Thông tin CC không hợp lệ!' })
   cc?: string[];
 
   @ApiProperty({ example: ['bcc@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thong tin BCC khong hop le!' })
+  @IsEmail({}, { each: true, message: 'Thông tin BCC không hợp lệ!' })
   bcc?: string[];
 
   @ApiProperty({ example: ['reply@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thong tin Reply-To khong hop le!' })
+  @IsEmail({}, { each: true, message: 'Thông tin Reply-To không hợp lệ!' })
   replyTo?: string[];
 
-  @ApiProperty({ example: 'Tieu de email', required: false })
+  @ApiProperty({ example: 'Tiêu đề email', required: false })
   @IsString()
   @IsOptional()
   subject?: string;
 
-  @ApiProperty({ example: 'Noi dung text', required: false })
+  @ApiProperty({ example: 'Nội dung text', required: false })
   @IsString()
   @IsOptional()
   text?: string;
 
-  @ApiProperty({ example: '<p>Noi dung HTML</p>', required: false })
+  @ApiProperty({ example: '<p>Nội dung HTML</p>', required: false })
   @IsString()
   @IsOptional()
   html?: string;

@@ -151,92 +151,6 @@ web_mail_server.tar
 
 # Files
 
-## File: src/exchange/dto/calendar.dto.ts
-````typescript
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsBoolean, IsNumber } from 'class-validator';
-
-export class CreateEventDto {
-  @ApiProperty()
-  @IsString()
-  subject: string;
-
-  @ApiProperty({ description: 'Nội dung sự kiện' })
-  @IsString()
-  body: string;
-
-  @ApiProperty({ description: 'ISO 8601 Datetime string' })
-  @IsString()
-  start: string;
-
-  @ApiProperty({ description: 'ISO 8601 Datetime string' })
-  @IsString()
-  end: string;
-
-  @ApiPropertyOptional()
-  @IsString()
-  @IsOptional()
-  location?: string;
-
-  @ApiPropertyOptional()
-  @IsBoolean()
-  @IsOptional()
-  isAllDayEvent?: boolean;
-
-  @ApiPropertyOptional()
-  @IsBoolean()
-  @IsOptional()
-  isReminderSet?: boolean;
-
-  @ApiPropertyOptional()
-  @IsNumber()
-  @IsOptional()
-  reminderMinutesBeforeStart?: number;
-}
-
-export class UpdateEventDto {
-  @ApiPropertyOptional()
-  @IsString()
-  @IsOptional()
-  subject?: string;
-
-  @ApiPropertyOptional()
-  @IsString()
-  @IsOptional()
-  body?: string;
-
-  @ApiPropertyOptional()
-  @IsString()
-  @IsOptional()
-  start?: string;
-
-  @ApiPropertyOptional()
-  @IsString()
-  @IsOptional()
-  end?: string;
-
-  @ApiPropertyOptional()
-  @IsString()
-  @IsOptional()
-  location?: string;
-
-  @ApiPropertyOptional()
-  @IsBoolean()
-  @IsOptional()
-  isAllDayEvent?: boolean;
-
-  @ApiPropertyOptional()
-  @IsBoolean()
-  @IsOptional()
-  isReminderSet?: boolean;
-
-  @ApiPropertyOptional()
-  @IsNumber()
-  @IsOptional()
-  reminderMinutesBeforeStart?: number;
-}
-````
-
 ## File: .dockerignore
 ````
 docs
@@ -1631,30 +1545,6 @@ export class AppService {
 }
 ````
 
-## File: src/audit/audit.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { MikroOrmModule } from '@mikro-orm/nestjs';
-import { APP_INTERCEPTOR } from '@nestjs/core';
-import { AuditLog } from '../database/entities/audit-log.entity';
-import { AuditLogService } from './audit.service';
-import { AuditLogInterceptor } from './audit-log.interceptor';
-import { CommonModule } from '../common/common.module';
-
-@Module({
-  imports: [MikroOrmModule.forFeature([AuditLog]), CommonModule],
-  providers: [
-    AuditLogService,
-    {
-      provide: APP_INTERCEPTOR,
-      useClass: AuditLogInterceptor,
-    },
-  ],
-  exports: [AuditLogService],
-})
-export class AuditLogModule {}
-````
-
 ## File: src/auth/decorators/current-user.decorator.ts
 ````typescript
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
@@ -1726,43 +1616,6 @@ import { BadRequestException } from '@nestjs/common';
 export class InvalidQueryException extends BadRequestException {
   constructor(message: string) {
     super(message);
-  }
-}
-````
-
-## File: src/common/interceptors/request-context.interceptor.ts
-````typescript
-import {
-  Injectable,
-  NestInterceptor,
-  ExecutionContext,
-  CallHandler,
-  Scope,
-  Inject,
-} from '@nestjs/common';
-import { Observable } from 'rxjs';
-import { RequestContext } from '../context/request.context';
-
-@Injectable({ scope: Scope.REQUEST })
-export class RequestContextInterceptor implements NestInterceptor {
-  constructor(
-    @Inject(RequestContext) private readonly requestContext: RequestContext,
-  ) {
-    console.log(
-      '🏗️ RequestContextInterceptor created, requestContext:',
-      !!this.requestContext,
-    );
-  }
-
-  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
-    const request = context.switchToHttp().getRequest();
-
-    // ✅ Sau khi JwtStrategy validate, gắn user từ request.user vào RequestContext
-    if (request.user) {
-      this.requestContext.user = request.user;
-    }
-
-    return next.handle();
   }
 }
 ````
@@ -1847,326 +1700,6 @@ export default registerAs('storage', () => ({
 }));
 ````
 
-## File: src/database/entities/audit-log.entity.ts
-````typescript
-import {
-  Entity,
-  PrimaryKey,
-  Property,
-  ManyToOne,
-  Index,
-} from '@mikro-orm/core';
-import { User } from './user.entity';
-
-@Entity({ tableName: 'audit_logs' })
-@Index({ properties: ['collection', 'targetId'] })
-export class AuditLog {
-  @PrimaryKey({ type: 'bigint' })
-  id!: string;
-
-  @ManyToOne(() => User, { nullable: true, index: 'audit_log_user_id_index' })
-  user?: User;
-
-  @Property({ length: 100, index: 'audit_log_collection_index' })
-  collection!: string;
-
-  @Property({ length: 50 })
-  action!: string;
-
-  @Property({ length: 255, index: 'audit_log_target_id_index' })
-  targetId!: string;
-
-  @Property({ type: 'json', nullable: true })
-  details?: Record<string, any>;
-
-  @Property({ onCreate: () => new Date() })
-  timestamp = new Date();
-}
-````
-
-## File: src/database/entities/file.entity.ts
-````typescript
-import { Entity, PrimaryKey, Property, Enum, Index } from '@mikro-orm/core';
-
-/**
- * File status enum for tracking lifecycle
- * TEMP - Temporary upload, not yet committed
- * ACTIVE - Committed and available
- * DELETED - Soft-deleted (for cleanup)
- */
-export enum FileStatus {
-  TEMP = 'TEMP',
-  ACTIVE = 'ACTIVE',
-  DELETED = 'DELETED',
-}
-
-/**
- * File entity for managing uploaded files
- * Uses ULID as primary key for globally unique, sortable IDs
- */
-@Entity({ tableName: 'files' })
-export class File {
-  /**
-   * Primary key using PostgreSQL UUID
-   * Auto-generated by database using gen_random_uuid()
-   */
-  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
-  id!: string;
-
-  /**
-   * Original filename from user upload
-   */
-  @Property()
-  originalName!: string;
-
-  /**
-   * Stored filename on filesystem (typically same as ID)
-   */
-  @Property()
-  storedName!: string;
-
-  /**
-   * MIME type of the file (e.g., 'image/jpeg', 'application/pdf')
-   */
-  @Property()
-  mimeType!: string;
-
-  /**
-   * File size in bytes
-   * Using bigint to support large files (though enforced max is 100MB)
-   */
-  @Property({ type: 'bigint' })
-  size!: bigint;
-
-  /**
-   * Relative storage path from storage root
-   * e.g., 'temp/{id}' or 'uploads/{id}'
-   */
-  @Property()
-  storagePath!: string;
-
-  /**
-   * File lifecycle status
-   * Indexed for efficient cleanup queries
-   */
-  @Enum(() => FileStatus)
-  @Index()
-  status: FileStatus = FileStatus.TEMP;
-
-  /**
-   * Optional custom metadata as JSON
-   * Can store user-provided tags, descriptions, etc.
-   */
-  @Property({ type: 'jsonb', nullable: true })
-  customMetadata?: Record<string, any>;
-
-  /**
-   * Timestamp when file was created
-   */
-  @Property()
-  createdAt: Date = new Date();
-
-  /**
-   * Timestamp when file was last updated
-   */
-  @Property({ onUpdate: () => new Date() })
-  updatedAt: Date = new Date();
-}
-````
-
-## File: src/database/migrations/Migration20260204095049.ts
-````typescript
-import { Migration } from '@mikro-orm/migrations';
-
-export class Migration20260204095049 extends Migration {
-  override async up(): Promise<void> {
-    this.addSql(
-      `alter table "roles_permissions" drop constraint "roles_permissions_permission_id_foreign";`,
-    );
-
-    this.addSql(
-      `alter table "roles_permissions" drop constraint "roles_permissions_role_id_foreign";`,
-    );
-
-    this.addSql(
-      `create table "users" ("id" varchar(255) not null, "email" varchar(255) not null, "is_active" boolean not null default true, "mailbox_initialized" boolean not null default false, "created_at" timestamptz not null, "updated_at" timestamptz not null, constraint "users_pkey" primary key ("id"));`,
-    );
-    this.addSql(
-      `alter table "users" add constraint "users_email_unique" unique ("email");`,
-    );
-
-    this.addSql(
-      `create table "audit_logs" ("id" bigserial primary key, "user_id" varchar(255) null, "collection" varchar(100) not null, "action" varchar(50) not null, "target_id" varchar(255) not null, "details" jsonb null, "timestamp" timestamptz not null);`,
-    );
-    this.addSql(
-      `create index "audit_log_user_id_index" on "audit_logs" ("user_id");`,
-    );
-    this.addSql(
-      `create index "audit_log_collection_index" on "audit_logs" ("collection");`,
-    );
-    this.addSql(
-      `create index "audit_log_target_id_index" on "audit_logs" ("target_id");`,
-    );
-    this.addSql(
-      `create index "audit_logs_collection_target_id_index" on "audit_logs" ("collection", "target_id");`,
-    );
-
-    this.addSql(
-      `alter table "audit_logs" add constraint "audit_logs_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade on delete set null;`,
-    );
-
-    this.addSql(`drop table if exists "permissions" cascade;`);
-
-    this.addSql(`drop table if exists "roles" cascade;`);
-
-    this.addSql(`drop table if exists "roles_permissions" cascade;`);
-
-    this.addSql(`alter table "files" alter column "id" drop default;`);
-    this.addSql(
-      `alter table "files" alter column "id" type uuid using ("id"::text::uuid);`,
-    );
-    this.addSql(
-      `alter table "files" alter column "id" set default gen_random_uuid();`,
-    );
-  }
-
-  override async down(): Promise<void> {
-    this.addSql(
-      `alter table "audit_logs" drop constraint "audit_logs_user_id_foreign";`,
-    );
-
-    this.addSql(
-      `create table "permissions" ("id" serial primary key, "collection" varchar(255) not null, "action" varchar(255) not null, "description" varchar(255) null);`,
-    );
-    this.addSql(
-      `create index "permissions_collection_action_index" on "permissions" ("collection", "action");`,
-    );
-
-    this.addSql(
-      `create table "roles" ("id" serial primary key, "name" varchar(255) not null, "description" varchar(255) null);`,
-    );
-    this.addSql(
-      `alter table "roles" add constraint "roles_name_unique" unique ("name");`,
-    );
-
-    this.addSql(
-      `create table "roles_permissions" ("role_id" int4 not null, "permission_id" int4 not null, constraint "roles_permissions_pkey" primary key ("role_id", "permission_id"));`,
-    );
-
-    this.addSql(
-      `alter table "roles_permissions" add constraint "roles_permissions_permission_id_foreign" foreign key ("permission_id") references "permissions" ("id") on update cascade on delete cascade;`,
-    );
-    this.addSql(
-      `alter table "roles_permissions" add constraint "roles_permissions_role_id_foreign" foreign key ("role_id") references "roles" ("id") on update cascade on delete cascade;`,
-    );
-
-    this.addSql(`drop table if exists "users" cascade;`);
-
-    this.addSql(`drop table if exists "audit_logs" cascade;`);
-
-    this.addSql(`alter table "files" alter column "id" drop default;`);
-    this.addSql(`alter table "files" alter column "id" drop default;`);
-    this.addSql(
-      `alter table "files" alter column "id" type uuid using ("id"::text::uuid);`,
-    );
-  }
-}
-````
-
-## File: src/database/migrations/Migration20260223120000.ts
-````typescript
-import { Migration } from '@mikro-orm/migrations';
-
-export class Migration20260223120000 extends Migration {
-  override async up(): Promise<void> {
-    this.addSql(
-      `create table "roles" ("id" serial primary key, "name" varchar(255) not null, "description" varchar(255) null);`,
-    );
-    this.addSql(
-      `alter table "roles" add constraint "roles_name_unique" unique ("name");`,
-    );
-
-    this.addSql(
-      `create table "permissions" ("id" serial primary key, "collection" varchar(255) not null, "action" varchar(255) not null, "description" varchar(255) null);`,
-    );
-    this.addSql(
-      `create index "permissions_collection_action_index" on "permissions" ("collection", "action");`,
-    );
-
-    this.addSql(
-      `create table "roles_permissions" ("role_id" int4 not null, "permission_id" int4 not null, constraint "roles_permissions_pkey" primary key ("role_id", "permission_id"));`,
-    );
-    this.addSql(
-      `alter table "roles_permissions" add constraint "roles_permissions_role_id_foreign" foreign key ("role_id") references "roles" ("id") on update cascade on delete cascade;`,
-    );
-    this.addSql(
-      `alter table "roles_permissions" add constraint "roles_permissions_permission_id_foreign" foreign key ("permission_id") references "permissions" ("id") on update cascade on delete cascade;`,
-    );
-
-    this.addSql(
-      `create table "user_roles" ("user_id" varchar(255) not null, "role_id" int4 not null, constraint "user_roles_pkey" primary key ("user_id", "role_id"));`,
-    );
-    this.addSql(
-      `alter table "user_roles" add constraint "user_roles_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade on delete cascade;`,
-    );
-    this.addSql(
-      `alter table "user_roles" add constraint "user_roles_role_id_foreign" foreign key ("role_id") references "roles" ("id") on update cascade on delete cascade;`,
-    );
-
-    this.addSql(`alter table "users" add column "name" varchar(255) null;`);
-    this.addSql(`alter table "users" add column "password" varchar(255) null;`);
-  }
-
-  override async down(): Promise<void> {
-    this.addSql(
-      `alter table "user_roles" drop constraint "user_roles_role_id_foreign";`,
-    );
-    this.addSql(
-      `alter table "user_roles" drop constraint "user_roles_user_id_foreign";`,
-    );
-    this.addSql(
-      `alter table "roles_permissions" drop constraint "roles_permissions_permission_id_foreign";`,
-    );
-    this.addSql(
-      `alter table "roles_permissions" drop constraint "roles_permissions_role_id_foreign";`,
-    );
-
-    this.addSql(`drop table if exists "user_roles" cascade;`);
-    this.addSql(`drop table if exists "roles_permissions" cascade;`);
-    this.addSql(`drop table if exists "permissions" cascade;`);
-    this.addSql(`drop table if exists "roles" cascade;`);
-
-    this.addSql(`alter table "users" drop column "name";`);
-    this.addSql(`alter table "users" drop column "password";`);
-  }
-}
-````
-
-## File: src/dto/post/create-post.dto.ts
-````typescript
-import {
-  IsString,
-  IsNotEmpty,
-  IsOptional,
-  IsNumber,
-  IsDefined,
-} from 'class-validator';
-
-export class CreatePostDto {
-  @IsDefined({ message: 'Tiêu đề không được để trống' })
-  @IsNotEmpty({ message: 'Tiêu đề không được để trống' })
-  @IsString({ message: 'Tiêu đề phải là chuỗi' })
-  title: string;
-
-  @IsString({ message: 'Nội dung phải là chuỗi' })
-  @IsOptional()
-  content?: string;
-
-  @IsNotEmpty({ message: 'Tác giả không được để trống' })
-  author: number;
-}
-````
-
 ## File: src/dto/post/update-post.dto.ts
 ````typescript
 import { PartialType } from '@nestjs/mapped-types';
@@ -2175,421 +1708,89 @@ import { CreatePostDto } from './create-post.dto';
 export class UpdatePostDto extends PartialType(CreatePostDto) {}
 ````
 
-## File: src/exchange/constants/mail-folders.constant.ts
+## File: src/exchange/dto/calendar.dto.ts
 ````typescript
-export type MailFolderType =
-  | 'inbox'
-  | 'sent'
-  | 'starred'
-  | 'drafts'
-  | 'spam'
-  | 'trash';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsString, IsOptional, IsBoolean, IsNumber } from 'class-validator';
 
-export type MailFolderDefinition = {
-  id: string;
-  type: MailFolderType;
-  name: string;
-  aliases: string[];
-};
+export class CreateEventDto {
+  @ApiProperty()
+  @IsString()
+  subject: string;
 
-export const MAIL_FOLDERS: MailFolderDefinition[] = [
-  {
-    id: 'INBOX',
-    type: 'inbox',
-    name: 'Hộp thư đến',
-    aliases: ['INBOX'],
-  },
-  {
-    id: 'Sent Items',
-    type: 'sent',
-    name: 'Đã gửi',
-    aliases: ['Sent Items', 'Sent'],
-  },
-  {
-    id: 'Starred',
-    type: 'starred',
-    name: 'Có gắn dấu sao',
-    aliases: ['Starred'],
-  },
-  {
-    id: 'Drafts',
-    type: 'drafts',
-    name: 'Thư nháp',
-    aliases: ['Drafts'],
-  },
-  {
-    id: 'Spam',
-    type: 'spam',
-    name: 'Thư rác',
-    aliases: ['Spam', 'Junk Email'],
-  },
-  {
-    id: 'Trash',
-    type: 'trash',
-    name: 'Thùng rác',
-    aliases: ['Trash', 'Deleted Items'],
-  },
-];
+  @ApiProperty({ description: 'Nội dung sự kiện' })
+  @IsString()
+  body: string;
 
-export const DEFAULT_FOLDER_ID = 'INBOX';
+  @ApiProperty({ description: 'ISO 8601 Datetime string' })
+  @IsString()
+  start: string;
 
-function normalize(input: string): string {
-  return input.trim().toLowerCase();
+  @ApiProperty({ description: 'ISO 8601 Datetime string' })
+  @IsString()
+  end: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  location?: string;
+
+  @ApiPropertyOptional()
+  @IsBoolean()
+  @IsOptional()
+  isAllDayEvent?: boolean;
+
+  @ApiPropertyOptional()
+  @IsBoolean()
+  @IsOptional()
+  isReminderSet?: boolean;
+
+  @ApiPropertyOptional()
+  @IsNumber()
+  @IsOptional()
+  reminderMinutesBeforeStart?: number;
 }
 
-export function resolveFolderId(
-  input: string,
-  fallback = DEFAULT_FOLDER_ID,
-): string {
-  const normalized = normalize(input);
-
-  for (const folder of MAIL_FOLDERS) {
-    if (
-      normalize(folder.id) === normalized ||
-      normalize(folder.type) === normalized ||
-      folder.aliases.some((alias) => normalize(alias) === normalized)
-    ) {
-      return folder.id;
-    }
-  }
-
-  return fallback;
-}
-
-export function resolveFolderType(input: string): string {
-  const normalized = normalize(input);
-
-  for (const folder of MAIL_FOLDERS) {
-    if (
-      normalize(folder.id) === normalized ||
-      normalize(folder.type) === normalized ||
-      folder.aliases.some((alias) => normalize(alias) === normalized)
-    ) {
-      return folder.type;
-    }
-  }
-
-  return normalized.replace(/\s+/g, '_');
-}
-
-export function getFolderAliases(input: string): string[] {
-  const folderId = resolveFolderId(input, input);
-  const folder = MAIL_FOLDERS.find((item) => item.id === folderId);
-  if (!folder) return [input];
-  return Array.from(new Set([folder.id, ...folder.aliases]));
-}
-````
-
-## File: src/exchange/controllers/contacts.controller.ts
-````typescript
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Post,
-  Put,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiBody,
-  ApiOperation,
-  ApiParam,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
-import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
-import { ContactNoteService } from '../services/contact-note.service';
-import { CreateContactDto, UpdateContactDto } from '../dto/contact-note.dto';
-
-@ApiTags('Contacts')
-@Controller('webmail/contacts')
-@UseGuards(ExchangeAuthGuard)
-export class ContactsController {
-  constructor(private readonly contactNoteService: ContactNoteService) {}
-
-  @Post()
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Create contact' })
-  @ApiBody({ type: CreateContactDto })
-  async createContact(@Body() dto: CreateContactDto) {
-    return this.contactNoteService.createContact(dto);
-  }
-
-  @Put(':id')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Update contact' })
-  @ApiBody({ type: UpdateContactDto })
-  async updateContact(@Param('id') id: string, @Body() dto: UpdateContactDto) {
-    return this.contactNoteService.updateContact(id, dto);
-  }
-
-  @Delete(':id')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Delete contact' })
-  async deleteContact(@Param('id') id: string) {
-    return this.contactNoteService.deleteContact(id);
-  }
-
-  @Get('by-email')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Get contact by email' })
-  @ApiQuery({ name: 'email', required: true })
-  async getContactByEmail(@Query('email') email: string) {
-    return this.contactNoteService.getContactByEmail(email);
-  }
-
-  @Get('count')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Get contacts count' })
-  async getContactsCount() {
-    return this.contactNoteService.getContactsCount();
-  }
-
-  @Get(':id')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Get contact by id' })
-  @ApiParam({ name: 'id', required: true })
-  async getContactById(@Param('id') id: string) {
-    return this.contactNoteService.getContactById(id);
-  }
-
-  @Get()
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Search contacts' })
-  @ApiQuery({ name: 'q', required: false })
-  @ApiQuery({ name: 'page', required: false })
-  @ApiQuery({ name: 'pageSize', required: false })
-  async searchContacts(
-    @Query('q') q: string = '',
-    @Query('page') page: number = 1,
-    @Query('pageSize') pageSize: number = 20,
-  ) {
-    return this.contactNoteService.searchContacts(
-      q,
-      Number(page),
-      Number(pageSize),
-    );
-  }
-}
-````
-
-## File: src/exchange/controllers/notes.controller.ts
-````typescript
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Post,
-  Put,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiBody,
-  ApiOperation,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
-import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
-import { ContactNoteService } from '../services/contact-note.service';
-import { CreateNoteDto, UpdateNoteDto } from '../dto/contact-note.dto';
-
-@ApiTags('Notes')
-@Controller('webmail/notes')
-@UseGuards(ExchangeAuthGuard)
-export class NotesController {
-  constructor(private readonly contactNoteService: ContactNoteService) {}
-
-  @Get()
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'List notes' })
-  @ApiQuery({ name: 'page', required: false })
-  @ApiQuery({ name: 'pageSize', required: false })
-  async listNotes(
-    @Query('page') page: number = 1,
-    @Query('pageSize') pageSize: number = 20,
-  ) {
-    return this.contactNoteService.listNotes(Number(page), Number(pageSize));
-  }
-
-  @Post()
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Create note' })
-  @ApiBody({ type: CreateNoteDto })
-  async createNote(@Body() dto: CreateNoteDto) {
-    return this.contactNoteService.createNote(dto);
-  }
-
-  @Put(':id')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Update note' })
-  @ApiBody({ type: UpdateNoteDto })
-  async updateNote(@Param('id') id: string, @Body() dto: UpdateNoteDto) {
-    return this.contactNoteService.updateNote(id, dto);
-  }
-
-  @Delete(':id')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Delete note' })
-  async deleteNote(@Param('id') id: string) {
-    return this.contactNoteService.deleteNote(id);
-  }
-}
-````
-
-## File: src/exchange/dto/contact-note.dto.ts
-````typescript
-import { ApiProperty } from '@nestjs/swagger';
-import {
-  IsEmail,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  ValidateNested,
-} from 'class-validator';
-import { Type } from 'class-transformer';
-
-export class ContactAddressDto {
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  street?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  city?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  state?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  postalCode?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  country?: string;
-}
-
-export class CreateContactDto {
-  @ApiProperty({ example: 'user@example.com' })
-  @IsEmail()
-  email!: string;
-
-  @ApiProperty({ example: 'User Name' })
-  @IsString()
-  @IsNotEmpty()
-  displayName!: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  givenName?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  surname?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  company?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  jobTitle?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  phone?: string;
-
-  @ApiProperty({ required: false, type: ContactAddressDto })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => ContactAddressDto)
-  address?: ContactAddressDto;
-}
-
-export class UpdateContactDto {
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  displayName?: string;
-
-  @ApiProperty({ required: false })
-  @IsEmail()
-  @IsOptional()
-  email?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  givenName?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  surname?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  company?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  jobTitle?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  phone?: string;
-
-  @ApiProperty({ required: false, type: ContactAddressDto })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => ContactAddressDto)
-  address?: ContactAddressDto;
-}
-
-export class CreateNoteDto {
-  @ApiProperty({ required: false })
+export class UpdateEventDto {
+  @ApiPropertyOptional()
   @IsString()
   @IsOptional()
   subject?: string;
 
-  @ApiProperty({ example: 'My note content' })
-  @IsString()
-  @IsNotEmpty()
-  content!: string;
-}
-
-export class UpdateNoteDto {
-  @ApiProperty({ required: false })
+  @ApiPropertyOptional()
   @IsString()
   @IsOptional()
-  subject?: string;
+  body?: string;
 
-  @ApiProperty({ required: false })
+  @ApiPropertyOptional()
   @IsString()
   @IsOptional()
-  content?: string;
+  start?: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  end?: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  location?: string;
+
+  @ApiPropertyOptional()
+  @IsBoolean()
+  @IsOptional()
+  isAllDayEvent?: boolean;
+
+  @ApiPropertyOptional()
+  @IsBoolean()
+  @IsOptional()
+  isReminderSet?: boolean;
+
+  @ApiPropertyOptional()
+  @IsNumber()
+  @IsOptional()
+  reminderMinutesBeforeStart?: number;
 }
 ````
 
@@ -2629,210 +1830,6 @@ export interface ExchangeSearchResult<T> {
 }
 ````
 
-## File: src/exchange/services/contact-note.service.ts
-````typescript
-import {
-  Injectable,
-  Logger,
-  Scope,
-  BadRequestException,
-  Inject,
-} from '@nestjs/common';
-import { REQUEST } from '@nestjs/core';
-import { EwsMailProvider } from './ews-mail.provider';
-import { DragonflyService } from '../../common/cache/dragonfly.service';
-import { ExchangeAuthService } from './exchange-auth.service';
-import {
-  ExchangeContact,
-  ExchangeNote,
-  ExchangeSearchResult,
-} from '../interfaces/contact-note.interface';
-
-@Injectable({ scope: Scope.REQUEST })
-export class ContactNoteService {
-  private readonly logger = new Logger(ContactNoteService.name);
-  private readonly CONTACT_COUNT_TTL = 300;
-
-  constructor(
-    private readonly provider: EwsMailProvider,
-    private readonly dragonfly: DragonflyService,
-    private readonly authService: ExchangeAuthService,
-    @Inject(REQUEST) private readonly request: any,
-  ) {}
-
-  private async withProvider<T>(operation: () => Promise<T>): Promise<T> {
-    try {
-      await this.provider.connect();
-      return await operation();
-    } catch (error) {
-      this.logger.error(
-        `Exchange operation failed: ${error.message}`,
-        error.stack,
-      );
-      throw error;
-    } finally {
-      await this.provider.disconnect();
-    }
-  }
-
-  private async getEmailFromSession(): Promise<string | null> {
-    const token = this.request.cookies?.['exchange_session'];
-    if (!token) return null;
-    const creds = await this.authService.getCredentials(token);
-    return creds?.email || null;
-  }
-
-  private getContactsCountCacheKey(email: string): string {
-    return `exchange:contacts:count:${email}`;
-  }
-
-  private async refreshContactsCountCache(email: string): Promise<void> {
-    if (!this.dragonfly.enabled) return;
-    const total = await this.withProvider(() =>
-      this.provider.getContactsCount(),
-    );
-    await this.dragonfly.set(
-      this.getContactsCountCacheKey(email),
-      total,
-      this.CONTACT_COUNT_TTL,
-    );
-  }
-
-  async createContact(payload: {
-    displayName: string;
-    email: string;
-    givenName?: string;
-    surname?: string;
-    company?: string;
-    jobTitle?: string;
-    phone?: string;
-    address?: {
-      street?: string;
-      city?: string;
-      state?: string;
-      postalCode?: string;
-      country?: string;
-    };
-  }): Promise<ExchangeContact> {
-    if (!payload.email) {
-      throw new BadRequestException('Email is required');
-    }
-    const result = await this.withProvider(() =>
-      this.provider.createContact(payload),
-    );
-
-    const email = await this.getEmailFromSession();
-    if (email && this.dragonfly.enabled) {
-      await this.refreshContactsCountCache(email);
-    }
-
-    return result;
-  }
-
-  async updateContact(
-    id: string,
-    payload: {
-      displayName?: string;
-      email?: string;
-      givenName?: string;
-      surname?: string;
-      company?: string;
-      jobTitle?: string;
-      phone?: string;
-      address?: {
-        street?: string;
-        city?: string;
-        state?: string;
-        postalCode?: string;
-        country?: string;
-      };
-    },
-  ): Promise<ExchangeContact> {
-    return this.withProvider(() => this.provider.updateContact(id, payload));
-  }
-
-  async deleteContact(id: string): Promise<{ success: boolean }> {
-    await this.withProvider(() => this.provider.deleteContact(id));
-
-    const email = await this.getEmailFromSession();
-    if (email && this.dragonfly.enabled) {
-      await this.refreshContactsCountCache(email);
-    }
-
-    return { success: true };
-  }
-
-  async getContactByEmail(email: string): Promise<ExchangeContact | null> {
-    return this.withProvider(() => this.provider.getContactByEmail(email));
-  }
-
-  async getContactById(id: string): Promise<ExchangeContact | null> {
-    return this.withProvider(() => this.provider.getContactById(id));
-  }
-
-  async searchContacts(
-    keyword: string,
-    page: number,
-    pageSize: number,
-  ): Promise<ExchangeSearchResult<ExchangeContact>> {
-    return this.withProvider(() =>
-      this.provider.searchContacts(keyword, page, pageSize),
-    );
-  }
-
-  async getContactsCount(): Promise<{ total: number }> {
-    const email = await this.getEmailFromSession();
-    if (email && this.dragonfly.enabled) {
-      const key = this.getContactsCountCacheKey(email);
-      const cached = await this.dragonfly.get<number>(key);
-      if (cached !== null) {
-        return { total: cached };
-      }
-
-      const total = await this.withProvider(() =>
-        this.provider.getContactsCount(),
-      );
-      await this.dragonfly.set(key, total, this.CONTACT_COUNT_TTL);
-      return { total };
-    }
-
-    const total = await this.withProvider(() =>
-      this.provider.getContactsCount(),
-    );
-    return { total };
-  }
-
-  async listNotes(
-    page: number,
-    pageSize: number,
-  ): Promise<ExchangeSearchResult<ExchangeNote>> {
-    return this.withProvider(() => this.provider.listNotes(page, pageSize));
-  }
-
-  async createNote(payload: {
-    subject?: string;
-    content: string;
-  }): Promise<ExchangeNote> {
-    if (!payload.content) {
-      throw new BadRequestException('Content is required');
-    }
-    return this.withProvider(() => this.provider.createNote(payload));
-  }
-
-  async updateNote(
-    id: string,
-    payload: { subject?: string; content?: string },
-  ): Promise<ExchangeNote> {
-    return this.withProvider(() => this.provider.updateNote(id, payload));
-  }
-
-  async deleteNote(id: string): Promise<{ success: boolean }> {
-    await this.withProvider(() => this.provider.deleteNote(id));
-    return { success: true };
-  }
-}
-````
-
 ## File: src/exchange/utils/json.helper.ts
 ````typescript
 /**
@@ -2845,32 +1842,6 @@ export function safeStringify(obj: any): string {
     typeof value === 'bigint' ? value.toString() : value,
   );
 }
-````
-
-## File: src/files/files.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { MikroOrmModule } from '@mikro-orm/nestjs';
-import { ScheduleModule } from '@nestjs/schedule';
-import { File } from '../database/entities/file.entity';
-import { FilesController, AssetsController } from './files.controller';
-import { FilesService } from './files.service';
-import { FilesScheduler } from './files.scheduler';
-import { StorageService } from '../storage/storage.service';
-import { LocalStorageAdapter } from '../storage/local-storage.adapter';
-
-@Module({
-  imports: [MikroOrmModule.forFeature([File]), ScheduleModule.forRoot()],
-  controllers: [FilesController, AssetsController],
-  providers: [
-    FilesService,
-    FilesScheduler,
-    StorageService,
-    LocalStorageAdapter,
-  ],
-  exports: [FilesService],
-})
-export class FilesModule {}
 ````
 
 ## File: src/files/files.scheduler.ts
@@ -2914,402 +1885,6 @@ export class FilesScheduler {
 }
 ````
 
-## File: src/files/files.service.ts
-````typescript
-import {
-  Injectable,
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
-import { InjectRepository } from '@mikro-orm/nestjs';
-import { EntityRepository } from '@mikro-orm/postgresql';
-import { File, FileStatus } from '../database/entities/file.entity';
-import { StorageService } from '../storage/storage.service';
-import { ConfigService } from '@nestjs/config';
-import { TempUploadResponseDto } from './dto/temp-upload-response.dto';
-import { ReadStream } from 'fs';
-
-@Injectable()
-export class FilesService {
-  private readonly maxFileSize: number;
-  private readonly allowedMimeTypes: string[];
-
-  constructor(
-    @InjectRepository(File)
-    private readonly fileRepository: EntityRepository<File>,
-    private readonly storageService: StorageService,
-    private readonly configService: ConfigService,
-  ) {
-    // Default 100MB = 104857600 bytes
-    this.maxFileSize =
-      this.configService.get<number>('FILE_MAX_SIZE') || 104857600;
-
-    const allowedTypes = this.configService.get<string>('FILE_ALLOWED_TYPES');
-    this.allowedMimeTypes = allowedTypes
-      ? allowedTypes.split(',')
-      : [
-          'image/jpeg',
-          'image/png',
-          'image/gif',
-          'application/pdf',
-          'text/plain',
-        ];
-  }
-
-  /**
-   * Upload file to temporary storage
-   * Creates temp database record for tracking
-   */
-  async uploadTemp(file: Express.Multer.File): Promise<TempUploadResponseDto> {
-    // Validate file size
-    if (file.size > this.maxFileSize) {
-      throw new BadRequestException(
-        `File size exceeds maximum allowed size of ${this.maxFileSize} bytes`,
-      );
-    }
-
-    // Validate MIME type
-    if (!this.allowedMimeTypes.includes(file.mimetype)) {
-      throw new BadRequestException(
-        `File type ${file.mimetype} is not allowed. Allowed types: ${this.allowedMimeTypes.join(', ')}`,
-      );
-    }
-
-    // Create temp database record (id will be auto-generated by database)
-    const tempFile = this.fileRepository.create({
-      originalName: file.originalname,
-      storedName: '', // Will be updated after we get the id
-      mimeType: file.mimetype,
-      size: BigInt(file.size),
-      storagePath: '', // Will be updated after we get the id
-      status: FileStatus.TEMP,
-      customMetadata: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-
-    await this.fileRepository.getEntityManager().persistAndFlush(tempFile);
-
-    // Now we have the auto-generated id, save file to storage
-    const storageResult = await this.storageService.saveTemp(file, tempFile.id);
-
-    // Update the record with storage info
-    tempFile.storedName = storageResult.storedName;
-    tempFile.storagePath = storageResult.storagePath;
-    await this.fileRepository.getEntityManager().flush();
-
-    return new TempUploadResponseDto({
-      id: tempFile.id,
-      originalName: file.originalname,
-      mimeType: file.mimetype,
-      size: file.size,
-      previewUrl: `/files/temp/${tempFile.id}/preview`,
-    });
-  }
-
-  /**
-   * Commit file from temp to permanent storage
-   * Updates database record status
-   */
-  async commitFile(
-    id: string,
-    extraMetadata?: Record<string, any>,
-    originalName?: string,
-  ): Promise<File> {
-    // Find existing temp file
-    const tempFile = await this.fileRepository.findOne({
-      id,
-      status: FileStatus.TEMP,
-    });
-
-    if (!tempFile) {
-      throw new NotFoundException(
-        'Temporary file not found or already committed',
-      );
-    }
-
-    const tempPath = `temp/${id}`;
-    const permanentPath = `uploads/${id}`;
-
-    // Verify temp file exists in storage
-    const exists = await this.storageService.exists(tempPath);
-    if (!exists) {
-      throw new NotFoundException('Temporary file not found in storage');
-    }
-
-    // Move to permanent storage
-    await this.storageService.moveToPermanent(tempPath, permanentPath);
-
-    // Update record to active status
-    tempFile.storagePath = permanentPath;
-    tempFile.status = FileStatus.ACTIVE;
-    if (originalName) {
-      tempFile.originalName = originalName;
-    }
-    tempFile.customMetadata = extraMetadata || tempFile.customMetadata;
-    tempFile.updatedAt = new Date();
-
-    await this.fileRepository.getEntityManager().persistAndFlush(tempFile);
-
-    return tempFile;
-  }
-
-  /**
-   * Get file metadata from database
-   */
-  async getMetadata(id: string): Promise<File> {
-    const file = await this.fileRepository.findOne({ id });
-    if (!file) {
-      throw new NotFoundException('File not found');
-    }
-    return file;
-  }
-
-  /**
-   * Get file stream for downloading/previewing
-   */
-  async getFileStream(id: string): Promise<{ file: File; stream: ReadStream }> {
-    const file = await this.getMetadata(id);
-
-    const stream = await this.storageService.getStream(file.storagePath);
-
-    return { file, stream };
-  }
-
-  /**
-   * Get temp file stream for preview
-   */
-  async getTempFileStream(id: string): Promise<ReadStream> {
-    const tempPath = `temp/${id}`;
-
-    const exists = await this.storageService.exists(tempPath);
-    if (!exists) {
-      throw new NotFoundException('Temporary file not found');
-    }
-
-    return this.storageService.getStream(tempPath);
-  }
-
-  /**
-   * Cleanup old temporary files
-   * Called by scheduled task
-   */
-  async cleanupTempFiles(olderThan: Date): Promise<number> {
-    // Find temp files older than threshold
-    const oldTempFiles = await this.fileRepository.find({
-      status: FileStatus.TEMP,
-      createdAt: { $lt: olderThan },
-    });
-
-    let deletedCount = 0;
-
-    for (const file of oldTempFiles) {
-      try {
-        // Delete from storage
-        await this.storageService.delete(file.storagePath);
-
-        // Delete from database
-        await this.fileRepository.getEntityManager().removeAndFlush(file);
-
-        deletedCount++;
-      } catch (error) {
-        console.error(`Failed to delete temp file ${file.id}:`, error);
-      }
-    }
-
-    return deletedCount;
-  }
-}
-````
-
-## File: src/mailbox/gal.service.ts
-````typescript
-import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import {
-  ExchangeService,
-  ExchangeVersion,
-  OAuthCredentials,
-  WebCredentials,
-  Uri,
-  ResolveNameSearchLocation,
-} from 'ews-javascript-api';
-import { XhrApi } from '@ewsjs/xhr';
-
-(ExchangeService as any).XHRApi = new XhrApi();
-
-@Injectable()
-export class GalService {
-  constructor(private readonly configService: ConfigService) {}
-
-  async search(query: string): Promise<{ name: string; email: string }[]> {
-    if (!query?.trim()) return [];
-    const service = await this.createService();
-
-    const response = await service.ResolveName(
-      query,
-      ResolveNameSearchLocation.DirectoryOnly,
-      true,
-    );
-
-    const resolutions = response?.GetEnumerator?.() ?? [];
-    return resolutions
-      .map((r: any) => ({
-        name: r?.Mailbox?.Name ?? '',
-        email: r?.Mailbox?.Address ?? '',
-      }))
-      .filter((r: any) => r.email);
-  }
-
-  private async createService(): Promise<ExchangeService> {
-    const rejectUnauthorized =
-      this.configService.get<string>('EWS_TLS_REJECT_UNAUTHORIZED') !== 'false';
-    if (!rejectUnauthorized) {
-      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-    }
-
-    const url = this.configService.get<string>('EWS_URL');
-    if (!url) {
-      throw new Error('EWS_URL is not configured');
-    }
-
-    const version =
-      this.configService.get<string>('EWS_VERSION') || 'Exchange2016';
-
-    const service = new ExchangeService(
-      ExchangeVersion[version as keyof typeof ExchangeVersion] ||
-        ExchangeVersion.Exchange2016,
-    );
-    service.Url = new Uri(url);
-
-    const ssoEnabled =
-      this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
-    if (ssoEnabled) {
-      const tokenUrl = this.configService.get<string>('EWS_TOKEN_URL');
-      const clientId = this.configService.get<string>('EWS_CLIENT_ID');
-      const clientSecret = this.configService.get<string>('EWS_CLIENT_SECRET');
-      const scope = this.configService.get<string>('EWS_SCOPE');
-      const resource = this.configService.get<string>('EWS_RESOURCE');
-
-      if (!tokenUrl || !clientId || !clientSecret) {
-        throw new Error('EWS OAuth2 config is missing');
-      }
-
-      const body = new URLSearchParams();
-      body.set('client_id', clientId);
-      body.set('client_secret', clientSecret);
-      body.set('grant_type', 'client_credentials');
-      if (scope) {
-        body.set('scope', scope);
-      } else if (resource) {
-        body.set('resource', resource);
-      }
-
-      const response = await fetch(tokenUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString(),
-      });
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new UnauthorizedException(`Failed to fetch EWS token: ${text}`);
-      }
-
-      const payload = (await response.json()) as { access_token: string };
-      service.Credentials = new OAuthCredentials(payload.access_token);
-      return service;
-    }
-
-    const adminEmail = this.configService.get<string>('EWS_ADMIN_EMAIL');
-    const adminPassword = this.configService.get<string>('EWS_ADMIN_PASSWORD');
-    if (!adminEmail || !adminPassword) {
-      throw new Error('EWS_ADMIN_EMAIL/EWS_ADMIN_PASSWORD is not configured');
-    }
-
-    service.Credentials = new WebCredentials(adminEmail, adminPassword);
-    return service;
-  }
-}
-````
-
-## File: src/mailbox/mailbox.dto.ts
-````typescript
-import { ApiProperty } from '@nestjs/swagger';
-import {
-  IsBoolean,
-  IsEmail,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-} from 'class-validator';
-
-export class CreateMailboxDto {
-  @ApiProperty({ example: 'user@domain.local' })
-  @IsEmail()
-  email!: string;
-
-  @ApiProperty({ example: 'User Name' })
-  @IsString()
-  @IsNotEmpty()
-  name!: string;
-
-  @ApiProperty({ example: 'Temp@123' })
-  @IsString()
-  @IsNotEmpty()
-  password!: string;
-}
-
-export class UpdateMailboxDto {
-  @ApiProperty({ example: 'User Name', required: false })
-  @IsString()
-  @IsOptional()
-  name?: string;
-
-  @ApiProperty({ example: 'user@domain.local', required: false })
-  @IsEmail()
-  @IsOptional()
-  email?: string;
-
-  @ApiProperty({ example: true, required: false })
-  @IsBoolean()
-  @IsOptional()
-  isActive?: boolean;
-}
-
-export class ImportMailboxDto {
-  @ApiProperty({
-    example: 'email,name,password\nuser@domain.local,User Name,Temp@123',
-  })
-  @IsString()
-  @IsNotEmpty()
-  csv!: string;
-}
-````
-
-## File: src/mailbox/mailbox.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { AuthModule } from '../auth/auth.module';
-import { MailboxController } from './mailbox.controller';
-import { MailboxService } from './mailbox.service';
-import { ScriptRunnerService } from './script-runner.service';
-import { GalService } from './gal.service';
-import { ExchangeAuthService } from 'src/exchange/services/exchange-auth.service';
-
-@Module({
-  imports: [AuthModule],
-  controllers: [MailboxController],
-  providers: [
-    MailboxService,
-    ScriptRunnerService,
-    GalService,
-    ExchangeAuthService,
-  ],
-})
-export class MailboxModule {}
-````
-
 ## File: src/meta/meta.module.ts
 ````typescript
 import { Module, Global } from '@nestjs/common';
@@ -3324,59 +1899,6 @@ import { MetadataReaderService } from './metadata-reader.service';
   exports: [EntityRegistryService, MetadataReaderService],
 })
 export class MetaModule {}
-````
-
-## File: src/meta/metadata-reader.service.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { EntityMetadata, ReferenceKind } from '@mikro-orm/core';
-import { EntityRegistryService } from './entity-registry.service';
-
-@Injectable()
-export class MetadataReaderService {
-  constructor(private readonly registry: EntityRegistryService) {}
-
-  getRelationType(
-    collection: string,
-    field: string,
-  ): 'm:1' | '1:m' | 'm:n' | '1:1' | null {
-    const meta = this.registry.getMetadata(collection);
-    const prop = meta.properties[field] as any;
-
-    if (!prop) return null;
-
-    if (prop.reference === ReferenceKind.MANY_TO_ONE) return 'm:1';
-    if (prop.reference === ReferenceKind.ONE_TO_MANY) return '1:m';
-    if (prop.reference === ReferenceKind.MANY_TO_MANY) return 'm:n';
-    if (prop.reference === ReferenceKind.ONE_TO_ONE) return '1:1';
-
-    return null;
-  }
-
-  isRelation(collection: string, field: string): boolean {
-    return this.getRelationType(collection, field) !== null;
-  }
-
-  getRelatedCollection(collection: string, field: string): string | null {
-    const meta = this.registry.getMetadata(collection);
-    const prop = meta.properties[field] as any;
-
-    if (!prop || !prop.target) return null;
-
-    // Resolve target entity metadata to get its table name
-    // Note: MikroORM metadata target can be a function or string or class
-    // We assume standard usage where the ORM has resolved it or we can resolve it via registry if needed
-    // For now, let's treat it as the EntityName (className) and find the tableName from registry if possible
-    // or relying on how MikroORM exposes it.
-
-    // Actually, prop.targetMeta is the safest if populated
-    if (prop.targetMeta) {
-      return prop.targetMeta.tableName;
-    }
-
-    return null;
-  }
-}
 ````
 
 ## File: src/storage/storage.service.ts
@@ -3470,175 +1992,6 @@ describe('AppController (e2e)', () => {
     "^.+\\.(t|j)s$": "ts-jest"
   }
 }
-````
-
-## File: test/webmail-list-read-pagination.e2e-spec.ts
-````typescript
-import {
-  INestApplication,
-  NotFoundException,
-  ValidationPipe,
-} from '@nestjs/common';
-import { Test, TestingModule } from '@nestjs/testing';
-import cookieParser from 'cookie-parser';
-import request from 'supertest';
-import { App } from 'supertest/types';
-import { ExchangeController } from '../src/exchange/controllers/exchange.controller';
-import { ExchangeAuthService } from '../src/exchange/services/exchange-auth.service';
-import { MailService } from '../src/exchange/services/mail.service';
-import { ExchangeAuthGuard } from '../src/auth/guards/exchange-auth.guard';
-
-describe('Webmail list/read pagination (e2e)', () => {
-  let app: INestApplication<App>;
-
-  const authServiceMock = {
-    login: jest.fn(),
-    rotateRefreshToken: jest.fn(),
-    logout: jest.fn(),
-    validateSession: jest.fn().mockResolvedValue(true),
-    refreshSession: jest.fn().mockResolvedValue(true),
-  };
-
-  const inboxMessages = Array.from({ length: 5 }, (_, index) => {
-    const seq = index + 1;
-    const id = Buffer.from(`INBOX:${seq}`).toString('base64');
-    return {
-      id,
-      subject: `Mail ${seq}`,
-      from: { name: 'Sender', email: `sender${seq}@mailex.local` },
-      receivedAt: new Date(`2026-02-2${seq}T00:00:00.000Z`),
-      isRead: false,
-      hasAttachments: false,
-      preview: `Preview ${seq}`,
-    };
-  });
-
-  const mailServiceMock = {
-    getFolders: jest.fn(),
-    getFolderCounts: jest.fn(),
-    getMessages: jest.fn(),
-    getMessage: jest.fn(),
-    sendMessage: jest.fn(),
-    searchMessages: jest.fn(),
-    moveMessage: jest.fn(),
-    markAsRead: jest.fn(),
-    moveMessagesBatch: jest.fn(),
-    permanentDelete: jest.fn(),
-    markStar: jest.fn(),
-    unmarkStar: jest.fn(),
-  };
-
-  beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      controllers: [ExchangeController],
-      providers: [
-        { provide: ExchangeAuthService, useValue: authServiceMock },
-        { provide: MailService, useValue: mailServiceMock },
-        { provide: ExchangeAuthGuard, useValue: { canActivate: () => true } },
-      ],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    app.use(cookieParser());
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        transform: true,
-        stopAtFirstError: true,
-      }),
-    );
-    await app.init();
-  });
-
-  afterAll(async () => {
-    await app.close();
-  });
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-
-    mailServiceMock.getMessages.mockImplementation(
-      async (_folder: string, page: number, pageSize: number) => {
-        const start = (page - 1) * pageSize;
-        const items = inboxMessages.slice(start, start + pageSize);
-        return {
-          items,
-          total: inboxMessages.length,
-        };
-      },
-    );
-
-    mailServiceMock.getMessage.mockImplementation(async (id: string) => {
-      const found = inboxMessages.find((message) => message.id === id);
-      if (!found) {
-        throw new NotFoundException('Message not found');
-      }
-
-      return {
-        ...found,
-        to: [{ name: 'Receiver', email: 'test.user1@mailex.local' }],
-        cc: [],
-        body: `<p>${found.subject}</p>`,
-        isHtml: true,
-      };
-    });
-  });
-
-  it('lists first page with pageSize=2 and keeps total count', async () => {
-    const response = await request(app.getHttpServer())
-      .get('/webmail/mail?folder=inbox&page=1&pageSize=2')
-      .set('Cookie', ['exchange_session=access-token'])
-      .expect(200);
-
-    expect(response.body.total).toBe(5);
-    expect(response.body.items).toHaveLength(2);
-    expect(response.body.items[0].subject).toBe('Mail 1');
-    expect(response.body.items[1].subject).toBe('Mail 2');
-    expect(mailServiceMock.getMessages).toHaveBeenCalledWith('inbox', 1, 2);
-  });
-
-  it('lists third page with pageSize=2 and returns only remaining item', async () => {
-    const response = await request(app.getHttpServer())
-      .get('/webmail/mail?folder=inbox&page=3&pageSize=2')
-      .set('Cookie', ['exchange_session=access-token'])
-      .expect(200);
-
-    expect(response.body.total).toBe(5);
-    expect(response.body.items).toHaveLength(1);
-    expect(response.body.items[0].subject).toBe('Mail 5');
-  });
-
-  it('returns empty items when page is out of range', async () => {
-    const response = await request(app.getHttpServer())
-      .get('/webmail/mail?folder=inbox&page=4&pageSize=2')
-      .set('Cookie', ['exchange_session=access-token'])
-      .expect(200);
-
-    expect(response.body.total).toBe(5);
-    expect(response.body.items).toEqual([]);
-  });
-
-  it('reads a mail detail by id', async () => {
-    const targetId = inboxMessages[0].id;
-
-    const response = await request(app.getHttpServer())
-      .get(`/webmail/mail/${targetId}`)
-      .set('Cookie', ['exchange_session=access-token'])
-      .expect(200);
-
-    expect(response.body.id).toBe(targetId);
-    expect(response.body.subject).toBe('Mail 1');
-    expect(response.body.body).toContain('Mail 1');
-    expect(mailServiceMock.getMessage).toHaveBeenCalledWith(targetId);
-  });
-
-  it('returns 404 when reading a non-existing mail id', async () => {
-    await request(app.getHttpServer())
-      .get(`/webmail/mail/${Buffer.from('INBOX:9999').toString('base64')}`)
-      .set('Cookie', ['exchange_session=access-token'])
-      .expect(404);
-  });
-});
 ````
 
 ## File: test/webmail-send-receive.e2e-spec.ts
@@ -3789,83 +2142,6 @@ describe('Webmail send/receive (e2e)', () => {
       .set('Cookie', ['exchange_session=access-token'])
       .send({ subject: 'Missing to' })
       .expect(400);
-  });
-});
-````
-
-## File: test/webmail-sent-append.spec.ts
-````typescript
-import { ImapMailProvider } from '../src/exchange/services/imap-mail.provider';
-
-describe('ImapMailProvider sent append', () => {
-  function createProvider() {
-    const configService = { get: jest.fn() } as any;
-    const authService = { getCredentials: jest.fn() } as any;
-    const smtpSenderService = { sendMail: jest.fn() } as any;
-    const request = { cookies: {} } as any;
-
-    const provider = new ImapMailProvider(
-      configService,
-      authService,
-      smtpSenderService,
-      request,
-    );
-
-    (provider as any).credentials = {
-      email: 'test.user1@mailex.local',
-      password: 'secret',
-    };
-
-    (provider as any).client = {
-      append: jest.fn().mockResolvedValue({ uid: 123 }),
-    };
-
-    jest
-      .spyOn(provider as any, 'resolveMailboxPath')
-      .mockResolvedValue('Sent Items');
-
-    return { provider, smtpSenderService };
-  }
-
-  it('appends to Sent Items after SMTP send success', async () => {
-    const { provider, smtpSenderService } = createProvider();
-
-    smtpSenderService.sendMail.mockResolvedValue({
-      messageId: '<msg-1@mailex.local>',
-    });
-
-    const result = await provider.sendMessage({
-      to: ['test.user2@mailex.local'],
-      subject: 'Append test',
-      text: 'hello',
-    });
-
-    expect(result).toEqual({
-      success: true,
-      messageId: '<msg-1@mailex.local>',
-    });
-    expect((provider as any).client.append).toHaveBeenCalledTimes(1);
-    expect((provider as any).client.append).toHaveBeenCalledWith(
-      'Sent Items',
-      expect.any(String),
-      ['\\Seen'],
-      expect.any(Date),
-    );
-  });
-
-  it('does not append when SMTP response has no messageId', async () => {
-    const { provider, smtpSenderService } = createProvider();
-
-    smtpSenderService.sendMail.mockResolvedValue({});
-
-    const result = await provider.sendMessage({
-      to: ['test.user2@mailex.local'],
-      subject: 'No message id',
-      text: 'hello',
-    });
-
-    expect(result).toEqual({ success: false, messageId: undefined });
-    expect((provider as any).client.append).not.toHaveBeenCalled();
   });
 });
 ````
@@ -5588,6 +3864,1875 @@ curl -X POST http://localhost:3000/webmail/mail/move \
 - IMAP connection error
 ````
 
+## File: src/audit/audit.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { AuditLog } from '../database/entities/audit-log.entity';
+import { AuditLogService } from './audit.service';
+import { AuditLogInterceptor } from './audit-log.interceptor';
+import { CommonModule } from '../common/common.module';
+
+@Module({
+  imports: [MikroOrmModule.forFeature([AuditLog]), CommonModule],
+  providers: [
+    AuditLogService,
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: AuditLogInterceptor,
+    },
+  ],
+  exports: [AuditLogService],
+})
+export class AuditLogModule {}
+````
+
+## File: src/auth/dto/login.dto.ts
+````typescript
+import { IsEmail, IsString, MinLength } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+
+export class LoginDto {
+  @ApiProperty({ example: 'user@example.com' })
+  @IsEmail()
+  email!: string;
+
+  @ApiProperty({ example: 'P@ssw0rd123' })
+  @IsString()
+  @MinLength(6)
+  password!: string;
+}
+````
+
+## File: src/common/interceptors/request-context.interceptor.ts
+````typescript
+import {
+  Injectable,
+  NestInterceptor,
+  ExecutionContext,
+  CallHandler,
+  Scope,
+  Inject,
+} from '@nestjs/common';
+import { Observable } from 'rxjs';
+import { RequestContext } from '../context/request.context';
+
+@Injectable({ scope: Scope.REQUEST })
+export class RequestContextInterceptor implements NestInterceptor {
+  constructor(
+    @Inject(RequestContext) private readonly requestContext: RequestContext,
+  ) {
+    console.log(
+      '🏗️ RequestContextInterceptor created, requestContext:',
+      !!this.requestContext,
+    );
+  }
+
+  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+    const request = context.switchToHttp().getRequest();
+
+    // ✅ Sau khi JwtStrategy validate, gắn user từ request.user vào RequestContext
+    if (request.user) {
+      this.requestContext.user = request.user;
+    }
+
+    return next.handle();
+  }
+}
+````
+
+## File: src/database/entities/audit-log.entity.ts
+````typescript
+import {
+  Entity,
+  PrimaryKey,
+  Property,
+  ManyToOne,
+  Index,
+} from '@mikro-orm/core';
+import { User } from './user.entity';
+
+@Entity({ tableName: 'audit_logs' })
+@Index({ properties: ['collection', 'targetId'] })
+export class AuditLog {
+  @PrimaryKey({ type: 'bigint' })
+  id!: string;
+
+  @ManyToOne(() => User, { nullable: true, index: 'audit_log_user_id_index' })
+  user?: User;
+
+  @Property({ length: 100, index: 'audit_log_collection_index' })
+  collection!: string;
+
+  @Property({ length: 50 })
+  action!: string;
+
+  @Property({ length: 255, index: 'audit_log_target_id_index' })
+  targetId!: string;
+
+  @Property({ type: 'json', nullable: true })
+  details?: Record<string, any>;
+
+  @Property({ onCreate: () => new Date() })
+  timestamp = new Date();
+}
+````
+
+## File: src/database/entities/file.entity.ts
+````typescript
+import { Entity, PrimaryKey, Property, Enum, Index } from '@mikro-orm/core';
+
+/**
+ * File status enum for tracking lifecycle
+ * TEMP - Temporary upload, not yet committed
+ * ACTIVE - Committed and available
+ * DELETED - Soft-deleted (for cleanup)
+ */
+export enum FileStatus {
+  TEMP = 'TEMP',
+  ACTIVE = 'ACTIVE',
+  DELETED = 'DELETED',
+}
+
+/**
+ * File entity for managing uploaded files
+ * Uses ULID as primary key for globally unique, sortable IDs
+ */
+@Entity({ tableName: 'files' })
+export class File {
+  /**
+   * Primary key using PostgreSQL UUID
+   * Auto-generated by database using gen_random_uuid()
+   */
+  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
+  id!: string;
+
+  /**
+   * Original filename from user upload
+   */
+  @Property()
+  originalName!: string;
+
+  /**
+   * Stored filename on filesystem (typically same as ID)
+   */
+  @Property()
+  storedName!: string;
+
+  /**
+   * MIME type of the file (e.g., 'image/jpeg', 'application/pdf')
+   */
+  @Property()
+  mimeType!: string;
+
+  /**
+   * File size in bytes
+   * Using bigint to support large files (though enforced max is 100MB)
+   */
+  @Property({ type: 'bigint' })
+  size!: bigint;
+
+  /**
+   * Relative storage path from storage root
+   * e.g., 'temp/{id}' or 'uploads/{id}'
+   */
+  @Property()
+  storagePath!: string;
+
+  /**
+   * File lifecycle status
+   * Indexed for efficient cleanup queries
+   */
+  @Enum(() => FileStatus)
+  @Index()
+  status: FileStatus = FileStatus.TEMP;
+
+  /**
+   * Optional custom metadata as JSON
+   * Can store user-provided tags, descriptions, etc.
+   */
+  @Property({ type: 'jsonb', nullable: true })
+  customMetadata?: Record<string, any>;
+
+  /**
+   * Timestamp when file was created
+   */
+  @Property()
+  createdAt: Date = new Date();
+
+  /**
+   * Timestamp when file was last updated
+   */
+  @Property({ onUpdate: () => new Date() })
+  updatedAt: Date = new Date();
+}
+````
+
+## File: src/database/migrations/Migration20260204095049.ts
+````typescript
+import { Migration } from '@mikro-orm/migrations';
+
+export class Migration20260204095049 extends Migration {
+  override async up(): Promise<void> {
+    this.addSql(
+      `alter table "roles_permissions" drop constraint "roles_permissions_permission_id_foreign";`,
+    );
+
+    this.addSql(
+      `alter table "roles_permissions" drop constraint "roles_permissions_role_id_foreign";`,
+    );
+
+    this.addSql(
+      `create table "users" ("id" varchar(255) not null, "email" varchar(255) not null, "is_active" boolean not null default true, "mailbox_initialized" boolean not null default false, "created_at" timestamptz not null, "updated_at" timestamptz not null, constraint "users_pkey" primary key ("id"));`,
+    );
+    this.addSql(
+      `alter table "users" add constraint "users_email_unique" unique ("email");`,
+    );
+
+    this.addSql(
+      `create table "audit_logs" ("id" bigserial primary key, "user_id" varchar(255) null, "collection" varchar(100) not null, "action" varchar(50) not null, "target_id" varchar(255) not null, "details" jsonb null, "timestamp" timestamptz not null);`,
+    );
+    this.addSql(
+      `create index "audit_log_user_id_index" on "audit_logs" ("user_id");`,
+    );
+    this.addSql(
+      `create index "audit_log_collection_index" on "audit_logs" ("collection");`,
+    );
+    this.addSql(
+      `create index "audit_log_target_id_index" on "audit_logs" ("target_id");`,
+    );
+    this.addSql(
+      `create index "audit_logs_collection_target_id_index" on "audit_logs" ("collection", "target_id");`,
+    );
+
+    this.addSql(
+      `alter table "audit_logs" add constraint "audit_logs_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade on delete set null;`,
+    );
+
+    this.addSql(`drop table if exists "permissions" cascade;`);
+
+    this.addSql(`drop table if exists "roles" cascade;`);
+
+    this.addSql(`drop table if exists "roles_permissions" cascade;`);
+
+    this.addSql(`alter table "files" alter column "id" drop default;`);
+    this.addSql(
+      `alter table "files" alter column "id" type uuid using ("id"::text::uuid);`,
+    );
+    this.addSql(
+      `alter table "files" alter column "id" set default gen_random_uuid();`,
+    );
+  }
+
+  override async down(): Promise<void> {
+    this.addSql(
+      `alter table "audit_logs" drop constraint "audit_logs_user_id_foreign";`,
+    );
+
+    this.addSql(
+      `create table "permissions" ("id" serial primary key, "collection" varchar(255) not null, "action" varchar(255) not null, "description" varchar(255) null);`,
+    );
+    this.addSql(
+      `create index "permissions_collection_action_index" on "permissions" ("collection", "action");`,
+    );
+
+    this.addSql(
+      `create table "roles" ("id" serial primary key, "name" varchar(255) not null, "description" varchar(255) null);`,
+    );
+    this.addSql(
+      `alter table "roles" add constraint "roles_name_unique" unique ("name");`,
+    );
+
+    this.addSql(
+      `create table "roles_permissions" ("role_id" int4 not null, "permission_id" int4 not null, constraint "roles_permissions_pkey" primary key ("role_id", "permission_id"));`,
+    );
+
+    this.addSql(
+      `alter table "roles_permissions" add constraint "roles_permissions_permission_id_foreign" foreign key ("permission_id") references "permissions" ("id") on update cascade on delete cascade;`,
+    );
+    this.addSql(
+      `alter table "roles_permissions" add constraint "roles_permissions_role_id_foreign" foreign key ("role_id") references "roles" ("id") on update cascade on delete cascade;`,
+    );
+
+    this.addSql(`drop table if exists "users" cascade;`);
+
+    this.addSql(`drop table if exists "audit_logs" cascade;`);
+
+    this.addSql(`alter table "files" alter column "id" drop default;`);
+    this.addSql(`alter table "files" alter column "id" drop default;`);
+    this.addSql(
+      `alter table "files" alter column "id" type uuid using ("id"::text::uuid);`,
+    );
+  }
+}
+````
+
+## File: src/database/migrations/Migration20260223120000.ts
+````typescript
+import { Migration } from '@mikro-orm/migrations';
+
+export class Migration20260223120000 extends Migration {
+  override async up(): Promise<void> {
+    this.addSql(
+      `create table "roles" ("id" serial primary key, "name" varchar(255) not null, "description" varchar(255) null);`,
+    );
+    this.addSql(
+      `alter table "roles" add constraint "roles_name_unique" unique ("name");`,
+    );
+
+    this.addSql(
+      `create table "permissions" ("id" serial primary key, "collection" varchar(255) not null, "action" varchar(255) not null, "description" varchar(255) null);`,
+    );
+    this.addSql(
+      `create index "permissions_collection_action_index" on "permissions" ("collection", "action");`,
+    );
+
+    this.addSql(
+      `create table "roles_permissions" ("role_id" int4 not null, "permission_id" int4 not null, constraint "roles_permissions_pkey" primary key ("role_id", "permission_id"));`,
+    );
+    this.addSql(
+      `alter table "roles_permissions" add constraint "roles_permissions_role_id_foreign" foreign key ("role_id") references "roles" ("id") on update cascade on delete cascade;`,
+    );
+    this.addSql(
+      `alter table "roles_permissions" add constraint "roles_permissions_permission_id_foreign" foreign key ("permission_id") references "permissions" ("id") on update cascade on delete cascade;`,
+    );
+
+    this.addSql(
+      `create table "user_roles" ("user_id" varchar(255) not null, "role_id" int4 not null, constraint "user_roles_pkey" primary key ("user_id", "role_id"));`,
+    );
+    this.addSql(
+      `alter table "user_roles" add constraint "user_roles_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade on delete cascade;`,
+    );
+    this.addSql(
+      `alter table "user_roles" add constraint "user_roles_role_id_foreign" foreign key ("role_id") references "roles" ("id") on update cascade on delete cascade;`,
+    );
+
+    this.addSql(`alter table "users" add column "name" varchar(255) null;`);
+    this.addSql(`alter table "users" add column "password" varchar(255) null;`);
+  }
+
+  override async down(): Promise<void> {
+    this.addSql(
+      `alter table "user_roles" drop constraint "user_roles_role_id_foreign";`,
+    );
+    this.addSql(
+      `alter table "user_roles" drop constraint "user_roles_user_id_foreign";`,
+    );
+    this.addSql(
+      `alter table "roles_permissions" drop constraint "roles_permissions_permission_id_foreign";`,
+    );
+    this.addSql(
+      `alter table "roles_permissions" drop constraint "roles_permissions_role_id_foreign";`,
+    );
+
+    this.addSql(`drop table if exists "user_roles" cascade;`);
+    this.addSql(`drop table if exists "roles_permissions" cascade;`);
+    this.addSql(`drop table if exists "permissions" cascade;`);
+    this.addSql(`drop table if exists "roles" cascade;`);
+
+    this.addSql(`alter table "users" drop column "name";`);
+    this.addSql(`alter table "users" drop column "password";`);
+  }
+}
+````
+
+## File: src/dto/post/create-post.dto.ts
+````typescript
+import {
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+} from 'class-validator';
+
+export class CreatePostDto {
+  @IsString({ message: 'Tiêu đề phải là chuỗi' })
+  @IsOptional()
+  title?: string;
+
+  @IsString({ message: 'Nội dung phải là chuỗi' })
+  @IsOptional()
+  content?: string;
+
+  @IsNotEmpty({ message: 'Tác giả không được để trống' })
+  author: number;
+}
+````
+
+## File: src/exchange/constants/mail-folders.constant.ts
+````typescript
+export type MailFolderType =
+  | 'inbox'
+  | 'sent'
+  | 'starred'
+  | 'drafts'
+  | 'spam'
+  | 'trash';
+
+export type MailFolderDefinition = {
+  id: string;
+  type: MailFolderType;
+  name: string;
+  aliases: string[];
+};
+
+export const MAIL_FOLDERS: MailFolderDefinition[] = [
+  {
+    id: 'INBOX',
+    type: 'inbox',
+    name: 'Hộp thư đến',
+    aliases: ['INBOX'],
+  },
+  {
+    id: 'Sent Items',
+    type: 'sent',
+    name: 'Đã gửi',
+    aliases: ['Sent Items', 'Sent'],
+  },
+  {
+    id: 'Starred',
+    type: 'starred',
+    name: 'Có gắn dấu sao',
+    aliases: ['Starred'],
+  },
+  {
+    id: 'Drafts',
+    type: 'drafts',
+    name: 'Thư nháp',
+    aliases: ['Drafts'],
+  },
+  {
+    id: 'Spam',
+    type: 'spam',
+    name: 'Thư rác',
+    aliases: ['Spam', 'Junk Email'],
+  },
+  {
+    id: 'Trash',
+    type: 'trash',
+    name: 'Thùng rác',
+    aliases: ['Trash', 'Deleted Items'],
+  },
+];
+
+export const DEFAULT_FOLDER_ID = 'INBOX';
+
+function normalize(input: string): string {
+  return input.trim().toLowerCase();
+}
+
+export function resolveFolderId(
+  input: string,
+  fallback = DEFAULT_FOLDER_ID,
+): string {
+  const normalized = normalize(input);
+
+  for (const folder of MAIL_FOLDERS) {
+    if (
+      normalize(folder.id) === normalized ||
+      normalize(folder.type) === normalized ||
+      folder.aliases.some((alias) => normalize(alias) === normalized)
+    ) {
+      return folder.id;
+    }
+  }
+
+  return fallback;
+}
+
+export function resolveFolderType(input: string): string {
+  const normalized = normalize(input);
+
+  for (const folder of MAIL_FOLDERS) {
+    if (
+      normalize(folder.id) === normalized ||
+      normalize(folder.type) === normalized ||
+      folder.aliases.some((alias) => normalize(alias) === normalized)
+    ) {
+      return folder.type;
+    }
+  }
+
+  return normalized.replace(/\s+/g, '_');
+}
+
+export function getFolderAliases(input: string): string[] {
+  const folderId = resolveFolderId(input, input);
+  const folder = MAIL_FOLDERS.find((item) => item.id === folderId);
+  if (!folder) return [input];
+  return Array.from(new Set([folder.id, ...folder.aliases]));
+}
+````
+
+## File: src/exchange/controllers/contacts.controller.ts
+````typescript
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiOperation,
+  ApiParam,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
+import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
+import { ContactNoteService } from '../services/contact-note.service';
+import { CreateContactDto, UpdateContactDto } from '../dto/contact-note.dto';
+
+@ApiTags('Contacts')
+@Controller('webmail/contacts')
+@UseGuards(ExchangeAuthGuard)
+export class ContactsController {
+  constructor(private readonly contactNoteService: ContactNoteService) {}
+
+  @Post()
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Create contact' })
+  @ApiBody({ type: CreateContactDto })
+  async createContact(@Body() dto: CreateContactDto) {
+    return this.contactNoteService.createContact(dto);
+  }
+
+  @Put(':id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Update contact' })
+  @ApiBody({ type: UpdateContactDto })
+  async updateContact(@Param('id') id: string, @Body() dto: UpdateContactDto) {
+    return this.contactNoteService.updateContact(id, dto);
+  }
+
+  @Delete(':id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Delete contact' })
+  async deleteContact(@Param('id') id: string) {
+    return this.contactNoteService.deleteContact(id);
+  }
+
+  @Get('by-email')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Get contact by email' })
+  @ApiQuery({ name: 'email', required: true })
+  async getContactByEmail(@Query('email') email: string) {
+    return this.contactNoteService.getContactByEmail(email);
+  }
+
+  @Get('count')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Get contacts count' })
+  async getContactsCount() {
+    return this.contactNoteService.getContactsCount();
+  }
+
+  @Get(':id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Get contact by id' })
+  @ApiParam({ name: 'id', required: true })
+  async getContactById(@Param('id') id: string) {
+    return this.contactNoteService.getContactById(id);
+  }
+
+  @Get()
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Search contacts' })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'pageSize', required: false })
+  async searchContacts(
+    @Query('q') q: string = '',
+    @Query('page') page: number = 1,
+    @Query('pageSize') pageSize: number = 20,
+  ) {
+    return this.contactNoteService.searchContacts(
+      q,
+      Number(page),
+      Number(pageSize),
+    );
+  }
+}
+````
+
+## File: src/exchange/controllers/notes.controller.ts
+````typescript
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
+import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
+import { ContactNoteService } from '../services/contact-note.service';
+import { CreateNoteDto, UpdateNoteDto } from '../dto/contact-note.dto';
+
+@ApiTags('Notes')
+@Controller('webmail/notes')
+@UseGuards(ExchangeAuthGuard)
+export class NotesController {
+  constructor(private readonly contactNoteService: ContactNoteService) {}
+
+  @Get()
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'List notes' })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'pageSize', required: false })
+  async listNotes(
+    @Query('page') page: number = 1,
+    @Query('pageSize') pageSize: number = 20,
+  ) {
+    return this.contactNoteService.listNotes(Number(page), Number(pageSize));
+  }
+
+  @Post()
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Create note' })
+  @ApiBody({ type: CreateNoteDto })
+  async createNote(@Body() dto: CreateNoteDto) {
+    return this.contactNoteService.createNote(dto);
+  }
+
+  @Put(':id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Update note' })
+  @ApiBody({ type: UpdateNoteDto })
+  async updateNote(@Param('id') id: string, @Body() dto: UpdateNoteDto) {
+    return this.contactNoteService.updateNote(id, dto);
+  }
+
+  @Delete(':id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Delete note' })
+  async deleteNote(@Param('id') id: string) {
+    return this.contactNoteService.deleteNote(id);
+  }
+}
+````
+
+## File: src/exchange/dto/contact-note.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+import {
+  IsEmail,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class ContactAddressDto {
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  street?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  city?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  state?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  postalCode?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  country?: string;
+}
+
+export class CreateContactDto {
+  @ApiProperty({ example: 'user@example.com' })
+  @IsEmail()
+  email!: string;
+
+  @ApiProperty({ example: 'User Name' })
+  @IsString()
+  @IsNotEmpty()
+  displayName!: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  givenName?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  surname?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  company?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  jobTitle?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  phone?: string;
+
+  @ApiProperty({ required: false, type: ContactAddressDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ContactAddressDto)
+  address?: ContactAddressDto;
+}
+
+export class UpdateContactDto {
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  displayName?: string;
+
+  @ApiProperty({ required: false })
+  @IsEmail()
+  @IsOptional()
+  email?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  givenName?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  surname?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  company?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  jobTitle?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  phone?: string;
+
+  @ApiProperty({ required: false, type: ContactAddressDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ContactAddressDto)
+  address?: ContactAddressDto;
+}
+
+export class CreateNoteDto {
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  subject?: string;
+
+  @ApiProperty({ example: 'My note content' })
+  @IsString()
+  @IsNotEmpty()
+  content!: string;
+}
+
+export class UpdateNoteDto {
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  subject?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  content?: string;
+}
+````
+
+## File: src/exchange/services/contact-note.service.ts
+````typescript
+import {
+  Injectable,
+  Logger,
+  Scope,
+  BadRequestException,
+  Inject,
+} from '@nestjs/common';
+import { REQUEST } from '@nestjs/core';
+import { EwsMailProvider } from './ews-mail.provider';
+import { DragonflyService } from '../../common/cache/dragonfly.service';
+import { ExchangeAuthService } from './exchange-auth.service';
+import {
+  ExchangeContact,
+  ExchangeNote,
+  ExchangeSearchResult,
+} from '../interfaces/contact-note.interface';
+
+@Injectable({ scope: Scope.REQUEST })
+export class ContactNoteService {
+  private readonly logger = new Logger(ContactNoteService.name);
+  private readonly CONTACT_COUNT_TTL = 300;
+
+  constructor(
+    private readonly provider: EwsMailProvider,
+    private readonly dragonfly: DragonflyService,
+    private readonly authService: ExchangeAuthService,
+    @Inject(REQUEST) private readonly request: any,
+  ) {}
+
+  private async withProvider<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      await this.provider.connect();
+      return await operation();
+    } catch (error) {
+      this.logger.error(
+        `Exchange operation failed: ${error.message}`,
+        error.stack,
+      );
+      throw error;
+    } finally {
+      await this.provider.disconnect();
+    }
+  }
+
+  private async getEmailFromSession(): Promise<string | null> {
+    const token = this.request.cookies?.['exchange_session'];
+    if (!token) return null;
+    const creds = await this.authService.getCredentials(token);
+    return creds?.email || null;
+  }
+
+  private getContactsCountCacheKey(email: string): string {
+    return `exchange:contacts:count:${email}`;
+  }
+
+  private async refreshContactsCountCache(email: string): Promise<void> {
+    if (!this.dragonfly.enabled) return;
+    const total = await this.withProvider(() =>
+      this.provider.getContactsCount(),
+    );
+    await this.dragonfly.set(
+      this.getContactsCountCacheKey(email),
+      total,
+      this.CONTACT_COUNT_TTL,
+    );
+  }
+
+  async createContact(payload: {
+    displayName: string;
+    email: string;
+    givenName?: string;
+    surname?: string;
+    company?: string;
+    jobTitle?: string;
+    phone?: string;
+    address?: {
+      street?: string;
+      city?: string;
+      state?: string;
+      postalCode?: string;
+      country?: string;
+    };
+  }): Promise<ExchangeContact> {
+    if (!payload.email) {
+      throw new BadRequestException('Email is required');
+    }
+    const result = await this.withProvider(() =>
+      this.provider.createContact(payload),
+    );
+
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      await this.refreshContactsCountCache(email);
+    }
+
+    return result;
+  }
+
+  async updateContact(
+    id: string,
+    payload: {
+      displayName?: string;
+      email?: string;
+      givenName?: string;
+      surname?: string;
+      company?: string;
+      jobTitle?: string;
+      phone?: string;
+      address?: {
+        street?: string;
+        city?: string;
+        state?: string;
+        postalCode?: string;
+        country?: string;
+      };
+    },
+  ): Promise<ExchangeContact> {
+    return this.withProvider(() => this.provider.updateContact(id, payload));
+  }
+
+  async deleteContact(id: string): Promise<{ success: boolean }> {
+    await this.withProvider(() => this.provider.deleteContact(id));
+
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      await this.refreshContactsCountCache(email);
+    }
+
+    return { success: true };
+  }
+
+  async getContactByEmail(email: string): Promise<ExchangeContact | null> {
+    return this.withProvider(() => this.provider.getContactByEmail(email));
+  }
+
+  async getContactById(id: string): Promise<ExchangeContact | null> {
+    return this.withProvider(() => this.provider.getContactById(id));
+  }
+
+  async searchContacts(
+    keyword: string,
+    page: number,
+    pageSize: number,
+  ): Promise<ExchangeSearchResult<ExchangeContact>> {
+    return this.withProvider(() =>
+      this.provider.searchContacts(keyword, page, pageSize),
+    );
+  }
+
+  async getContactsCount(): Promise<{ total: number }> {
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      const key = this.getContactsCountCacheKey(email);
+      const cached = await this.dragonfly.get<number>(key);
+      if (cached !== null) {
+        return { total: cached };
+      }
+
+      const total = await this.withProvider(() =>
+        this.provider.getContactsCount(),
+      );
+      await this.dragonfly.set(key, total, this.CONTACT_COUNT_TTL);
+      return { total };
+    }
+
+    const total = await this.withProvider(() =>
+      this.provider.getContactsCount(),
+    );
+    return { total };
+  }
+
+  async listNotes(
+    page: number,
+    pageSize: number,
+  ): Promise<ExchangeSearchResult<ExchangeNote>> {
+    return this.withProvider(() => this.provider.listNotes(page, pageSize));
+  }
+
+  async createNote(payload: {
+    subject?: string;
+    content: string;
+  }): Promise<ExchangeNote> {
+    if (!payload.content) {
+      throw new BadRequestException('Content is required');
+    }
+    return this.withProvider(() => this.provider.createNote(payload));
+  }
+
+  async updateNote(
+    id: string,
+    payload: { subject?: string; content?: string },
+  ): Promise<ExchangeNote> {
+    return this.withProvider(() => this.provider.updateNote(id, payload));
+  }
+
+  async deleteNote(id: string): Promise<{ success: boolean }> {
+    await this.withProvider(() => this.provider.deleteNote(id));
+    return { success: true };
+  }
+}
+````
+
+## File: src/files/dto/commit-file.dto.ts
+````typescript
+import { IsString, IsOptional, IsObject } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+
+export class CommitFileDto {
+  @ApiProperty({ example: '01KFQ3SQA8JEBXYGP6AZNJBNZ8' })
+  @IsString()
+  id!: string;
+
+  @ApiProperty({ example: 'report.pdf', required: false })
+  @IsOptional()
+  @IsString()
+  originalName?: string;
+
+  @ApiProperty({ example: { category: 'contract' }, required: false })
+  @IsOptional()
+  @IsObject()
+  extraMetadata?: Record<string, any>;
+}
+````
+
+## File: src/files/dto/temp-upload-response.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+
+export class TempUploadResponseDto {
+  @ApiProperty({ example: '01KFQ3SQA8JEBXYGP6AZNJBNZ8' })
+  id!: string;
+  @ApiProperty({ example: 'report.pdf' })
+  originalName!: string;
+  @ApiProperty({ example: 'application/pdf' })
+  mimeType!: string;
+  @ApiProperty({ example: 123456 })
+  size!: number;
+  @ApiProperty({ example: '/files/temp/01KFQ3SQA8JEBXYGP6AZNJBNZ8/preview' })
+  previewUrl!: string;
+
+  constructor(partial: Partial<TempUploadResponseDto>) {
+    Object.assign(this, partial);
+  }
+}
+````
+
+## File: src/files/files.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
+import { ScheduleModule } from '@nestjs/schedule';
+import { File } from '../database/entities/file.entity';
+import { FilesController, AssetsController } from './files.controller';
+import { FilesService } from './files.service';
+import { FilesScheduler } from './files.scheduler';
+import { StorageService } from '../storage/storage.service';
+import { LocalStorageAdapter } from '../storage/local-storage.adapter';
+
+@Module({
+  imports: [MikroOrmModule.forFeature([File]), ScheduleModule.forRoot()],
+  controllers: [FilesController, AssetsController],
+  providers: [
+    FilesService,
+    FilesScheduler,
+    StorageService,
+    LocalStorageAdapter,
+  ],
+  exports: [FilesService],
+})
+export class FilesModule {}
+````
+
+## File: src/files/files.service.ts
+````typescript
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
+import { InjectRepository } from '@mikro-orm/nestjs';
+import { EntityRepository } from '@mikro-orm/postgresql';
+import { File, FileStatus } from '../database/entities/file.entity';
+import { StorageService } from '../storage/storage.service';
+import { ConfigService } from '@nestjs/config';
+import { TempUploadResponseDto } from './dto/temp-upload-response.dto';
+import { ReadStream } from 'fs';
+
+@Injectable()
+export class FilesService {
+  private readonly maxFileSize: number;
+  private readonly allowedMimeTypes: string[];
+
+  constructor(
+    @InjectRepository(File)
+    private readonly fileRepository: EntityRepository<File>,
+    private readonly storageService: StorageService,
+    private readonly configService: ConfigService,
+  ) {
+    // Default 100MB = 104857600 bytes
+    this.maxFileSize =
+      this.configService.get<number>('FILE_MAX_SIZE') || 104857600;
+
+    const allowedTypes = this.configService.get<string>('FILE_ALLOWED_TYPES');
+    this.allowedMimeTypes = allowedTypes
+      ? allowedTypes.split(',')
+      : [
+          'image/jpeg',
+          'image/png',
+          'image/gif',
+          'application/pdf',
+          'text/plain',
+        ];
+  }
+
+  /**
+   * Upload file to temporary storage
+   * Creates temp database record for tracking
+   */
+  async uploadTemp(file: Express.Multer.File): Promise<TempUploadResponseDto> {
+    // Validate file size
+    if (file.size > this.maxFileSize) {
+      throw new BadRequestException(
+        `File size exceeds maximum allowed size of ${this.maxFileSize} bytes`,
+      );
+    }
+
+    // Validate MIME type
+    if (!this.allowedMimeTypes.includes(file.mimetype)) {
+      throw new BadRequestException(
+        `File type ${file.mimetype} is not allowed. Allowed types: ${this.allowedMimeTypes.join(', ')}`,
+      );
+    }
+
+    // Create temp database record (id will be auto-generated by database)
+    const tempFile = this.fileRepository.create({
+      originalName: file.originalname,
+      storedName: '', // Will be updated after we get the id
+      mimeType: file.mimetype,
+      size: BigInt(file.size),
+      storagePath: '', // Will be updated after we get the id
+      status: FileStatus.TEMP,
+      customMetadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await this.fileRepository.getEntityManager().persistAndFlush(tempFile);
+
+    // Now we have the auto-generated id, save file to storage
+    const storageResult = await this.storageService.saveTemp(file, tempFile.id);
+
+    // Update the record with storage info
+    tempFile.storedName = storageResult.storedName;
+    tempFile.storagePath = storageResult.storagePath;
+    await this.fileRepository.getEntityManager().flush();
+
+    return new TempUploadResponseDto({
+      id: tempFile.id,
+      originalName: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
+      previewUrl: `/files/temp/${tempFile.id}/preview`,
+    });
+  }
+
+  /**
+   * Commit file from temp to permanent storage
+   * Updates database record status
+   */
+  async commitFile(
+    id: string,
+    extraMetadata?: Record<string, any>,
+    originalName?: string,
+  ): Promise<File> {
+    // Find existing temp file
+    const tempFile = await this.fileRepository.findOne({
+      id,
+      status: FileStatus.TEMP,
+    });
+
+    if (!tempFile) {
+      throw new NotFoundException(
+        'Temporary file not found or already committed',
+      );
+    }
+
+    const tempPath = `temp/${id}`;
+    const permanentPath = `uploads/${id}`;
+
+    // Verify temp file exists in storage
+    const exists = await this.storageService.exists(tempPath);
+    if (!exists) {
+      throw new NotFoundException('Temporary file not found in storage');
+    }
+
+    // Move to permanent storage
+    await this.storageService.moveToPermanent(tempPath, permanentPath);
+
+    // Update record to active status
+    tempFile.storagePath = permanentPath;
+    tempFile.status = FileStatus.ACTIVE;
+    if (originalName) {
+      tempFile.originalName = originalName;
+    }
+    tempFile.customMetadata = extraMetadata || tempFile.customMetadata;
+    tempFile.updatedAt = new Date();
+
+    await this.fileRepository.getEntityManager().persistAndFlush(tempFile);
+
+    return tempFile;
+  }
+
+  /**
+   * Get file metadata from database
+   */
+  async getMetadata(id: string): Promise<File> {
+    const file = await this.fileRepository.findOne({ id });
+    if (!file) {
+      throw new NotFoundException('File not found');
+    }
+    return file;
+  }
+
+  /**
+   * Get file stream for downloading/previewing
+   */
+  async getFileStream(id: string): Promise<{ file: File; stream: ReadStream }> {
+    const file = await this.getMetadata(id);
+
+    const stream = await this.storageService.getStream(file.storagePath);
+
+    return { file, stream };
+  }
+
+  /**
+   * Get temp file stream for preview
+   */
+  async getTempFileStream(id: string): Promise<ReadStream> {
+    const tempPath = `temp/${id}`;
+
+    const exists = await this.storageService.exists(tempPath);
+    if (!exists) {
+      throw new NotFoundException('Temporary file not found');
+    }
+
+    return this.storageService.getStream(tempPath);
+  }
+
+  /**
+   * Cleanup old temporary files
+   * Called by scheduled task
+   */
+  async cleanupTempFiles(olderThan: Date): Promise<number> {
+    // Find temp files older than threshold
+    const oldTempFiles = await this.fileRepository.find({
+      status: FileStatus.TEMP,
+      createdAt: { $lt: olderThan },
+    });
+
+    let deletedCount = 0;
+
+    for (const file of oldTempFiles) {
+      try {
+        // Delete from storage
+        await this.storageService.delete(file.storagePath);
+
+        // Delete from database
+        await this.fileRepository.getEntityManager().removeAndFlush(file);
+
+        deletedCount++;
+      } catch (error) {
+        console.error(`Failed to delete temp file ${file.id}:`, error);
+      }
+    }
+
+    return deletedCount;
+  }
+}
+````
+
+## File: src/mailbox/gal.service.ts
+````typescript
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import {
+  ExchangeService,
+  ExchangeVersion,
+  OAuthCredentials,
+  WebCredentials,
+  Uri,
+  ResolveNameSearchLocation,
+} from 'ews-javascript-api';
+import { XhrApi } from '@ewsjs/xhr';
+
+(ExchangeService as any).XHRApi = new XhrApi();
+
+@Injectable()
+export class GalService {
+  constructor(private readonly configService: ConfigService) {}
+
+  async search(query: string): Promise<{ name: string; email: string }[]> {
+    if (!query?.trim()) return [];
+    const service = await this.createService();
+
+    const response = await service.ResolveName(
+      query,
+      ResolveNameSearchLocation.DirectoryOnly,
+      true,
+    );
+
+    const resolutions = response?.GetEnumerator?.() ?? [];
+    return resolutions
+      .map((r: any) => ({
+        name: r?.Mailbox?.Name ?? '',
+        email: r?.Mailbox?.Address ?? '',
+      }))
+      .filter((r: any) => r.email);
+  }
+
+  private async createService(): Promise<ExchangeService> {
+    const rejectUnauthorized =
+      this.configService.get<string>('EWS_TLS_REJECT_UNAUTHORIZED') !== 'false';
+    if (!rejectUnauthorized) {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    }
+
+    const url = this.configService.get<string>('EWS_URL');
+    if (!url) {
+      throw new Error('EWS_URL is not configured');
+    }
+
+    const version =
+      this.configService.get<string>('EWS_VERSION') || 'Exchange2016';
+
+    const service = new ExchangeService(
+      ExchangeVersion[version as keyof typeof ExchangeVersion] ||
+        ExchangeVersion.Exchange2016,
+    );
+    service.Url = new Uri(url);
+
+    const ssoEnabled =
+      this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
+    if (ssoEnabled) {
+      const tokenUrl = this.configService.get<string>('EWS_TOKEN_URL');
+      const clientId = this.configService.get<string>('EWS_CLIENT_ID');
+      const clientSecret = this.configService.get<string>('EWS_CLIENT_SECRET');
+      const scope = this.configService.get<string>('EWS_SCOPE');
+      const resource = this.configService.get<string>('EWS_RESOURCE');
+
+      if (!tokenUrl || !clientId || !clientSecret) {
+        throw new Error('EWS OAuth2 config is missing');
+      }
+
+      const body = new URLSearchParams();
+      body.set('client_id', clientId);
+      body.set('client_secret', clientSecret);
+      body.set('grant_type', 'client_credentials');
+      if (scope) {
+        body.set('scope', scope);
+      } else if (resource) {
+        body.set('resource', resource);
+      }
+
+      const response = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new UnauthorizedException(`Failed to fetch EWS token: ${text}`);
+      }
+
+      const payload = (await response.json()) as { access_token: string };
+      service.Credentials = new OAuthCredentials(payload.access_token);
+      return service;
+    }
+
+    const adminEmail = this.configService.get<string>('EWS_ADMIN_EMAIL');
+    const adminPassword = this.configService.get<string>('EWS_ADMIN_PASSWORD');
+    if (!adminEmail || !adminPassword) {
+      throw new Error('EWS_ADMIN_EMAIL/EWS_ADMIN_PASSWORD is not configured');
+    }
+
+    service.Credentials = new WebCredentials(adminEmail, adminPassword);
+    return service;
+  }
+}
+````
+
+## File: src/mailbox/mailbox.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+import {
+  IsBoolean,
+  IsEmail,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+} from 'class-validator';
+
+export class CreateMailboxDto {
+  @ApiProperty({ example: 'user@domain.local' })
+  @IsEmail()
+  email!: string;
+
+  @ApiProperty({ example: 'User Name' })
+  @IsString()
+  @IsNotEmpty()
+  name!: string;
+
+  @ApiProperty({ example: 'Temp@123' })
+  @IsString()
+  @IsNotEmpty()
+  password!: string;
+}
+
+export class UpdateMailboxDto {
+  @ApiProperty({ example: 'User Name', required: false })
+  @IsString()
+  @IsOptional()
+  name?: string;
+
+  @ApiProperty({ example: 'user@domain.local', required: false })
+  @IsEmail()
+  @IsOptional()
+  email?: string;
+
+  @ApiProperty({ example: true, required: false })
+  @IsBoolean()
+  @IsOptional()
+  isActive?: boolean;
+}
+
+export class ImportMailboxDto {
+  @ApiProperty({
+    example: 'email,name,password\nuser@domain.local,User Name,Temp@123',
+  })
+  @IsString()
+  @IsNotEmpty()
+  csv!: string;
+}
+````
+
+## File: src/mailbox/mailbox.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
+import { MailboxController } from './mailbox.controller';
+import { MailboxService } from './mailbox.service';
+import { ScriptRunnerService } from './script-runner.service';
+import { GalService } from './gal.service';
+import { ExchangeAuthService } from 'src/exchange/services/exchange-auth.service';
+
+@Module({
+  imports: [AuthModule],
+  controllers: [MailboxController],
+  providers: [
+    MailboxService,
+    ScriptRunnerService,
+    GalService,
+    ExchangeAuthService,
+  ],
+})
+export class MailboxModule {}
+````
+
+## File: src/meta/metadata-reader.service.ts
+````typescript
+import { Injectable } from '@nestjs/common';
+import { EntityMetadata, ReferenceKind } from '@mikro-orm/core';
+import { EntityRegistryService } from './entity-registry.service';
+
+@Injectable()
+export class MetadataReaderService {
+  constructor(private readonly registry: EntityRegistryService) {}
+
+  getRelationType(
+    collection: string,
+    field: string,
+  ): 'm:1' | '1:m' | 'm:n' | '1:1' | null {
+    const meta = this.registry.getMetadata(collection);
+    const prop = meta.properties[field] as any;
+
+    if (!prop) return null;
+
+    if (prop.reference === ReferenceKind.MANY_TO_ONE) return 'm:1';
+    if (prop.reference === ReferenceKind.ONE_TO_MANY) return '1:m';
+    if (prop.reference === ReferenceKind.MANY_TO_MANY) return 'm:n';
+    if (prop.reference === ReferenceKind.ONE_TO_ONE) return '1:1';
+
+    return null;
+  }
+
+  isRelation(collection: string, field: string): boolean {
+    return this.getRelationType(collection, field) !== null;
+  }
+
+  getRelatedCollection(collection: string, field: string): string | null {
+    const meta = this.registry.getMetadata(collection);
+    const prop = meta.properties[field] as any;
+
+    if (!prop || !prop.target) return null;
+
+    // Resolve target entity metadata to get its table name
+    // Note: MikroORM metadata target can be a function or string or class
+    // We assume standard usage where the ORM has resolved it or we can resolve it via registry if needed
+    // For now, let's treat it as the EntityName (className) and find the tableName from registry if possible
+    // or relying on how MikroORM exposes it.
+
+    // Actually, prop.targetMeta is the safest if populated
+    if (prop.targetMeta) {
+      return prop.targetMeta.tableName;
+    }
+
+    return null;
+  }
+}
+````
+
+## File: src/storage/storage.interface.ts
+````typescript
+import { ReadStream } from 'fs';
+
+export interface StorageResult {
+  storedName: string;
+  storagePath: string;
+  size: number;
+}
+
+/**
+ * Storage adapter interface for abstracting file storage operations
+ * Enables swapping between local filesystem, S3, GCS, etc.
+ */
+export interface IStorageAdapter {
+  /**
+   * Save file to storage (Generic Upload)
+   * This is the preferred method for general upload usage.
+   */
+  upload?(file: Express.Multer.File, path: string): Promise<StorageResult>;
+
+  /**
+   * Get a signed URL for public or temporary access.
+   * For local storage, this might return a relative publicly accessible path.
+   */
+  getSignedUrl?(path: string, expiresIn?: number): Promise<string>;
+
+  /**
+   * Save file to temporary storage
+   * @param file Multer file object
+   * @param id ULID identifier for the file
+   * @returns Storage metadata
+   */
+  saveTemp(file: Express.Multer.File, id: string): Promise<StorageResult>;
+
+  /**
+   * Move file from temporary to permanent storage
+   * @param tempPath Temporary storage path
+   * @param permanentPath Permanent storage path
+   */
+  moveToPermanent(tempPath: string, permanentPath: string): Promise<void>;
+
+  /**
+   * Get a readable stream for a file
+   * @param path Storage path
+   * @returns Readable stream
+   */
+  getStream(path: string): Promise<ReadStream>;
+
+  /**
+   * Delete a file from storage
+   * @param path Storage path
+   */
+  delete(path: string): Promise<void>;
+
+  /**
+   * Check if file exists in storage
+   * @param path Storage path
+   * @returns True if file exists
+   */
+  exists(path: string): Promise<boolean>;
+
+  /**
+   * Get file size
+   * @param path Storage path
+   * @returns File size in bytes
+   */
+  getSize(path: string): Promise<number>;
+}
+````
+
+## File: test/jest-e2e.json
+````json
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": ".",
+  "testEnvironment": "node",
+  "testRegex": ".e2e-spec.ts$",
+  "moduleNameMapper": {
+    "^src/(.*)$": "<rootDir>/../src/$1"
+  },
+  "transform": {
+    "^.+\\.(t|j)s$": "ts-jest"
+  }
+}
+````
+
+## File: test/webmail-list-read-pagination.e2e-spec.ts
+````typescript
+import {
+  INestApplication,
+  NotFoundException,
+  ValidationPipe,
+} from '@nestjs/common';
+import { Test, TestingModule } from '@nestjs/testing';
+import cookieParser from 'cookie-parser';
+import request from 'supertest';
+import { App } from 'supertest/types';
+import { ExchangeController } from '../src/exchange/controllers/exchange.controller';
+import { ExchangeAuthService } from '../src/exchange/services/exchange-auth.service';
+import { MailService } from '../src/exchange/services/mail.service';
+import { ExchangeAuthGuard } from '../src/auth/guards/exchange-auth.guard';
+
+describe('Webmail list/read pagination (e2e)', () => {
+  let app: INestApplication<App>;
+
+  const authServiceMock = {
+    login: jest.fn(),
+    rotateRefreshToken: jest.fn(),
+    logout: jest.fn(),
+    validateSession: jest.fn().mockResolvedValue(true),
+    refreshSession: jest.fn().mockResolvedValue(true),
+  };
+
+  const inboxMessages = Array.from({ length: 5 }, (_, index) => {
+    const seq = index + 1;
+    const id = Buffer.from(`INBOX:${seq}`).toString('base64');
+    return {
+      id,
+      subject: `Mail ${seq}`,
+      from: { name: 'Sender', email: `sender${seq}@mailex.local` },
+      receivedAt: new Date(`2026-02-2${seq}T00:00:00.000Z`),
+      isRead: false,
+      hasAttachments: false,
+      preview: `Preview ${seq}`,
+    };
+  });
+
+  const mailServiceMock = {
+    getFolders: jest.fn(),
+    getFolderCounts: jest.fn(),
+    getMessages: jest.fn(),
+    getMessage: jest.fn(),
+    sendMessage: jest.fn(),
+    searchMessages: jest.fn(),
+    moveMessage: jest.fn(),
+    markAsRead: jest.fn(),
+    moveMessagesBatch: jest.fn(),
+    permanentDelete: jest.fn(),
+    markStar: jest.fn(),
+    unmarkStar: jest.fn(),
+  };
+
+  beforeAll(async () => {
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      controllers: [ExchangeController],
+      providers: [
+        { provide: ExchangeAuthService, useValue: authServiceMock },
+        { provide: MailService, useValue: mailServiceMock },
+        { provide: ExchangeAuthGuard, useValue: { canActivate: () => true } },
+      ],
+    }).compile();
+
+    app = moduleFixture.createNestApplication();
+    app.use(cookieParser());
+    app.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        transform: true,
+        stopAtFirstError: true,
+      }),
+    );
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    mailServiceMock.getMessages.mockImplementation(
+      async (_folder: string, page: number, pageSize: number) => {
+        const start = (page - 1) * pageSize;
+        const items = inboxMessages.slice(start, start + pageSize);
+        return {
+          items,
+          total: inboxMessages.length,
+        };
+      },
+    );
+
+    mailServiceMock.getMessage.mockImplementation(async (id: string) => {
+      const found = inboxMessages.find((message) => message.id === id);
+      if (!found) {
+        throw new NotFoundException('Message not found');
+      }
+
+      return {
+        ...found,
+        to: [{ name: 'Receiver', email: 'test.user1@mailex.local' }],
+        cc: [],
+        body: `<p>${found.subject}</p>`,
+        isHtml: true,
+      };
+    });
+  });
+
+  it('lists first page with pageSize=2 and keeps total count', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/webmail/mail?folder=inbox&page=1&pageSize=2')
+      .set('Cookie', ['exchange_session=access-token'])
+      .expect(200);
+
+    expect(response.body.total).toBe(5);
+    expect(response.body.items).toHaveLength(2);
+    expect(response.body.items[0].subject).toBe('Mail 1');
+    expect(response.body.items[1].subject).toBe('Mail 2');
+    expect(mailServiceMock.getMessages).toHaveBeenCalledWith('inbox', 1, 2);
+  });
+
+  it('lists third page with pageSize=2 and returns only remaining item', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/webmail/mail?folder=inbox&page=3&pageSize=2')
+      .set('Cookie', ['exchange_session=access-token'])
+      .expect(200);
+
+    expect(response.body.total).toBe(5);
+    expect(response.body.items).toHaveLength(1);
+    expect(response.body.items[0].subject).toBe('Mail 5');
+  });
+
+  it('returns empty items when page is out of range', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/webmail/mail?folder=inbox&page=4&pageSize=2')
+      .set('Cookie', ['exchange_session=access-token'])
+      .expect(200);
+
+    expect(response.body.total).toBe(5);
+    expect(response.body.items).toEqual([]);
+  });
+
+  it('reads a mail detail by id', async () => {
+    const targetId = inboxMessages[0].id;
+
+    const response = await request(app.getHttpServer())
+      .get(`/webmail/mail/${targetId}`)
+      .set('Cookie', ['exchange_session=access-token'])
+      .expect(200);
+
+    expect(response.body.id).toBe(targetId);
+    expect(response.body.subject).toBe('Mail 1');
+    expect(response.body.body).toContain('Mail 1');
+    expect(mailServiceMock.getMessage).toHaveBeenCalledWith(targetId);
+  });
+
+  it('returns 404 when reading a non-existing mail id', async () => {
+    await request(app.getHttpServer())
+      .get(`/webmail/mail/${Buffer.from('INBOX:9999').toString('base64')}`)
+      .set('Cookie', ['exchange_session=access-token'])
+      .expect(404);
+  });
+});
+````
+
+## File: test/webmail-sent-append.spec.ts
+````typescript
+import { ImapMailProvider } from '../src/exchange/services/imap-mail.provider';
+
+describe('ImapMailProvider sent append', () => {
+  function createProvider() {
+    const configService = { get: jest.fn() } as any;
+    const authService = { getCredentials: jest.fn() } as any;
+    const smtpSenderService = { sendMail: jest.fn() } as any;
+    const request = { cookies: {} } as any;
+
+    const provider = new ImapMailProvider(
+      configService,
+      authService,
+      smtpSenderService,
+      request,
+    );
+
+    (provider as any).credentials = {
+      email: 'test.user1@mailex.local',
+      password: 'secret',
+    };
+
+    (provider as any).client = {
+      append: jest.fn().mockResolvedValue({ uid: 123 }),
+    };
+
+    jest
+      .spyOn(provider as any, 'resolveMailboxPath')
+      .mockResolvedValue('Sent Items');
+
+    return { provider, smtpSenderService };
+  }
+
+  it('appends to Sent Items after SMTP send success', async () => {
+    const { provider, smtpSenderService } = createProvider();
+
+    smtpSenderService.sendMail.mockResolvedValue({
+      messageId: '<msg-1@mailex.local>',
+    });
+
+    const result = await provider.sendMessage({
+      to: ['test.user2@mailex.local'],
+      subject: 'Append test',
+      text: 'hello',
+    });
+
+    expect(result).toEqual({
+      success: true,
+      messageId: '<msg-1@mailex.local>',
+    });
+    expect((provider as any).client.append).toHaveBeenCalledTimes(1);
+    expect((provider as any).client.append).toHaveBeenCalledWith(
+      'Sent Items',
+      expect.any(String),
+      ['\\Seen'],
+      expect.any(Date),
+    );
+  });
+
+  it('does not append when SMTP response has no messageId', async () => {
+    const { provider, smtpSenderService } = createProvider();
+
+    smtpSenderService.sendMail.mockResolvedValue({});
+
+    const result = await provider.sendMessage({
+      to: ['test.user2@mailex.local'],
+      subject: 'No message id',
+      text: 'hello',
+    });
+
+    expect(result).toEqual({ success: false, messageId: undefined });
+    expect((provider as any).client.append).not.toHaveBeenCalled();
+  });
+});
+````
+
 ## File: src/audit/audit-log.interceptor.ts
 ````typescript
 import {
@@ -6003,23 +6148,6 @@ export class AuditLogService {
 }
 ````
 
-## File: src/auth/dto/login.dto.ts
-````typescript
-import { IsEmail, IsString, MinLength } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
-
-export class LoginDto {
-  @ApiProperty({ example: 'user@example.com' })
-  @IsEmail()
-  email!: string;
-
-  @ApiProperty({ example: 'P@ssw0rd123' })
-  @IsString()
-  @MinLength(6)
-  password!: string;
-}
-````
-
 ## File: src/auth/guards/exchange-auth.guard.ts
 ````typescript
 // guards/exchange-auth.guard.ts
@@ -6126,6 +6254,388 @@ export default registerAs('database', () => ({
     process.env.DB_ALLOW_GLOBAL_CONTEXT === 'true' ||
     process.env.NODE_ENV !== 'production',
 }));
+````
+
+## File: src/database/migrations/.snapshot-postgres.json
+````json
+{
+  "namespaces": [
+    "public"
+  ],
+  "name": "public",
+  "tables": [
+    {
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "default": "gen_random_uuid()",
+          "mappedType": "uuid"
+        },
+        "original_name": {
+          "name": "original_name",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "stored_name": {
+          "name": "stored_name",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "mime_type": {
+          "name": "mime_type",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "size": {
+          "name": "size",
+          "type": "bigint",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "mappedType": "bigint"
+        },
+        "storage_path": {
+          "name": "storage_path",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "default": "'TEMP'",
+          "enumItems": [
+            "TEMP",
+            "ACTIVE",
+            "DELETED"
+          ],
+          "mappedType": "enum"
+        },
+        "custom_metadata": {
+          "name": "custom_metadata",
+          "type": "jsonb",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "mappedType": "json"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        }
+      },
+      "name": "files",
+      "schema": "public",
+      "indexes": [
+        {
+          "columnNames": [
+            "status"
+          ],
+          "composite": false,
+          "keyName": "files_status_index",
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "keyName": "files_pkey",
+          "columnNames": [
+            "id"
+          ],
+          "composite": false,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {},
+      "nativeEnums": {}
+    },
+    {
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "email": {
+          "name": "email",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "default": "true",
+          "mappedType": "boolean"
+        },
+        "mailbox_initialized": {
+          "name": "mailbox_initialized",
+          "type": "boolean",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "default": "false",
+          "mappedType": "boolean"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        }
+      },
+      "name": "users",
+      "schema": "public",
+      "indexes": [
+        {
+          "columnNames": [
+            "email"
+          ],
+          "composite": false,
+          "keyName": "users_email_unique",
+          "constraint": true,
+          "primary": false,
+          "unique": true
+        },
+        {
+          "keyName": "users_pkey",
+          "columnNames": [
+            "id"
+          ],
+          "composite": false,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {},
+      "nativeEnums": {}
+    },
+    {
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "unsigned": false,
+          "autoincrement": true,
+          "primary": true,
+          "nullable": false,
+          "mappedType": "bigint"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "collection": {
+          "name": "collection",
+          "type": "varchar(100)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 100,
+          "mappedType": "string"
+        },
+        "action": {
+          "name": "action",
+          "type": "varchar(50)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 50,
+          "mappedType": "string"
+        },
+        "target_id": {
+          "name": "target_id",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "details": {
+          "name": "details",
+          "type": "jsonb",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "mappedType": "json"
+        },
+        "timestamp": {
+          "name": "timestamp",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        }
+      },
+      "name": "audit_logs",
+      "schema": "public",
+      "indexes": [
+        {
+          "columnNames": [
+            "user_id"
+          ],
+          "composite": false,
+          "keyName": "audit_log_user_id_index",
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "columnNames": [
+            "collection"
+          ],
+          "composite": false,
+          "keyName": "audit_log_collection_index",
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "columnNames": [
+            "target_id"
+          ],
+          "composite": false,
+          "keyName": "audit_log_target_id_index",
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "keyName": "audit_logs_collection_target_id_index",
+          "columnNames": [
+            "collection",
+            "target_id"
+          ],
+          "composite": true,
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "keyName": "audit_logs_pkey",
+          "columnNames": [
+            "id"
+          ],
+          "composite": false,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {
+        "audit_logs_user_id_foreign": {
+          "constraintName": "audit_logs_user_id_foreign",
+          "columnNames": [
+            "user_id"
+          ],
+          "localTableName": "public.audit_logs",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "referencedTableName": "public.users",
+          "deleteRule": "set null",
+          "updateRule": "cascade"
+        }
+      },
+      "nativeEnums": {}
+    }
+  ],
+  "nativeEnums": {}
+}
 ````
 
 ## File: src/exchange/interceptors/exchange-error.interceptor.ts
@@ -6348,50 +6858,6 @@ export class SmtpSenderService implements OnModuleDestroy {
       }
       this.transporters.delete(email);
     }
-  }
-}
-````
-
-## File: src/files/dto/commit-file.dto.ts
-````typescript
-import { IsString, IsOptional, IsObject } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
-
-export class CommitFileDto {
-  @ApiProperty({ example: '01KFQ3SQA8JEBXYGP6AZNJBNZ8' })
-  @IsString()
-  id!: string;
-
-  @ApiProperty({ example: 'report.pdf', required: false })
-  @IsOptional()
-  @IsString()
-  originalName?: string;
-
-  @ApiProperty({ example: { category: 'contract' }, required: false })
-  @IsOptional()
-  @IsObject()
-  extraMetadata?: Record<string, any>;
-}
-````
-
-## File: src/files/dto/temp-upload-response.dto.ts
-````typescript
-import { ApiProperty } from '@nestjs/swagger';
-
-export class TempUploadResponseDto {
-  @ApiProperty({ example: '01KFQ3SQA8JEBXYGP6AZNJBNZ8' })
-  id!: string;
-  @ApiProperty({ example: 'report.pdf' })
-  originalName!: string;
-  @ApiProperty({ example: 'application/pdf' })
-  mimeType!: string;
-  @ApiProperty({ example: 123456 })
-  size!: number;
-  @ApiProperty({ example: '/files/temp/01KFQ3SQA8JEBXYGP6AZNJBNZ8/preview' })
-  previewUrl!: string;
-
-  constructor(partial: Partial<TempUploadResponseDto>) {
-    Object.assign(this, partial);
   }
 }
 ````
@@ -7260,93 +7726,6 @@ export class LocalStorageAdapter implements IStorageAdapter {
 }
 ````
 
-## File: src/storage/storage.interface.ts
-````typescript
-import { ReadStream } from 'fs';
-
-export interface StorageResult {
-  storedName: string;
-  storagePath: string;
-  size: number;
-}
-
-/**
- * Storage adapter interface for abstracting file storage operations
- * Enables swapping between local filesystem, S3, GCS, etc.
- */
-export interface IStorageAdapter {
-  /**
-   * Save file to storage (Generic Upload)
-   * This is the preferred method for general upload usage.
-   */
-  upload?(file: Express.Multer.File, path: string): Promise<StorageResult>;
-
-  /**
-   * Get a signed URL for public or temporary access.
-   * For local storage, this might return a relative publicly accessible path.
-   */
-  getSignedUrl?(path: string, expiresIn?: number): Promise<string>;
-
-  /**
-   * Save file to temporary storage
-   * @param file Multer file object
-   * @param id ULID identifier for the file
-   * @returns Storage metadata
-   */
-  saveTemp(file: Express.Multer.File, id: string): Promise<StorageResult>;
-
-  /**
-   * Move file from temporary to permanent storage
-   * @param tempPath Temporary storage path
-   * @param permanentPath Permanent storage path
-   */
-  moveToPermanent(tempPath: string, permanentPath: string): Promise<void>;
-
-  /**
-   * Get a readable stream for a file
-   * @param path Storage path
-   * @returns Readable stream
-   */
-  getStream(path: string): Promise<ReadStream>;
-
-  /**
-   * Delete a file from storage
-   * @param path Storage path
-   */
-  delete(path: string): Promise<void>;
-
-  /**
-   * Check if file exists in storage
-   * @param path Storage path
-   * @returns True if file exists
-   */
-  exists(path: string): Promise<boolean>;
-
-  /**
-   * Get file size
-   * @param path Storage path
-   * @returns File size in bytes
-   */
-  getSize(path: string): Promise<number>;
-}
-````
-
-## File: test/jest-e2e.json
-````json
-{
-  "moduleFileExtensions": ["js", "json", "ts"],
-  "rootDir": ".",
-  "testEnvironment": "node",
-  "testRegex": ".e2e-spec.ts$",
-  "moduleNameMapper": {
-    "^src/(.*)$": "<rootDir>/../src/$1"
-  },
-  "transform": {
-    "^.+\\.(t|j)s$": "ts-jest"
-  }
-}
-````
-
 ## File: src/auth/strategies/jwt.strategy.ts
 ````typescript
 import { Injectable } from '@nestjs/common';
@@ -7605,386 +7984,117 @@ export class RequestContext {
 }
 ````
 
-## File: src/database/migrations/.snapshot-postgres.json
-````json
-{
-  "namespaces": [
-    "public"
-  ],
-  "name": "public",
-  "tables": [
-    {
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "default": "gen_random_uuid()",
-          "mappedType": "uuid"
-        },
-        "original_name": {
-          "name": "original_name",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "stored_name": {
-          "name": "stored_name",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "mime_type": {
-          "name": "mime_type",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "size": {
-          "name": "size",
-          "type": "bigint",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "mappedType": "bigint"
-        },
-        "storage_path": {
-          "name": "storage_path",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "default": "'TEMP'",
-          "enumItems": [
-            "TEMP",
-            "ACTIVE",
-            "DELETED"
-          ],
-          "mappedType": "enum"
-        },
-        "custom_metadata": {
-          "name": "custom_metadata",
-          "type": "jsonb",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": true,
-          "mappedType": "json"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        }
-      },
-      "name": "files",
-      "schema": "public",
-      "indexes": [
-        {
-          "columnNames": [
-            "status"
-          ],
-          "composite": false,
-          "keyName": "files_status_index",
-          "constraint": false,
-          "primary": false,
-          "unique": false
-        },
-        {
-          "keyName": "files_pkey",
-          "columnNames": [
-            "id"
-          ],
-          "composite": false,
-          "constraint": true,
-          "primary": true,
-          "unique": true
-        }
-      ],
-      "checks": [],
-      "foreignKeys": {},
-      "nativeEnums": {}
-    },
-    {
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "email": {
-          "name": "email",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "is_active": {
-          "name": "is_active",
-          "type": "boolean",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "default": "true",
-          "mappedType": "boolean"
-        },
-        "mailbox_initialized": {
-          "name": "mailbox_initialized",
-          "type": "boolean",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "default": "false",
-          "mappedType": "boolean"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        }
-      },
-      "name": "users",
-      "schema": "public",
-      "indexes": [
-        {
-          "columnNames": [
-            "email"
-          ],
-          "composite": false,
-          "keyName": "users_email_unique",
-          "constraint": true,
-          "primary": false,
-          "unique": true
-        },
-        {
-          "keyName": "users_pkey",
-          "columnNames": [
-            "id"
-          ],
-          "composite": false,
-          "constraint": true,
-          "primary": true,
-          "unique": true
-        }
-      ],
-      "checks": [],
-      "foreignKeys": {},
-      "nativeEnums": {}
-    },
-    {
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "bigserial",
-          "unsigned": false,
-          "autoincrement": true,
-          "primary": true,
-          "nullable": false,
-          "mappedType": "bigint"
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": true,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "collection": {
-          "name": "collection",
-          "type": "varchar(100)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 100,
-          "mappedType": "string"
-        },
-        "action": {
-          "name": "action",
-          "type": "varchar(50)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 50,
-          "mappedType": "string"
-        },
-        "target_id": {
-          "name": "target_id",
-          "type": "varchar(255)",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 255,
-          "mappedType": "string"
-        },
-        "details": {
-          "name": "details",
-          "type": "jsonb",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": true,
-          "mappedType": "json"
-        },
-        "timestamp": {
-          "name": "timestamp",
-          "type": "timestamptz",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": false,
-          "length": 6,
-          "mappedType": "datetime"
-        }
-      },
-      "name": "audit_logs",
-      "schema": "public",
-      "indexes": [
-        {
-          "columnNames": [
-            "user_id"
-          ],
-          "composite": false,
-          "keyName": "audit_log_user_id_index",
-          "constraint": false,
-          "primary": false,
-          "unique": false
-        },
-        {
-          "columnNames": [
-            "collection"
-          ],
-          "composite": false,
-          "keyName": "audit_log_collection_index",
-          "constraint": false,
-          "primary": false,
-          "unique": false
-        },
-        {
-          "columnNames": [
-            "target_id"
-          ],
-          "composite": false,
-          "keyName": "audit_log_target_id_index",
-          "constraint": false,
-          "primary": false,
-          "unique": false
-        },
-        {
-          "keyName": "audit_logs_collection_target_id_index",
-          "columnNames": [
-            "collection",
-            "target_id"
-          ],
-          "composite": true,
-          "constraint": false,
-          "primary": false,
-          "unique": false
-        },
-        {
-          "keyName": "audit_logs_pkey",
-          "columnNames": [
-            "id"
-          ],
-          "composite": false,
-          "constraint": true,
-          "primary": true,
-          "unique": true
-        }
-      ],
-      "checks": [],
-      "foreignKeys": {
-        "audit_logs_user_id_foreign": {
-          "constraintName": "audit_logs_user_id_foreign",
-          "columnNames": [
-            "user_id"
-          ],
-          "localTableName": "public.audit_logs",
-          "referencedColumnNames": [
-            "id"
-          ],
-          "referencedTableName": "public.users",
-          "deleteRule": "set null",
-          "updateRule": "cascade"
-        }
-      },
-      "nativeEnums": {}
-    }
-  ],
-  "nativeEnums": {}
-}
+## File: .env.example
+````
+# ==============================================================================
+# SERVER CONFIGURATION
+# ==============================================================================
+PORT=3000
+NODE_ENV=development
+# Set to 'true' to run seed data on startup (creates default admin/roles)
+RUN_SEEDING=false
+
+# ==============================================================================
+# DATABASE CONFIGURATION (PostgreSQL)
+# ==============================================================================
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=your_password
+DB_NAME=nestjs_base_db
+# Allow global context for simpler MikroORM usage (default false for strictness)
+DB_ALLOW_GLOBAL_CONTEXT=false
+
+# ==============================================================================
+# AUTHENTICATION & SECURITY
+# ==============================================================================
+# JWT Secret Key - CHANGE THIS IN PRODUCTION!
+JWT_SECRET=your-super-secret-key-change-it-now
+# Access Token Lifetime
+JWT_EXPIRES_IN=15m
+# Refresh Token Lifetime
+REFRESH_EXPIRES_IN=7d
+# Max number of failed refresh attempts before blocking context (optional)
+AUTH_MAX_FAILED_REFRESH=5
+# Logging level for auth events: 'basic' or 'verbose'
+AUTH_LOG_LEVEL=basic
+
+# ==============================================================================
+# CACHE CONFIGURATION (DragonflyDB / Redis)
+# ==============================================================================
+# Enable caching layer (Optional)
+DRAGONFLY_ENABLED=false
+DRAGONFLY_HOST=localhost
+DRAGONFLY_PORT=6379
+DRAGONFLY_PASSWORD=
+# Default Cache TTL in seconds (e.g. 300 = 5 minutes)
+DRAGONFLY_TTL=300
+
+# ==============================================================================
+# QUERY ENGINE CONFIGURATION
+# ==============================================================================
+# Max nested depth for filtering/relations
+QUERY_MAX_DEPTH=3
+# Max number of conditions in a single query (hard limit for safety)
+QUERY_MAX_CONDITIONS=50
+# Max number of fields allowed in sort
+QUERY_MAX_SORT_FIELDS=3
+# Allow regex in filters? (Warning: performance impact)
+QUERY_ALLOW_REGEX=false
+
+# ==============================================================================
+# FILE STORAGE
+# ==============================================================================
+# Driver: 'local' | 's3' (future support)
+STORAGE_DRIVER=local
+FILE_STORAGE_PATH=./storage
+
+# ==============================================================================
+# EXCHANGE WEBMAIL CONFIGURATION (MVP)
+# ==============================================================================
+# Secret used to derive encryption keys for storing Exchange credentials in Redis
+# MUST be a long, random string. NEVER use JWT_SECRET for this.
+EXCHANGE_CRED_SECRET=change_this_to_a_complex_random_string_mvp_only
+
+# EWS Endpoint URL (e.g., Office 365)
+# Default: https://outlook.office365.com/EWS/Exchange.asmx
+EWS_URL=https://outlook.office365.com/EWS/Exchange.asmx
+EWS_TOKEN_URL=
+EWS_CLIENT_ID=
+EWS_CLIENT_SECRET=
+# Use either EWS_SCOPE (OAuth2 v2) or EWS_RESOURCE (OAuth2 v1/ADFS)
+EWS_SCOPE=
+EWS_RESOURCE=
+# Example: Exchange2013, Exchange2016, Exchange2019
+EWS_VERSION=Exchange2016
+# Impersonate mailbox by SMTP address (app-only OAuth2)
+EWS_IMPERSONATE=true
+# Validate EWS connectivity on login
+EWS_VALIDATE_ON_LOGIN=false
+# Temporarily disable SSO (EWS OAuth2)
+EWS_SSO_ENABLED=true
+# Allow self-signed certificates (dev only)
+EWS_TLS_REJECT_UNAUTHORIZED=true
+
+# ==============================================================================
+# MAILBOX MANAGEMENT (SCRIPT + GAL)
+# ==============================================================================
+# Paths to mailbox management scripts (PowerShell or executable)
+MAILBOX_SCRIPT_CREATE=./scripts/mailbox/create-mailbox.ps1
+MAILBOX_SCRIPT_UPDATE=./scripts/mailbox/update-mailbox.ps1
+MAILBOX_SCRIPT_DISABLE=./scripts/mailbox/disable-mailbox.ps1
+MAILBOX_SCRIPT_RESTORE=./scripts/mailbox/restore-mailbox.ps1
+MAILBOX_SCRIPT_DELETE=./scripts/mailbox/delete-mailbox.ps1
+# Script timeout in milliseconds
+MAILBOX_SCRIPT_TIMEOUT_MS=60000
+# Admin credentials for GAL lookup when EWS_SSO_ENABLED=false
+EWS_ADMIN_EMAIL=
+EWS_ADMIN_PASSWORD=
+
+# Exchange Connection for PowerShell Scripts
+EXCHANGE_SERVER=mail-ex.mailex.local
+EXCHANGE_USER_ADMIN=mailex\Administrator
+EXCHANGE_PASSWORD=123456a@
 ````
 
 ## File: src/auth/auth.controller.ts
@@ -8155,161 +8265,6 @@ export class Role {
 }
 ````
 
-## File: .env.example
-````
-# ==============================================================================
-# SERVER CONFIGURATION
-# ==============================================================================
-PORT=3000
-NODE_ENV=development
-# Set to 'true' to run seed data on startup (creates default admin/roles)
-RUN_SEEDING=false
-
-# ==============================================================================
-# DATABASE CONFIGURATION (PostgreSQL)
-# ==============================================================================
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=postgres
-DB_PASSWORD=your_password
-DB_NAME=nestjs_base_db
-# Allow global context for simpler MikroORM usage (default false for strictness)
-DB_ALLOW_GLOBAL_CONTEXT=false
-
-# ==============================================================================
-# AUTHENTICATION & SECURITY
-# ==============================================================================
-# JWT Secret Key - CHANGE THIS IN PRODUCTION!
-JWT_SECRET=your-super-secret-key-change-it-now
-# Access Token Lifetime
-JWT_EXPIRES_IN=15m
-# Refresh Token Lifetime
-REFRESH_EXPIRES_IN=7d
-# Max number of failed refresh attempts before blocking context (optional)
-AUTH_MAX_FAILED_REFRESH=5
-# Logging level for auth events: 'basic' or 'verbose'
-AUTH_LOG_LEVEL=basic
-
-# ==============================================================================
-# CACHE CONFIGURATION (DragonflyDB / Redis)
-# ==============================================================================
-# Enable caching layer (Optional)
-DRAGONFLY_ENABLED=false
-DRAGONFLY_HOST=localhost
-DRAGONFLY_PORT=6379
-DRAGONFLY_PASSWORD=
-# Default Cache TTL in seconds (e.g. 300 = 5 minutes)
-DRAGONFLY_TTL=300
-
-# ==============================================================================
-# QUERY ENGINE CONFIGURATION
-# ==============================================================================
-# Max nested depth for filtering/relations
-QUERY_MAX_DEPTH=3
-# Max number of conditions in a single query (hard limit for safety)
-QUERY_MAX_CONDITIONS=50
-# Max number of fields allowed in sort
-QUERY_MAX_SORT_FIELDS=3
-# Allow regex in filters? (Warning: performance impact)
-QUERY_ALLOW_REGEX=false
-
-# ==============================================================================
-# FILE STORAGE
-# ==============================================================================
-# Driver: 'local' | 's3' (future support)
-STORAGE_DRIVER=local
-FILE_STORAGE_PATH=./storage
-
-# ==============================================================================
-# EXCHANGE WEBMAIL CONFIGURATION (MVP)
-# ==============================================================================
-# Secret used to derive encryption keys for storing Exchange credentials in Redis
-# MUST be a long, random string. NEVER use JWT_SECRET for this.
-EXCHANGE_CRED_SECRET=change_this_to_a_complex_random_string_mvp_only
-
-# EWS Endpoint URL (e.g., Office 365)
-# Default: https://outlook.office365.com/EWS/Exchange.asmx
-EWS_URL=https://outlook.office365.com/EWS/Exchange.asmx
-EWS_TOKEN_URL=
-EWS_CLIENT_ID=
-EWS_CLIENT_SECRET=
-# Use either EWS_SCOPE (OAuth2 v2) or EWS_RESOURCE (OAuth2 v1/ADFS)
-EWS_SCOPE=
-EWS_RESOURCE=
-# Example: Exchange2013, Exchange2016, Exchange2019
-EWS_VERSION=Exchange2016
-# Impersonate mailbox by SMTP address (app-only OAuth2)
-EWS_IMPERSONATE=true
-# Validate EWS connectivity on login
-EWS_VALIDATE_ON_LOGIN=false
-# Temporarily disable SSO (EWS OAuth2)
-EWS_SSO_ENABLED=true
-# Allow self-signed certificates (dev only)
-EWS_TLS_REJECT_UNAUTHORIZED=true
-
-# ==============================================================================
-# MAILBOX MANAGEMENT (SCRIPT + GAL)
-# ==============================================================================
-# Paths to mailbox management scripts (PowerShell or executable)
-MAILBOX_SCRIPT_CREATE=./scripts/mailbox/create-mailbox.ps1
-MAILBOX_SCRIPT_UPDATE=./scripts/mailbox/update-mailbox.ps1
-MAILBOX_SCRIPT_DISABLE=./scripts/mailbox/disable-mailbox.ps1
-MAILBOX_SCRIPT_RESTORE=./scripts/mailbox/restore-mailbox.ps1
-MAILBOX_SCRIPT_DELETE=./scripts/mailbox/delete-mailbox.ps1
-# Script timeout in milliseconds
-MAILBOX_SCRIPT_TIMEOUT_MS=60000
-# Admin credentials for GAL lookup when EWS_SSO_ENABLED=false
-EWS_ADMIN_EMAIL=
-EWS_ADMIN_PASSWORD=
-
-# Exchange Connection for PowerShell Scripts
-EXCHANGE_SERVER=mail-ex.mailex.local
-EXCHANGE_USER_ADMIN=mailex\Administrator
-EXCHANGE_PASSWORD=123456a@
-````
-
-## File: src/auth/auth.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { JwtModule } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
-import { PassportModule } from '@nestjs/passport';
-import { MikroOrmModule } from '@mikro-orm/nestjs';
-import { AuthService } from './auth.service';
-import { AuthController } from './auth.controller';
-import { JwtStrategy } from './strategies/jwt.strategy';
-import { User } from '../database/entities/user.entity';
-import { CommonModule } from '../common/common.module';
-import { JwtAuthGuard } from './guards/jwt-auth.guard';
-import { AuditLogModule } from '../audit/audit.module';
-import { ExchangeModule } from '../exchange/exchange.module';
-
-@Module({
-  imports: [
-    CommonModule,
-    AuditLogModule,
-    ExchangeModule,
-    PassportModule.register({ defaultStrategy: 'jwt' }),
-    JwtModule.registerAsync({
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        secret:
-          configService.get<string>('JWT_SECRET') ||
-          'your-secret-key-change-in-production',
-        signOptions: {
-          expiresIn: configService.get<any>('JWT_EXPIRES_IN') || '15m',
-        },
-      }),
-    }),
-    MikroOrmModule.forFeature([User]),
-  ],
-  providers: [AuthService, JwtStrategy, JwtAuthGuard],
-  controllers: [AuthController],
-  exports: [AuthService, JwtStrategy, PassportModule, JwtModule, JwtAuthGuard],
-})
-export class AuthModule {}
-````
-
 ## File: src/database/entities/user.entity.ts
 ````typescript
 import {
@@ -8385,6 +8340,146 @@ import { ContactNoteService } from './services/contact-note.service';
 export class ExchangeModule {}
 ````
 
+## File: mikro-orm.config.ts
+````typescript
+import 'dotenv/config'; // Ensure .env is loaded for CLI
+import { defineConfig } from '@mikro-orm/postgresql';
+import { User } from './src/database/entities/user.entity';
+import { File } from './src/database/entities/file.entity';
+import { AuditLog } from './src/database/entities/audit-log.entity';
+
+export default defineConfig({
+  entities: [User, File, AuditLog],
+  dbName: process.env.DB_NAME || 'postgres',
+  host: process.env.DB_HOST || 'localhost',
+  port: parseInt(process.env.DB_PORT || '5432', 10),
+  user: process.env.DB_USER || 'postgres',
+  password: process.env.DB_PASSWORD || '123',
+  debug: process.env.NODE_ENV !== 'production',
+  allowGlobalContext: process.env.DB_ALLOW_GLOBAL_CONTEXT === 'true', // CLI/Migration usage
+  migrations: {
+    path: './src/database/migrations',
+    pathTs: './src/database/migrations',
+  },
+});
+````
+
+## File: src/auth/auth.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { JwtModule } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
+import { PassportModule } from '@nestjs/passport';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
+import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
+import { JwtStrategy } from './strategies/jwt.strategy';
+import { User } from '../database/entities/user.entity';
+import { CommonModule } from '../common/common.module';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { AuditLogModule } from '../audit/audit.module';
+import { ExchangeModule } from '../exchange/exchange.module';
+
+@Module({
+  imports: [
+    CommonModule,
+    AuditLogModule,
+    ExchangeModule,
+    PassportModule.register({ defaultStrategy: 'jwt' }),
+    JwtModule.registerAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        secret:
+          configService.get<string>('JWT_SECRET') ||
+          'your-secret-key-change-in-production',
+        signOptions: {
+          expiresIn: configService.get<any>('JWT_EXPIRES_IN') || '15m',
+        },
+      }),
+    }),
+    MikroOrmModule.forFeature([User]),
+  ],
+  providers: [AuthService, JwtStrategy, JwtAuthGuard],
+  controllers: [AuthController],
+  exports: [AuthService, JwtStrategy, PassportModule, JwtModule, JwtAuthGuard],
+})
+export class AuthModule {}
+````
+
+## File: src/common/permissions/permission.service.ts
+````typescript
+import { ForbiddenException, Injectable } from '@nestjs/common';
+import { EntityManager } from '@mikro-orm/core';
+import { RequestContext } from '../context/request.context';
+import { User } from '../../database/entities/user.entity';
+
+@Injectable()
+export class PermissionService {
+  constructor(
+    private readonly requestContext: RequestContext,
+    private readonly em: EntityManager,
+  ) {}
+
+  private async loadUserWithPermissions(userId: string) {
+    return this.em.findOne(
+      User,
+      { id: userId },
+      {
+        populate: ['roles', 'roles.permissions'],
+      },
+    );
+  }
+
+  async hasRole(roleName: string): Promise<boolean> {
+    const user = this.requestContext.user;
+    if (!user?.id) return false;
+
+    const entity = await this.loadUserWithPermissions(String(user.id));
+    if (!entity) return false;
+
+    return entity.roles.getItems().some((role) => role.name === roleName);
+  }
+
+  async can(collection: string, action: string): Promise<any> {
+    const user = this.requestContext.user;
+    if (!user?.id) return false;
+
+    const entity = await this.loadUserWithPermissions(String(user.id));
+    if (!entity) return false;
+
+    const roles = entity.roles.getItems();
+    if (roles.some((role) => role.name === 'admin')) {
+      return {};
+    }
+
+    const hasPermission = roles.some((role) =>
+      role.permissions
+        .getItems()
+        .some(
+          (permission) =>
+            permission.collection === collection &&
+            permission.action === action,
+        ),
+    );
+
+    return hasPermission ? {} : false;
+  }
+
+  async assert(collection: string, action: string | string[]): Promise<void> {
+    const actions = Array.isArray(action) ? action : [action];
+
+    for (const item of actions) {
+      const allowed = await this.can(collection, item);
+      if (allowed === false) {
+        throw new ForbiddenException(
+          `Permission denied: ${item} on ${collection}`,
+        );
+      }
+    }
+  }
+}
+````
+
 ## File: src/exchange/services/ews-mail.provider.ts
 ````typescript
 import {
@@ -8439,6 +8534,8 @@ import {
   ConversationId,
   ConversationIndexedItemView,
   ConversationSchema,
+  FileAttachment,
+  ItemAttachment,
   Appointment,
   CalendarFolder,
   CalendarView,
@@ -8458,6 +8555,7 @@ import {
 import {
   IMailProvider,
   MailFolder,
+  MailAttachmentMeta,
   MailMessage,
   SendMailOptions,
   SaveDraftOptions,
@@ -9171,7 +9269,7 @@ export class EwsMailProvider implements IMailProvider {
 
     const items: Partial<MailMessage>[] = result.Items.map((item: any) => ({
       id: this.encodeId(resolvedId, item.Id?.UniqueId ?? ''),
-      subject: item.Subject ?? '(No Subject)',
+      subject: item.Subject ?? '(không có chủ đề)',
       from: this.getFrom(item),
       receivedAt: this.toJsDate(item.DateTimeReceived),
       isRead: item.IsRead ?? false,
@@ -9220,16 +9318,18 @@ export class EwsMailProvider implements IMailProvider {
     }
 
     const bodyText = message.Body?.Text ?? '';
+    const attachments = this.extractAttachmentMetas(message);
+
+    this.logger.log(`[getMessage] bodyText length: ${bodyText.length}, sample: ${bodyText.substring(0, 50).trim()}`);
 
     // Đọc ConversationId nếu có — dùng để fetch toàn bộ luồng thư hội thoại
     const rawConvId = (message as any).ConversationId?.UniqueId as
       | string
       | undefined;
 
-    console.log('rawConvId==', (message as any).ConversationId);
     return {
       id,
-      subject: message.Subject ?? '(No Subject)',
+      subject: message.Subject ?? '(không có chủ đề)',
       from: {
         name: message.From?.Name ?? '',
         email: message.From?.Address ?? '',
@@ -9244,6 +9344,78 @@ export class EwsMailProvider implements IMailProvider {
       isStarred: this.isItemStarred(message),
       preview: bodyText.substring(0, 150),
       conversationId: rawConvId,
+      attachments,
+    };
+  }
+
+  private extractAttachmentMetas(message: EmailMessage): MailAttachmentMeta[] {
+    const items: any[] =
+      (message as any)?.Attachments?.items ??
+      (message as any)?.Attachments ??
+      [];
+
+    return items.map((att: any, index: number) => ({
+      index,
+      filename: att?.Name || `attachment-${index + 1}`,
+      contentType: att?.ContentType || 'application/octet-stream',
+      size: Number(att?.Size || 0),
+    }));
+  }
+
+  async downloadAttachment(
+    messageId: string,
+    index: number,
+  ): Promise<{
+    filename: string;
+    contentType: string;
+    size: number;
+    content: Buffer;
+  }> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    const { itemId } = this.decodeId(messageId);
+    const message = await EmailMessage.Bind(
+      this.service,
+      new ItemId(itemId),
+      new PropertySet(BasePropertySet.FirstClassProperties),
+    );
+
+    const attachments: any[] =
+      (message as any)?.Attachments?.items ??
+      (message as any)?.Attachments ??
+      [];
+
+    if (!Number.isInteger(index) || index < 0 || index >= attachments.length) {
+      throw new BadRequestException('Attachment index khong hop le');
+    }
+
+    const attachment = attachments[index];
+    if (typeof attachment?.Load === 'function') {
+      await attachment.Load();
+    }
+
+    if (attachment instanceof ItemAttachment) {
+      throw new BadRequestException(
+        'Attachment dang item-embedded, chua ho tro download',
+      );
+    }
+
+    if (!(attachment instanceof FileAttachment)) {
+      throw new BadRequestException('Loai attachment khong ho tro');
+    }
+
+    const base64Content = attachment.Base64Content;
+    if (!base64Content) {
+      throw new BadRequestException('Attachment content khong ton tai');
+    }
+
+    const content = Buffer.from(base64Content, 'base64');
+
+    return {
+      filename: attachment.Name || `attachment-${index + 1}`,
+      contentType: attachment.ContentType || 'application/octet-stream',
+      size: Number(attachment.Size || content.length || 0),
+      content,
     };
   }
 
@@ -9367,7 +9539,7 @@ export class EwsMailProvider implements IMailProvider {
           const bodyText = full.Body?.Text ?? '';
           return {
             id: compositeId,
-            subject: full.Subject ?? '(No Subject)',
+            subject: full.Subject ?? '(không có chủ đề)',
             from: {
               name: full.From?.Name ?? '',
               email: full.From?.Address ?? '',
@@ -9410,11 +9582,21 @@ export class EwsMailProvider implements IMailProvider {
   ): Promise<{ success: boolean; messageId?: string }> {
     if (!this.service) throw new Error('EWS service not connected');
 
+    this.logger.debug(`[SaveDraft] Payload: ${JSON.stringify({
+      subject: options.subject,
+      htmlLen: options.html?.length,
+      textLen: options.text?.length,
+      htmlSample: options.html?.substring(0, 50),
+    })}`);
+
     const message = new EmailMessage(this.service);
     message.Subject = options.subject ?? '';
+    const bodyString = options.html ?? options.text ?? '';
+    const encodedBody = this.xmlEncodeForSoap(bodyString);
+    
     message.Body = new MessageBody(
       options.html ? BodyType.HTML : BodyType.Text,
-      options.html ?? options.text ?? '',
+      encodedBody,
     );
 
     if (this.email) {
@@ -9490,9 +9672,12 @@ export class EwsMailProvider implements IMailProvider {
     try {
       const message = new EmailMessage(this.service);
       message.Subject = options.subject ?? '';
+      const bodyString = options.html ?? options.text ?? '';
+      const encodedBody = this.xmlEncodeForSoap(bodyString);
+
       message.Body = new MessageBody(
         options.html ? BodyType.HTML : BodyType.Text,
-        options.html ?? options.text ?? '',
+        encodedBody,
       );
 
       if (this.email) {
@@ -9838,7 +10023,7 @@ export class EwsMailProvider implements IMailProvider {
           folder.toLowerCase() === 'all' ? 'INBOX' : folder.toUpperCase(),
           item.Id?.UniqueId ?? '',
         ),
-        subject: item.Subject ?? '(No Subject)',
+        subject: item.Subject ?? '(không có chủ đề)',
         from: this.getFrom(item),
         receivedAt: this.toJsDate(item.DateTimeReceived),
         isRead: item.IsRead ?? false,
@@ -10764,9 +10949,16 @@ import { AppModule } from './app.module';
 import { BadRequestException, ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { json, urlencoded } from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  // Keep request body limit fixed in code.
+  // 25MB file in base64 is larger than 25MB, so transport limit must be higher.
+  const bodyLimit = '40mb';
+
+  app.use(json({ limit: bodyLimit }));
+  app.use(urlencoded({ extended: true, limit: bodyLimit }));
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -10818,104 +11010,6 @@ async function bootstrap() {
   await app.listen(process.env.PORT ?? 3000);
 }
 bootstrap();
-````
-
-## File: mikro-orm.config.ts
-````typescript
-import 'dotenv/config'; // Ensure .env is loaded for CLI
-import { defineConfig } from '@mikro-orm/postgresql';
-import { User } from './src/database/entities/user.entity';
-import { File } from './src/database/entities/file.entity';
-import { AuditLog } from './src/database/entities/audit-log.entity';
-
-export default defineConfig({
-  entities: [User, File, AuditLog],
-  dbName: process.env.DB_NAME || 'postgres',
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432', 10),
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || '123',
-  debug: process.env.NODE_ENV !== 'production',
-  allowGlobalContext: process.env.DB_ALLOW_GLOBAL_CONTEXT === 'true', // CLI/Migration usage
-  migrations: {
-    path: './src/database/migrations',
-    pathTs: './src/database/migrations',
-  },
-});
-````
-
-## File: src/common/permissions/permission.service.ts
-````typescript
-import { ForbiddenException, Injectable } from '@nestjs/common';
-import { EntityManager } from '@mikro-orm/core';
-import { RequestContext } from '../context/request.context';
-import { User } from '../../database/entities/user.entity';
-
-@Injectable()
-export class PermissionService {
-  constructor(
-    private readonly requestContext: RequestContext,
-    private readonly em: EntityManager,
-  ) {}
-
-  private async loadUserWithPermissions(userId: string) {
-    return this.em.findOne(
-      User,
-      { id: userId },
-      {
-        populate: ['roles', 'roles.permissions'],
-      },
-    );
-  }
-
-  async hasRole(roleName: string): Promise<boolean> {
-    const user = this.requestContext.user;
-    if (!user?.id) return false;
-
-    const entity = await this.loadUserWithPermissions(String(user.id));
-    if (!entity) return false;
-
-    return entity.roles.getItems().some((role) => role.name === roleName);
-  }
-
-  async can(collection: string, action: string): Promise<any> {
-    const user = this.requestContext.user;
-    if (!user?.id) return false;
-
-    const entity = await this.loadUserWithPermissions(String(user.id));
-    if (!entity) return false;
-
-    const roles = entity.roles.getItems();
-    if (roles.some((role) => role.name === 'admin')) {
-      return {};
-    }
-
-    const hasPermission = roles.some((role) =>
-      role.permissions
-        .getItems()
-        .some(
-          (permission) =>
-            permission.collection === collection &&
-            permission.action === action,
-        ),
-    );
-
-    return hasPermission ? {} : false;
-  }
-
-  async assert(collection: string, action: string | string[]): Promise<void> {
-    const actions = Array.isArray(action) ? action : [action];
-
-    for (const item of actions) {
-      const allowed = await this.can(collection, item);
-      if (allowed === false) {
-        throw new ForbiddenException(
-          `Permission denied: ${item} on ${collection}`,
-        );
-      }
-    }
-  }
-}
 ````
 
 ## File: src/auth/auth.service.ts
@@ -11033,8 +11127,123 @@ export class AuthService {
 }
 ````
 
+## File: package.json
+````json
+{
+  "name": "nestjs-base-be",
+  "version": "0.0.1",
+  "description": "",
+  "author": "",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "nest build",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:debug": "nest start --debug --watch",
+    "start:prod": "node dist/main",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage",
+    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "migration:create": "mikro-orm migration:create",
+    "migration:up": "mikro-orm migration:up",
+    "migration:down": "mikro-orm migration:down"
+  },
+  "dependencies": {
+    "@ewsjs/xhr": "^3.1.3",
+    "@mikro-orm/core": "^6.6.4",
+    "@mikro-orm/nestjs": "^6.1.1",
+    "@mikro-orm/postgresql": "^6.6.4",
+    "@nestjs/common": "^11.0.1",
+    "@nestjs/config": "^4.0.2",
+    "@nestjs/core": "^11.0.1",
+    "@nestjs/jwt": "^11.0.2",
+    "@nestjs/mapped-types": "^2.1.0",
+    "@nestjs/passport": "^11.0.5",
+    "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/schedule": "^6.1.0",
+    "@nestjs/swagger": "^11.2.0",
+    "argon2": "^0.44.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.3",
+    "cookie-parser": "^1.4.7",
+    "ews-javascript-api": "^0.15.3",
+    "imapflow": "^1.2.8",
+    "ioredis": "^5.9.2",
+    "mailparser": "^3.9.3",
+    "nodemailer": "^7.0.13",
+    "passport": "^0.7.0",
+    "passport-jwt": "^4.0.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "swagger-ui-express": "^5.0.1",
+    "ulid": "^3.0.2"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^0.1.0",
+    "@eslint/js": "^9.18.0",
+    "@mikro-orm/cli": "^6.6.4",
+    "@mikro-orm/migrations": "^6.6.4",
+    "@nestjs/cli": "^11.0.16",
+    "@nestjs/schematics": "^11.0.9",
+    "@nestjs/testing": "^11.0.1",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.0",
+    "@types/jest": "^30.0.0",
+    "@types/mailparser": "^3.4.6",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^22.10.7",
+    "@types/nodemailer": "^7.0.9",
+    "@types/passport-jwt": "^4.0.1",
+    "@types/supertest": "^6.0.2",
+    "eslint": "^10.0.1",
+    "eslint-config-prettier": "^10.0.1",
+    "eslint-plugin-prettier": "^5.2.2",
+    "globals": "^16.0.0",
+    "jest": "^30.1.3",
+    "prettier": "^3.4.2",
+    "source-map-support": "^0.5.21",
+    "supertest": "^7.0.0",
+    "ts-jest": "^29.2.6",
+    "ts-loader": "^9.5.2",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.21.0"
+  },
+  "jest": {
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node"
+  }
+}
+````
+
 ## File: src/exchange/interfaces/mail-provider.interface.ts
 ````typescript
+export interface MailAttachmentMeta {
+  index: number;
+  filename: string;
+  contentType?: string;
+  size?: number;
+}
+
 export interface MailMessage {
   id: string; // Composite ID: Base64(folder:uid)
   subject: string;
@@ -11049,8 +11258,9 @@ export interface MailMessage {
   preview: string;
   importance?: string;
   isStarred?: boolean;
-  /** ConversationId nhóm các email cùng luồng hội thoại */
+  // Conversation group id
   conversationId?: string;
+  attachments?: MailAttachmentMeta[];
 }
 
 export interface MailFolder {
@@ -11066,11 +11276,11 @@ export interface Attachment {
 
 export interface SendMailOptions {
   from?: string;
-  to: string[];
+  to?: string[];
   cc?: string[];
   bcc?: string[];
   replyTo?: string[];
-  subject: string;
+  subject?: string;
   text?: string; // Plain text version
   html?: string; // HTML version
   attachments?: Attachment[];
@@ -11259,31 +11469,23 @@ export class ExchangeAuthService {
     password: string,
   ): Promise<{ accessToken: string; refreshToken: string; email: string }> {
     // Ensure user exists and verify password in DB
-    let user = await this.em.findOne(User, { email });
+    const user = await this.em.findOne(User, { email });
     if (!user) {
-      const now = new Date();
-      const passwordHash = await argon2.hash(password);
-      user = this.em.create(User, {
-        email,
-        password: passwordHash,
-        isActive: true,
-        mailboxInitialized: false,
-        createdAt: now,
-        updatedAt: now,
-      });
+      // Ném lỗi và ngừng lại nếu người dùng chưa được cấu hình tài khoản (người dùng chưa có bản ghi trên DB)
+      throw new UnauthorizedException('Tài khoản không tồn tại trên hệ thống');
+    }
+
+    if (!user.isActive) {
+      throw new ForbiddenException('Tài khoản đã bị vô hiệu hoá');
+    }
+    
+    if (!user.password) {
+      user.password = await argon2.hash(password);
       await this.em.persistAndFlush(user);
     } else {
-      if (!user.isActive) {
-        throw new ForbiddenException('Tài khoản đã bị vô hiệu hoá');
-      }
-      if (!user.password) {
-        user.password = await argon2.hash(password);
-        await this.em.persistAndFlush(user);
-      } else {
-        const valid = await argon2.verify(user.password, password);
-        if (!valid) {
-          throw new UnauthorizedException('Invalid Exchange credentials');
-        }
+      const valid = await argon2.verify(user.password, password);
+      if (!valid) {
+        throw new UnauthorizedException('Invalid Exchange credentials');
       }
     }
 
@@ -11421,18 +11623,10 @@ export class ExchangeAuthService {
     email: string,
     password: string,
   ): Promise<void> {
-    let user = await this.em.findOne(User, { email });
+    const user = await this.em.findOne(User, { email });
 
     if (!user) {
-      const now = new Date();
-      user = this.em.create(User, {
-        email,
-        isActive: true,
-        mailboxInitialized: false,
-        createdAt: now,
-        updatedAt: now,
-      });
-      await this.em.persistAndFlush(user);
+      throw new UnauthorizedException('Tài khoản không tồn tại trên hệ thống');
     }
 
     if (user.mailboxInitialized) {
@@ -11657,114 +11851,6 @@ export class ExchangeAuthService {
 }
 ````
 
-## File: package.json
-````json
-{
-  "name": "nestjs-base-be",
-  "version": "0.0.1",
-  "description": "",
-  "author": "",
-  "private": true,
-  "license": "UNLICENSED",
-  "scripts": {
-    "build": "nest build",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "start": "nest start",
-    "start:dev": "nest start --watch",
-    "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main",
-    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "test:cov": "jest --coverage",
-    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json",
-    "migration:create": "mikro-orm migration:create",
-    "migration:up": "mikro-orm migration:up",
-    "migration:down": "mikro-orm migration:down"
-  },
-  "dependencies": {
-    "@ewsjs/xhr": "^3.1.3",
-    "@mikro-orm/core": "^6.6.4",
-    "@mikro-orm/nestjs": "^6.1.1",
-    "@mikro-orm/postgresql": "^6.6.4",
-    "@nestjs/common": "^11.0.1",
-    "@nestjs/config": "^4.0.2",
-    "@nestjs/core": "^11.0.1",
-    "@nestjs/jwt": "^11.0.2",
-    "@nestjs/mapped-types": "^2.1.0",
-    "@nestjs/passport": "^11.0.5",
-    "@nestjs/platform-express": "^11.0.1",
-    "@nestjs/schedule": "^6.1.0",
-    "@nestjs/swagger": "^11.2.0",
-    "argon2": "^0.44.0",
-    "class-transformer": "^0.5.1",
-    "class-validator": "^0.14.3",
-    "cookie-parser": "^1.4.7",
-    "ews-javascript-api": "^0.15.3",
-    "imapflow": "^1.2.8",
-    "ioredis": "^5.9.2",
-    "mailparser": "^3.9.3",
-    "nodemailer": "^7.0.13",
-    "passport": "^0.7.0",
-    "passport-jwt": "^4.0.1",
-    "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1",
-    "swagger-ui-express": "^5.0.1",
-    "ulid": "^3.0.2"
-  },
-  "devDependencies": {
-    "@eslint/eslintrc": "^0.1.0",
-    "@eslint/js": "^9.18.0",
-    "@mikro-orm/cli": "^6.6.4",
-    "@mikro-orm/migrations": "^6.6.4",
-    "@nestjs/cli": "^11.0.16",
-    "@nestjs/schematics": "^11.0.9",
-    "@nestjs/testing": "^11.0.1",
-    "@types/cookie-parser": "^1.4.10",
-    "@types/express": "^5.0.0",
-    "@types/jest": "^30.0.0",
-    "@types/mailparser": "^3.4.6",
-    "@types/multer": "^2.0.0",
-    "@types/node": "^22.10.7",
-    "@types/nodemailer": "^7.0.9",
-    "@types/passport-jwt": "^4.0.1",
-    "@types/supertest": "^6.0.2",
-    "eslint": "^10.0.1",
-    "eslint-config-prettier": "^10.0.1",
-    "eslint-plugin-prettier": "^5.2.2",
-    "globals": "^16.0.0",
-    "jest": "^30.1.3",
-    "prettier": "^3.4.2",
-    "source-map-support": "^0.5.21",
-    "supertest": "^7.0.0",
-    "ts-jest": "^29.2.6",
-    "ts-loader": "^9.5.2",
-    "ts-node": "^10.9.2",
-    "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.7.3",
-    "typescript-eslint": "^8.21.0"
-  },
-  "jest": {
-    "moduleFileExtensions": [
-      "js",
-      "json",
-      "ts"
-    ],
-    "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$",
-    "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
-    },
-    "collectCoverageFrom": [
-      "**/*.(t|j)s"
-    ],
-    "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
-  }
-}
-````
-
 ## File: src/app.module.ts
 ````typescript
 import { Module } from '@nestjs/common';
@@ -11830,950 +11916,6 @@ import { MailboxModule } from './mailbox/mailbox.module';
 export class AppModule {}
 ````
 
-## File: src/exchange/services/mail.service.ts
-````typescript
-import {
-  BadRequestException,
-  Inject,
-  Injectable,
-  Logger,
-  Scope,
-} from '@nestjs/common';
-import { REQUEST } from '@nestjs/core';
-import { EwsMailProvider } from './ews-mail.provider';
-import { MailMessage } from '../interfaces/mail-provider.interface';
-import {
-  SendMailDto,
-  SaveDraftDto,
-  MarkReadDto,
-  MoveBatchDto,
-  PermanentDeleteMailDto,
-  StarMailDto,
-  ReplyMailDto,
-  ForwardMailDto,
-} from '../dto/exchange.dto';
-
-import { DragonflyService } from '../../common/cache/dragonfly.service';
-import { ExchangeAuthService } from './exchange-auth.service';
-import {
-  DEFAULT_FOLDER_ID,
-  MAIL_FOLDERS,
-  resolveFolderId,
-  resolveFolderType,
-} from '../constants/mail-folders.constant';
-
-@Injectable({ scope: Scope.REQUEST })
-export class MailService {
-  private readonly logger = new Logger(MailService.name);
-
-  constructor(
-    private readonly provider: EwsMailProvider,
-    private readonly dragonfly: DragonflyService,
-    private readonly authService: ExchangeAuthService,
-    @Inject(REQUEST) private readonly request: any,
-  ) {}
-
-  private async withProvider<T>(operation: () => Promise<T>): Promise<T> {
-    try {
-      await this.provider.connect();
-      return await operation();
-    } catch (error) {
-      this.logger.error(`Mail operation failed: ${error.message}`, error.stack);
-      throw error;
-    } finally {
-      await this.provider.disconnect();
-    }
-  }
-
-  private async getEmailFromSession(): Promise<string | null> {
-    const token = this.request.cookies?.['exchange_session'];
-    if (!token) return null;
-    const creds = await this.authService.getCredentials(token);
-    return creds?.email || null;
-  }
-
-  private mapFolderTypeToId(type: string, defaultValue?: string): string {
-    return resolveFolderId(type, defaultValue ?? DEFAULT_FOLDER_ID);
-  }
-
-  private mapIdToFolderType(id: string): string {
-    return resolveFolderType(id);
-  }
-
-  async getFolderCounts() {
-    const email = await this.getEmailFromSession();
-    if (!email) {
-      return this.withProvider(() => this.provider.getFolderCounts());
-    }
-
-    const standardFolders = MAIL_FOLDERS.map((f) => f.id);
-    const cacheKeys = standardFolders.map(
-      (f) => `exchange:count:${email}:${f}`,
-    );
-
-    if (this.dragonfly.enabled) {
-      const cachedValues = await Promise.all(
-        cacheKeys.map((key) => this.dragonfly.get(key)),
-      );
-
-      const result: Record<string, { total: number; unread: number }> = {};
-      let allFound = true;
-
-      standardFolders.forEach((folder, index) => {
-        if (cachedValues[index]) {
-          const type = this.mapIdToFolderType(folder);
-          result[type] = cachedValues[index] as any;
-        } else {
-          allFound = false;
-        }
-      });
-
-      if (allFound) {
-        return result;
-      }
-    }
-
-    const counts = await this.withProvider(() =>
-      this.provider.getFolderCounts(),
-    );
-
-    if (this.dragonfly.enabled) {
-      const ttl = 300;
-      await Promise.all(
-        Object.entries(counts).map(([folder, count]) =>
-          this.dragonfly.set(`exchange:count:${email}:${folder}`, count, ttl),
-        ),
-      );
-    }
-
-    const mappedCounts: Record<string, { total: number; unread: number }> = {};
-    for (const [id, count] of Object.entries(counts)) {
-      const type = this.mapIdToFolderType(id);
-      mappedCounts[type] = count;
-    }
-
-    return mappedCounts;
-  }
-
-  async getFolders() {
-    return this.withProvider(() => this.provider.getFolders());
-  }
-
-  async getMessages(
-    folderType: string,
-    page: number = 1,
-    pageSize: number = 20,
-  ) {
-    const folderId = this.mapFolderTypeToId(folderType);
-    return this.withProvider(() =>
-      this.provider.getMessages(folderId, page, pageSize),
-    );
-  }
-
-  async getMessage(id: string) {
-    const message = await this.withProvider(() => this.provider.getMessage(id));
-
-    try {
-      const email = await this.getEmailFromSession();
-      if (email && this.dragonfly.enabled) {
-        const decoded = Buffer.from(id, 'base64').toString('utf8');
-        const [rawFolder] = decoded.split(':');
-        const folder = resolveFolderId(rawFolder, rawFolder);
-
-        const key = `exchange:count:${email}:${folder}`;
-        const current = await this.dragonfly.get<{
-          total: number;
-          unread: number;
-        }>(key);
-
-        if (current && current.unread > 0) {
-          await this.dragonfly.del(key);
-        }
-      }
-    } catch (e) {
-      // ignore cache errors
-    }
-
-    return message;
-  }
-
-  async sendMessage(dto: SendMailDto) {
-    const result = await this.withProvider(() =>
-      this.provider.sendMessage(dto),
-    );
-
-    const email = await this.getEmailFromSession();
-    if (email && this.dragonfly.enabled) {
-      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
-      await this.dragonfly.del(`exchange:count:${email}:INBOX`);
-    }
-
-    return result;
-  }
-
-  async saveDraft(dto: SaveDraftDto) {
-    const result = await this.withProvider(() => this.provider.saveDraft(dto));
-    const email = await this.getEmailFromSession();
-    if (email && this.dragonfly.enabled) {
-      // Dọn cache thư mục Nháp (Drafts)
-      await this.dragonfly.del(`exchange:count:${email}:Drafts`);
-    }
-
-    return result;
-  }
-
-  async searchMessages(
-    query: string,
-    page: number = 1,
-    pageSize: number = 20,
-    folder: string = 'inbox',
-  ) {
-    return this.withProvider(() =>
-      this.provider.search(query, page, pageSize, folder),
-    );
-  }
-
-  async moveMessage(messageId: string, targetFolderType: string) {
-    const targetFolderId = this.mapFolderTypeToId(
-      targetFolderType,
-      targetFolderType,
-    );
-    return this.withProvider(() =>
-      this.provider.moveMessage(messageId, targetFolderId),
-    );
-  }
-
-  async markAsRead(dto: MarkReadDto) {
-    const email = await this.getEmailFromSession();
-
-    await this.withProvider(async () => {
-      if (dto.all && dto.folder) {
-        const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessages(folderId, dto.isRead);
-
-        if (email && this.dragonfly.enabled) {
-          const key = `exchange:count:${email}:${folderId}`;
-          await this.dragonfly.del(key);
-        }
-      } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.markMessages(dto.ids, dto.isRead);
-
-        if (email && this.dragonfly.enabled) {
-          const folders = new Set<string>();
-          for (const id of dto.ids) {
-            try {
-              const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
-              const folder = resolveFolderId(rawFolder, rawFolder);
-              if (folder) folders.add(folder);
-            } catch (e) {}
-          }
-
-          for (const folder of folders) {
-            const key = `exchange:count:${email}:${folder}`;
-            await this.dragonfly.del(key);
-          }
-        }
-      }
-    });
-
-    if (email) {
-      await this.getFolderCounts();
-    }
-
-    return { success: true };
-  }
-
-  async moveMessagesBatch(dto: MoveBatchDto) {
-    const email = await this.getEmailFromSession();
-    const targetFolderId = this.mapFolderTypeToId(
-      dto.targetFolder,
-      dto.targetFolder,
-    );
-
-    await this.withProvider(async () => {
-      if (dto.all && dto.sourceFolder) {
-        const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder);
-        await this.provider.moveAllMessages(sourceFolderId, targetFolderId);
-
-        if (email && this.dragonfly.enabled) {
-          await this.dragonfly.del(`exchange:count:${email}:${sourceFolderId}`);
-          await this.dragonfly.del(`exchange:count:${email}:${targetFolderId}`);
-        }
-      } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.moveMessagesBatch(dto.ids, targetFolderId);
-
-        if (email && this.dragonfly.enabled) {
-          const folders = new Set<string>();
-          folders.add(targetFolderId);
-
-          for (const id of dto.ids) {
-            try {
-              const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
-              const folder = resolveFolderId(rawFolder, rawFolder);
-              if (folder) folders.add(folder);
-            } catch (e) {}
-          }
-
-          for (const folder of folders) {
-            const key = `exchange:count:${email}:${folder}`;
-            await this.dragonfly.del(key);
-          }
-        }
-      }
-    });
-
-    if (email) {
-      await this.getFolderCounts();
-    }
-
-    return { success: true };
-  }
-
-  async permanentDelete(dto: PermanentDeleteMailDto) {
-    const hasSingle = !!dto.messageId;
-    const hasMany = Array.isArray(dto.ids) && dto.ids.length > 0;
-    const hasDeleteAll = !!dto.all && !!dto.sourceFolder;
-
-    const selectedModes = [hasSingle, hasMany, hasDeleteAll].filter(
-      Boolean,
-    ).length;
-    if (selectedModes !== 1) {
-      throw new BadRequestException(
-        'Payload khong hop le. Chon dung 1 mode: messageId, ids, hoac all + sourceFolder',
-      );
-    }
-
-    const email = await this.getEmailFromSession();
-    const affectedFolders = new Set<string>();
-
-    const deletedCount = await this.withProvider(async () => {
-      if (hasSingle && dto.messageId) {
-        const decoded = Buffer.from(dto.messageId, 'base64').toString('utf8');
-        const [rawFolder] = decoded.split(':');
-        const folder = resolveFolderId(rawFolder, rawFolder);
-        if (folder) affectedFolders.add(folder);
-        return this.provider.permanentlyDeleteMessages([dto.messageId]);
-      }
-
-      if (hasMany && dto.ids) {
-        for (const id of dto.ids) {
-          try {
-            const decoded = Buffer.from(id, 'base64').toString('utf8');
-            const [rawFolder] = decoded.split(':');
-            const folder = resolveFolderId(rawFolder, rawFolder);
-            if (folder) affectedFolders.add(folder);
-          } catch (e) {}
-        }
-
-        if (dto.sourceFolder) {
-          const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder);
-          const invalidId = dto.ids.find((id) => {
-            try {
-              const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
-              return resolveFolderId(rawFolder, rawFolder) !== sourceFolderId;
-            } catch (e) {
-              return true;
-            }
-          });
-
-          if (invalidId) {
-            throw new BadRequestException(
-              'Danh sach ids co mail khong thuoc sourceFolder',
-            );
-          }
-        }
-
-        return this.provider.permanentlyDeleteMessages(dto.ids);
-      }
-
-      const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder!);
-      affectedFolders.add(sourceFolderId);
-      return this.provider.permanentlyDeleteAllMessages(sourceFolderId);
-    });
-
-    if (email && this.dragonfly.enabled) {
-      for (const folder of affectedFolders) {
-        await this.dragonfly.del(`exchange:count:${email}:${folder}`);
-      }
-    }
-
-    if (email) {
-      await this.getFolderCounts();
-    }
-
-    return { success: true, deletedCount };
-  }
-
-  async markStar(dto: StarMailDto) {
-    const email = await this.getEmailFromSession();
-
-    await this.withProvider(async () => {
-      if (dto.all && dto.folder) {
-        const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessagesStar(folderId, true);
-
-        if (email && this.dragonfly.enabled) {
-          const key = `exchange:count:${email}:${folderId}`;
-          await this.dragonfly.del(key);
-        }
-      } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.markMessagesStar(dto.ids, true);
-
-        if (email && this.dragonfly.enabled) {
-          const folders = new Set<string>();
-          for (const id of dto.ids) {
-            try {
-              const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
-              const folder = resolveFolderId(rawFolder, rawFolder);
-              if (folder) folders.add(folder);
-            } catch (e) {}
-          }
-
-          for (const folder of folders) {
-            const key = `exchange:count:${email}:${folder}`;
-            await this.dragonfly.del(key);
-          }
-        }
-      } else {
-        throw new BadRequestException(
-          'Payload khong hop le. Can ids hoac all + folder',
-        );
-      }
-    });
-
-    if (email) {
-      await this.getFolderCounts();
-    }
-
-    return { success: true };
-  }
-
-  async unmarkStar(dto: StarMailDto) {
-    const email = await this.getEmailFromSession();
-
-    await this.withProvider(async () => {
-      if (dto.all && dto.folder) {
-        const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessagesStar(folderId, false);
-
-        if (email && this.dragonfly.enabled) {
-          const key = `exchange:count:${email}:${folderId}`;
-          await this.dragonfly.del(key);
-        }
-      } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.markMessagesStar(dto.ids, false);
-
-        if (email && this.dragonfly.enabled) {
-          const folders = new Set<string>();
-          for (const id of dto.ids) {
-            try {
-              const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
-              const folder = resolveFolderId(rawFolder, rawFolder);
-              if (folder) folders.add(folder);
-            } catch (e) {}
-          }
-
-          for (const folder of folders) {
-            const key = `exchange:count:${email}:${folder}`;
-            await this.dragonfly.del(key);
-          }
-        }
-      } else {
-        throw new BadRequestException(
-          'Payload khong hop le. Can ids hoac all + folder',
-        );
-      }
-    });
-
-    if (email) {
-      await this.getFolderCounts();
-    }
-
-    return { success: true };
-  }
-
-  /**
-   * Trả lời một email dựa trên ID của thư gốc.
-   * EWS sẽ tự động kết nối luồng hội thoại (In-Reply-To, References headers).
-   */
-  async replyMessage(dto: ReplyMailDto) {
-    const result = await this.withProvider(() =>
-      this.provider.replyMessage({
-        messageId: dto.messageId,
-        html: dto.html,
-        text: dto.text,
-        replyAll: dto.replyAll,
-        attachments: dto.attachments?.map((att) => ({
-          filename: att.filename,
-          contentType: att.contentType,
-          content: att.content,
-        })),
-      }),
-    );
-
-    // Xóa cache Sent Items để cập nhật số lượng mới
-    const email = await this.getEmailFromSession();
-    if (email && this.dragonfly.enabled) {
-      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
-    }
-
-    return result;
-  }
-
-  /**
-   * Chuyển tiếp một email đến người nhận khác.
-   * EWS giữ nguyên thư, tệp đính kèm cũ được chuyển theo tự động.
-   */
-  async forwardMessage(dto: ForwardMailDto) {
-    const result = await this.withProvider(() =>
-      this.provider.forwardMessage({
-        messageId: dto.messageId,
-        to: dto.to,
-        cc: dto.cc,
-        bcc: dto.bcc,
-        html: dto.html,
-        text: dto.text,
-        attachments: dto.attachments?.map((att) => ({
-          filename: att.filename,
-          contentType: att.contentType,
-          content: att.content,
-        })),
-      }),
-    );
-
-    // Xóa cache Sent Items để cập nhận số lượng mới
-    const email = await this.getEmailFromSession();
-    if (email && this.dragonfly.enabled) {
-      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
-    }
-
-    return result;
-  }
-
-  /**
-   * Lấy toàn bộ email trong cùng luồng hội thoại theo messageId gốc.
-   * Backend tự bind email để lấy ConversationId, sau đó tìm xuyên Inbox/Sent/Drafts.
-   * @param messageId - Composite ID (base64) của email cần load thread
-   * @param maxItems  - Số lượng email tối đa (mặc định 50)
-   */
-  async getConversationMessages(messageId: string, maxItems: number = 50) {
-    return this.withProvider(() =>
-      this.provider.getConversationMessages(messageId, maxItems),
-    );
-  }
-
-  // ─── CALENDAR & REMINDERS ────────────────────────────────────────────────────────
-
-  async createEvent(payload: {
-    subject: string;
-    body: string;
-    start: string;
-    end: string;
-    location?: string;
-    isAllDayEvent?: boolean;
-    isReminderSet?: boolean;
-    reminderMinutesBeforeStart?: number;
-  }) {
-    return this.withProvider(() => this.provider.createEvent(payload));
-  }
-
-  async getEvents(startDate: string, endDate: string) {
-    return this.withProvider(() => this.provider.getEvents(startDate, endDate));
-  }
-
-  async getEventDetails(eventId: string) {
-    return this.withProvider(() => this.provider.getEventDetails(eventId));
-  }
-
-  async updateEvent(eventId: string, payload: any) {
-    return this.withProvider(() => this.provider.updateEvent(eventId, payload));
-  }
-
-  async deleteEvent(eventId: string) {
-    return this.withProvider(() => this.provider.deleteEvent(eventId));
-  }
-
-  async getActiveReminders() {
-    return this.withProvider(() => this.provider.getActiveReminders());
-  }
-
-  async dismissReminder(eventId: string) {
-    return this.withProvider(() => this.provider.dismissReminder(eventId));
-  }
-}
-````
-
-## File: src/exchange/controllers/exchange.controller.ts
-````typescript
-import {
-  Controller,
-  Post,
-  Body,
-  Get,
-  UseGuards,
-  Query,
-  UseInterceptors,
-  Req,
-  Res,
-  Put,
-  Delete,
-  Param,
-} from '@nestjs/common';
-import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
-import { ExchangeAuthService } from '../services/exchange-auth.service';
-import { MailService } from '../services/mail.service';
-import {
-  ExchangeLoginDto,
-  SendMailDto,
-  SaveDraftDto,
-  MoveMailDto,
-  MarkReadDto,
-  MoveBatchDto,
-  PermanentDeleteMailDto,
-  StarMailDto,
-  ReplyMailDto,
-  ForwardMailDto,
-} from '../dto/exchange.dto';
-import { CreateEventDto, UpdateEventDto } from '../dto/calendar.dto';
-
-import { ExchangeErrorInterceptor } from '../interceptors/exchange-error.interceptor';
-import type { Request, Response } from 'express';
-import { ExchangeAuthGuard } from '../../auth/guards/exchange-auth.guard';
-import {
-  ApiBearerAuth,
-  ApiBody,
-  ApiOperation,
-  ApiQuery,
-  ApiResponse,
-  ApiTags,
-} from '@nestjs/swagger';
-
-@ApiTags('Webmail')
-@Controller('webmail')
-@UseInterceptors(ExchangeErrorInterceptor)
-export class ExchangeController {
-  constructor(
-    private readonly authService: ExchangeAuthService,
-    private readonly mailService: MailService,
-  ) {}
-
-  @Post('auth/login')
-  @ApiOperation({ summary: 'Dang nhap mailbox' })
-  @ApiBody({ type: ExchangeLoginDto })
-  @ApiResponse({ status: 200, description: 'Exchange session tokens' })
-  async login(
-    @Body() dto: ExchangeLoginDto,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const { accessToken, refreshToken, email } = await this.authService.login(
-      dto.email,
-      dto.password,
-    );
-
-    res.cookie('exchange_session', accessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 3600000,
-    });
-
-    return {
-      success: true,
-      email,
-      accessToken,
-      refreshToken,
-    };
-  }
-
-  @Post('auth/refresh')
-  @ApiOperation({ summary: 'Refresh exchange token' })
-  async refresh(
-    @Body('refreshToken') refreshToken: string,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const tokens = await this.authService.rotateRefreshToken(refreshToken);
-
-    res.cookie('exchange_session', tokens.accessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 3600000,
-    });
-
-    return tokens;
-  }
-
-  @Post('auth/logout')
-  @ApiOperation({ summary: 'Logout exchange session' })
-  async logout(
-    @Body('refreshToken') refreshToken: string,
-    @Req() req: Request,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const sessionToken = req.cookies['exchange_session'];
-
-    if (sessionToken) {
-      await this.authService.logout(sessionToken);
-    }
-
-    if (refreshToken) {
-      const [tokenId] = refreshToken.split('.');
-      if (tokenId) {
-        await (this.authService as any).cache.del(
-          `exchange:refresh:${tokenId}`,
-        );
-      }
-    }
-
-    res.clearCookie('exchange_session');
-    return { success: true, message: 'Dang xuat thanh cong' };
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Get('folders')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Danh sach folder' })
-  async getFolders() {
-    return this.mailService.getFolders();
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Get('folders/counts')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Dem mail theo folder' })
-  async getFolderCounts() {
-    return this.mailService.getFolderCounts();
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Get('mail')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Danh sach mail theo folder' })
-  @ApiQuery({ name: 'folder', required: false })
-  @ApiQuery({ name: 'page', required: false })
-  @ApiQuery({ name: 'pageSize', required: false })
-  async list(
-    @Query('folder') folder: string = 'inbox',
-    @Query('page') page: number = 1,
-    @Query('pageSize') pageSize: number = 20,
-  ) {
-    return this.mailService.getMessages(folder, Number(page), Number(pageSize));
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Get('mail/search')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Tim kiem mail nang cao' })
-  @ApiQuery({ name: 'q', required: true })
-  @ApiQuery({ name: 'page', required: false })
-  @ApiQuery({ name: 'pageSize', required: false })
-  @ApiQuery({ name: 'folder', required: false })
-  async search(
-    @Query('q') q: string,
-    @Query('page') page: number = 1,
-    @Query('pageSize') pageSize: number = 20,
-    @Query('folder') folder: string = 'inbox',
-  ) {
-    return this.mailService.searchMessages(
-      q,
-      Number(page),
-      Number(pageSize),
-      folder,
-    );
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Get('mail/conversation')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({
-    summary:
-      'Lấy toàn bộ email trong cùng một luồng hội thoại theo messageId gốc',
-  })
-  async getConversation(
-    @Query('messageId') messageId: string,
-    @Query('maxItems') maxItems?: string,
-  ) {
-    if (!messageId) {
-      throw new Error('messageId là bắt buộc');
-    }
-    const max = maxItems ? parseInt(maxItems, 10) : 50;
-    return this.mailService.getConversationMessages(messageId, max);
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Get('mail/:id')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Chi tiết mail' })
-  async check(@Param('id') id: string) {
-    return this.mailService.getMessage(id);
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Post('mail/send')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Gửi mail' })
-  @ApiBody({ type: SendMailDto })
-  async send(@Body() dto: SendMailDto) {
-    return this.mailService.sendMessage(dto);
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Post('mail/draft')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Lưu nháp' })
-  @ApiBody({ type: SaveDraftDto })
-  async saveDraft(@Body() dto: SaveDraftDto) {
-    return this.mailService.saveDraft(dto);
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Post('mail/move')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Move 1 mail' })
-  @ApiBody({ type: MoveMailDto })
-  async move(@Body() dto: MoveMailDto) {
-    return this.mailService.moveMessage(dto.messageId, dto.targetFolder);
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Post('mail/mark-as-read')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Mark read/unread' })
-  @ApiBody({ type: MarkReadDto })
-  async markAsRead(@Body() dto: MarkReadDto) {
-    return this.mailService.markAsRead(dto);
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Post('mail/move-batch')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Move batch mail' })
-  @ApiBody({ type: MoveBatchDto })
-  async moveBatch(@Body() dto: MoveBatchDto) {
-    return this.mailService.moveMessagesBatch(dto);
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Post('mail/permanent-delete')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Xoa vinh vien mail' })
-  @ApiBody({ type: PermanentDeleteMailDto })
-  async permanentDelete(@Body() dto: PermanentDeleteMailDto) {
-    return this.mailService.permanentDelete(dto);
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Post('mail/star')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Danh dau sao' })
-  @ApiBody({ type: StarMailDto })
-  async star(@Body() dto: StarMailDto) {
-    return this.mailService.markStar(dto);
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Post('mail/unstar')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Bo danh dau sao' })
-  @ApiBody({ type: StarMailDto })
-  async unstar(@Body() dto: StarMailDto) {
-    return this.mailService.unmarkStar(dto);
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Post('mail/reply')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Trả lời email (Reply / Reply All)' })
-  @ApiBody({ type: ReplyMailDto })
-  async reply(@Body() dto: ReplyMailDto) {
-    return this.mailService.replyMessage(dto);
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Post('mail/forward')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Chuyển tiếp email (Forward)' })
-  @ApiBody({ type: ForwardMailDto })
-  async forward(@Body() dto: ForwardMailDto) {
-    return this.mailService.forwardMessage(dto);
-  }
-
-  // ─── LỊCH & SỰ KIỆN (CALENDAR & REMINDERS) ───────────────────────────────────
-
-  @UseGuards(ExchangeAuthGuard)
-  @Get('calendar')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Lấy các sự kiện trong khoảng thời gian' })
-  async getEvents(
-    @Query('startDate') startDate: string,
-    @Query('endDate') endDate: string,
-  ) {
-    return this.mailService.getEvents(startDate, endDate);
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Get('calendar/reminders/active')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({
-    summary: 'Lấy danh sách lời nhắc (Reminders) đang kích hoạt',
-  })
-  async getActiveReminders() {
-    return this.mailService.getActiveReminders();
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Post('calendar/reminders/dismiss/:id')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Ẩn/Tắt lời nhắc cho một sự kiện cụ thể' })
-  async dismissReminder(@Param('id') id: string) {
-    await this.mailService.dismissReminder(id);
-    return { success: true };
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Post('calendar')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Tạo một sự kiện mới' })
-  @ApiBody({ type: CreateEventDto })
-  async createEvent(@Body() dto: CreateEventDto) {
-    const id = await this.mailService.createEvent(dto);
-    return { success: true, id };
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Get('calendar/:id')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Xem chi tiết một sự kiện' })
-  async getEventDetails(@Param('id') id: string) {
-    return this.mailService.getEventDetails(id);
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Put('calendar/:id')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Cập nhật sự kiện' })
-  @ApiBody({ type: UpdateEventDto })
-  async updateEvent(@Param('id') id: string, @Body() dto: UpdateEventDto) {
-    await this.mailService.updateEvent(id, dto);
-    return { success: true };
-  }
-
-  @UseGuards(ExchangeAuthGuard)
-  @Delete('calendar/:id')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Xoá sự kiện' })
-  async deleteEvent(@Param('id') id: string) {
-    await this.mailService.deleteEvent(id);
-    return { success: true };
-  }
-}
-````
-
 ## File: src/exchange/dto/exchange.dto.ts
 ````typescript
 import {
@@ -12824,37 +11966,38 @@ export class SendMailDto {
       message: 'Thong tin nguoi nhan khong hop le!',
     },
   )
-  to!: string[];
+  @IsOptional()
+  to?: string[];
 
   @ApiProperty({ example: ['cc@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thong tin CC khong hop le!' })
+  @IsEmail({}, { each: true, message: 'Thông tin CC không hợp lệ!' })
   cc?: string[];
 
   @ApiProperty({ example: ['bcc@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thong tin BCC khong hop le!' })
+  @IsEmail({}, { each: true, message: 'Thông tin BCC không hợp lệ!' })
   bcc?: string[];
 
   @ApiProperty({ example: ['reply@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thong tin Reply-To khong hop le!' })
+  @IsEmail({}, { each: true, message: 'Thông tin Reply-To không hợp lệ!' })
   replyTo?: string[];
 
-  @ApiProperty({ example: 'Tieu de email' })
+  @ApiProperty({ example: 'Tiêu đề email' })
   @IsString()
-  @IsNotEmpty({ message: 'Tieu de email khong duoc de trong!' })
-  subject!: string;
+  @IsOptional()
+  subject?: string;
 
-  @ApiProperty({ example: 'Noi dung text', required: false })
+  @ApiProperty({ example: 'Nội dung text', required: false })
   @IsString()
   @IsOptional()
   text?: string; // Plain text version
 
-  @ApiProperty({ example: '<p>Noi dung HTML</p>', required: false })
+  @ApiProperty({ example: '<p>Nội dung HTML</p>', required: false })
   @IsString()
   @IsOptional()
   html?: string; // HTML version
@@ -12873,7 +12016,7 @@ export class SaveDraftDto {
     {},
     {
       each: true,
-      message: 'Thong tin nguoi nhan khong hop le!',
+      message: 'Thông tin người nhận không hợp lệ!',
     },
   )
   to?: string[];
@@ -12881,32 +12024,32 @@ export class SaveDraftDto {
   @ApiProperty({ example: ['cc@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thong tin CC khong hop le!' })
+  @IsEmail({}, { each: true, message: 'Thông tin CC không hợp lệ!' })
   cc?: string[];
 
   @ApiProperty({ example: ['bcc@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thong tin BCC khong hop le!' })
+  @IsEmail({}, { each: true, message: 'Thông tin BCC không hợp lệ!' })
   bcc?: string[];
 
   @ApiProperty({ example: ['reply@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thong tin Reply-To khong hop le!' })
+  @IsEmail({}, { each: true, message: 'Thông tin Reply-To không hợp lệ!' })
   replyTo?: string[];
 
-  @ApiProperty({ example: 'Tieu de email', required: false })
+  @ApiProperty({ example: 'Tiêu đề email', required: false })
   @IsString()
   @IsOptional()
   subject?: string;
 
-  @ApiProperty({ example: 'Noi dung text', required: false })
+  @ApiProperty({ example: 'Nội dung text', required: false })
   @IsString()
   @IsOptional()
   text?: string;
 
-  @ApiProperty({ example: '<p>Noi dung HTML</p>', required: false })
+  @ApiProperty({ example: '<p>Nội dung HTML</p>', required: false })
   @IsString()
   @IsOptional()
   html?: string;
@@ -14393,6 +13536,1014 @@ export class ImapMailProvider implements IMailProvider {
     } finally {
       lock.release();
     }
+  }
+}
+````
+
+## File: src/exchange/services/mail.service.ts
+````typescript
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  Scope,
+} from '@nestjs/common';
+import { REQUEST } from '@nestjs/core';
+import { EwsMailProvider } from './ews-mail.provider';
+import { MailMessage } from '../interfaces/mail-provider.interface';
+import {
+  SendMailDto,
+  SaveDraftDto,
+  MarkReadDto,
+  MoveBatchDto,
+  PermanentDeleteMailDto,
+  StarMailDto,
+  ReplyMailDto,
+  ForwardMailDto,
+} from '../dto/exchange.dto';
+
+import { DragonflyService } from '../../common/cache/dragonfly.service';
+import { ExchangeAuthService } from './exchange-auth.service';
+import {
+  DEFAULT_FOLDER_ID,
+  MAIL_FOLDERS,
+  resolveFolderId,
+  resolveFolderType,
+} from '../constants/mail-folders.constant';
+
+@Injectable({ scope: Scope.REQUEST })
+export class MailService {
+  private readonly logger = new Logger(MailService.name);
+  private static readonly MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024; // 25MB/file
+
+  constructor(
+    private readonly provider: EwsMailProvider,
+    private readonly dragonfly: DragonflyService,
+    private readonly authService: ExchangeAuthService,
+    @Inject(REQUEST) private readonly request: any,
+  ) {}
+
+  private async withProvider<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      await this.provider.connect();
+      return await operation();
+    } catch (error) {
+      this.logger.error(`Mail operation failed: ${error.message}`, error.stack);
+      throw error;
+    } finally {
+      await this.provider.disconnect();
+    }
+  }
+
+  private async getEmailFromSession(): Promise<string | null> {
+    const token = this.request.cookies?.['exchange_session'];
+    if (!token) return null;
+    const creds = await this.authService.getCredentials(token);
+    return creds?.email || null;
+  }
+
+  private mapFolderTypeToId(type: string, defaultValue?: string): string {
+    return resolveFolderId(type, defaultValue ?? DEFAULT_FOLDER_ID);
+  }
+
+  private mapIdToFolderType(id: string): string {
+    return resolveFolderType(id);
+  }
+
+  private getBase64SizeInBytes(base64Content: string): number {
+    if (!base64Content) return 0;
+    const normalized = base64Content.includes(',')
+      ? base64Content.split(',').pop() || ''
+      : base64Content;
+    const sanitized = normalized.replace(/\s/g, '');
+    const padding = sanitized.endsWith('==')
+      ? 2
+      : sanitized.endsWith('=')
+        ? 1
+        : 0;
+    return Math.floor((sanitized.length * 3) / 4) - padding;
+  }
+
+  private validateAttachmentsSize(
+    attachments?: Array<{ filename: string; content: string }>,
+  ): void {
+    if (!attachments?.length) return;
+
+    for (const attachment of attachments) {
+      const size = this.getBase64SizeInBytes(attachment.content);
+      if (size > MailService.MAX_ATTACHMENT_SIZE_BYTES) {
+        throw new BadRequestException(
+          `File "${attachment.filename}" vuot qua gioi han 25MB`,
+        );
+      }
+    }
+  }
+
+  async getFolderCounts() {
+    const email = await this.getEmailFromSession();
+    if (!email) {
+      return this.withProvider(() => this.provider.getFolderCounts());
+    }
+
+    const standardFolders = MAIL_FOLDERS.map((f) => f.id);
+    const cacheKeys = standardFolders.map(
+      (f) => `exchange:count:${email}:${f}`,
+    );
+
+    if (this.dragonfly.enabled) {
+      const cachedValues = await Promise.all(
+        cacheKeys.map((key) => this.dragonfly.get(key)),
+      );
+
+      const result: Record<string, { total: number; unread: number }> = {};
+      let allFound = true;
+
+      standardFolders.forEach((folder, index) => {
+        if (cachedValues[index]) {
+          const type = this.mapIdToFolderType(folder);
+          result[type] = cachedValues[index] as any;
+        } else {
+          allFound = false;
+        }
+      });
+
+      if (allFound) {
+        return result;
+      }
+    }
+
+    const counts = await this.withProvider(() =>
+      this.provider.getFolderCounts(),
+    );
+
+    if (this.dragonfly.enabled) {
+      const ttl = 300;
+      await Promise.all(
+        Object.entries(counts).map(([folder, count]) =>
+          this.dragonfly.set(`exchange:count:${email}:${folder}`, count, ttl),
+        ),
+      );
+    }
+
+    const mappedCounts: Record<string, { total: number; unread: number }> = {};
+    for (const [id, count] of Object.entries(counts)) {
+      const type = this.mapIdToFolderType(id);
+      mappedCounts[type] = count;
+    }
+
+    return mappedCounts;
+  }
+
+  async getFolders() {
+    return this.withProvider(() => this.provider.getFolders());
+  }
+
+  async getMessages(
+    folderType: string,
+    page: number = 1,
+    pageSize: number = 20,
+  ) {
+    const folderId = this.mapFolderTypeToId(folderType);
+    return this.withProvider(() =>
+      this.provider.getMessages(folderId, page, pageSize),
+    );
+  }
+
+  async getMessage(id: string) {
+    const message = await this.withProvider(() => this.provider.getMessage(id));
+
+    try {
+      const email = await this.getEmailFromSession();
+      if (email && this.dragonfly.enabled) {
+        const decoded = Buffer.from(id, 'base64').toString('utf8');
+        const [rawFolder] = decoded.split(':');
+        const folder = resolveFolderId(rawFolder, rawFolder);
+
+        const key = `exchange:count:${email}:${folder}`;
+        const current = await this.dragonfly.get<{
+          total: number;
+          unread: number;
+        }>(key);
+
+        if (current && current.unread > 0) {
+          await this.dragonfly.del(key);
+        }
+      }
+    } catch (e) {
+      // ignore cache errors
+    }
+
+    return message;
+  }
+
+  async downloadAttachment(messageId: string, index: number) {
+    return this.withProvider(() =>
+      this.provider.downloadAttachment(messageId, index),
+    );
+  }
+
+  async sendMessage(dto: SendMailDto) {
+    this.validateAttachmentsSize(dto.attachments);
+    const result = await this.withProvider(() =>
+      this.provider.sendMessage(dto),
+    );
+
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
+      await this.dragonfly.del(`exchange:count:${email}:INBOX`);
+    }
+
+    return result;
+  }
+
+  async saveDraft(dto: SaveDraftDto) {
+    this.validateAttachmentsSize(dto.attachments);
+    const result = await this.withProvider(() => this.provider.saveDraft(dto));
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      // Dọn cache thư mục Nháp (Drafts)
+      await this.dragonfly.del(`exchange:count:${email}:Drafts`);
+    }
+
+    return result;
+  }
+
+  async searchMessages(
+    query: string,
+    page: number = 1,
+    pageSize: number = 20,
+    folder: string = 'inbox',
+  ) {
+    return this.withProvider(() =>
+      this.provider.search(query, page, pageSize, folder),
+    );
+  }
+
+  async moveMessage(messageId: string, targetFolderType: string) {
+    const targetFolderId = this.mapFolderTypeToId(
+      targetFolderType,
+      targetFolderType,
+    );
+    return this.withProvider(() =>
+      this.provider.moveMessage(messageId, targetFolderId),
+    );
+  }
+
+  async markAsRead(dto: MarkReadDto) {
+    const email = await this.getEmailFromSession();
+
+    await this.withProvider(async () => {
+      if (dto.all && dto.folder) {
+        const folderId = this.mapFolderTypeToId(dto.folder);
+        await this.provider.markAllMessages(folderId, dto.isRead);
+
+        if (email && this.dragonfly.enabled) {
+          const key = `exchange:count:${email}:${folderId}`;
+          await this.dragonfly.del(key);
+        }
+      } else if (dto.ids && dto.ids.length > 0) {
+        await this.provider.markMessages(dto.ids, dto.isRead);
+
+        if (email && this.dragonfly.enabled) {
+          const folders = new Set<string>();
+          for (const id of dto.ids) {
+            try {
+              const decoded = Buffer.from(id, 'base64').toString('utf8');
+              const [rawFolder] = decoded.split(':');
+              const folder = resolveFolderId(rawFolder, rawFolder);
+              if (folder) folders.add(folder);
+            } catch (e) {}
+          }
+
+          for (const folder of folders) {
+            const key = `exchange:count:${email}:${folder}`;
+            await this.dragonfly.del(key);
+          }
+        }
+      }
+    });
+
+    if (email) {
+      await this.getFolderCounts();
+    }
+
+    return { success: true };
+  }
+
+  async moveMessagesBatch(dto: MoveBatchDto) {
+    const email = await this.getEmailFromSession();
+    const targetFolderId = this.mapFolderTypeToId(
+      dto.targetFolder,
+      dto.targetFolder,
+    );
+
+    await this.withProvider(async () => {
+      if (dto.all && dto.sourceFolder) {
+        const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder);
+        await this.provider.moveAllMessages(sourceFolderId, targetFolderId);
+
+        if (email && this.dragonfly.enabled) {
+          await this.dragonfly.del(`exchange:count:${email}:${sourceFolderId}`);
+          await this.dragonfly.del(`exchange:count:${email}:${targetFolderId}`);
+        }
+      } else if (dto.ids && dto.ids.length > 0) {
+        await this.provider.moveMessagesBatch(dto.ids, targetFolderId);
+
+        if (email && this.dragonfly.enabled) {
+          const folders = new Set<string>();
+          folders.add(targetFolderId);
+
+          for (const id of dto.ids) {
+            try {
+              const decoded = Buffer.from(id, 'base64').toString('utf8');
+              const [rawFolder] = decoded.split(':');
+              const folder = resolveFolderId(rawFolder, rawFolder);
+              if (folder) folders.add(folder);
+            } catch (e) {}
+          }
+
+          for (const folder of folders) {
+            const key = `exchange:count:${email}:${folder}`;
+            await this.dragonfly.del(key);
+          }
+        }
+      }
+    });
+
+    if (email) {
+      await this.getFolderCounts();
+    }
+
+    return { success: true };
+  }
+
+  async permanentDelete(dto: PermanentDeleteMailDto) {
+    const hasSingle = !!dto.messageId;
+    const hasMany = Array.isArray(dto.ids) && dto.ids.length > 0;
+    const hasDeleteAll = !!dto.all && !!dto.sourceFolder;
+
+    const selectedModes = [hasSingle, hasMany, hasDeleteAll].filter(
+      Boolean,
+    ).length;
+    if (selectedModes !== 1) {
+      throw new BadRequestException(
+        'Payload khong hop le. Chon dung 1 mode: messageId, ids, hoac all + sourceFolder',
+      );
+    }
+
+    const email = await this.getEmailFromSession();
+    const affectedFolders = new Set<string>();
+
+    const deletedCount = await this.withProvider(async () => {
+      if (hasSingle && dto.messageId) {
+        const decoded = Buffer.from(dto.messageId, 'base64').toString('utf8');
+        const [rawFolder] = decoded.split(':');
+        const folder = resolveFolderId(rawFolder, rawFolder);
+        if (folder) affectedFolders.add(folder);
+        return this.provider.permanentlyDeleteMessages([dto.messageId]);
+      }
+
+      if (hasMany && dto.ids) {
+        for (const id of dto.ids) {
+          try {
+            const decoded = Buffer.from(id, 'base64').toString('utf8');
+            const [rawFolder] = decoded.split(':');
+            const folder = resolveFolderId(rawFolder, rawFolder);
+            if (folder) affectedFolders.add(folder);
+          } catch (e) {}
+        }
+
+        if (dto.sourceFolder) {
+          const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder);
+          const invalidId = dto.ids.find((id) => {
+            try {
+              const decoded = Buffer.from(id, 'base64').toString('utf8');
+              const [rawFolder] = decoded.split(':');
+              return resolveFolderId(rawFolder, rawFolder) !== sourceFolderId;
+            } catch (e) {
+              return true;
+            }
+          });
+
+          if (invalidId) {
+            throw new BadRequestException(
+              'Danh sach ids co mail khong thuoc sourceFolder',
+            );
+          }
+        }
+
+        return this.provider.permanentlyDeleteMessages(dto.ids);
+      }
+
+      const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder!);
+      affectedFolders.add(sourceFolderId);
+      return this.provider.permanentlyDeleteAllMessages(sourceFolderId);
+    });
+
+    if (email && this.dragonfly.enabled) {
+      for (const folder of affectedFolders) {
+        await this.dragonfly.del(`exchange:count:${email}:${folder}`);
+      }
+    }
+
+    if (email) {
+      await this.getFolderCounts();
+    }
+
+    return { success: true, deletedCount };
+  }
+
+  async markStar(dto: StarMailDto) {
+    const email = await this.getEmailFromSession();
+
+    await this.withProvider(async () => {
+      if (dto.all && dto.folder) {
+        const folderId = this.mapFolderTypeToId(dto.folder);
+        await this.provider.markAllMessagesStar(folderId, true);
+
+        if (email && this.dragonfly.enabled) {
+          const key = `exchange:count:${email}:${folderId}`;
+          await this.dragonfly.del(key);
+        }
+      } else if (dto.ids && dto.ids.length > 0) {
+        await this.provider.markMessagesStar(dto.ids, true);
+
+        if (email && this.dragonfly.enabled) {
+          const folders = new Set<string>();
+          for (const id of dto.ids) {
+            try {
+              const decoded = Buffer.from(id, 'base64').toString('utf8');
+              const [rawFolder] = decoded.split(':');
+              const folder = resolveFolderId(rawFolder, rawFolder);
+              if (folder) folders.add(folder);
+            } catch (e) {}
+          }
+
+          for (const folder of folders) {
+            const key = `exchange:count:${email}:${folder}`;
+            await this.dragonfly.del(key);
+          }
+        }
+      } else {
+        throw new BadRequestException(
+          'Payload khong hop le. Can ids hoac all + folder',
+        );
+      }
+    });
+
+    if (email) {
+      await this.getFolderCounts();
+    }
+
+    return { success: true };
+  }
+
+  async unmarkStar(dto: StarMailDto) {
+    const email = await this.getEmailFromSession();
+
+    await this.withProvider(async () => {
+      if (dto.all && dto.folder) {
+        const folderId = this.mapFolderTypeToId(dto.folder);
+        await this.provider.markAllMessagesStar(folderId, false);
+
+        if (email && this.dragonfly.enabled) {
+          const key = `exchange:count:${email}:${folderId}`;
+          await this.dragonfly.del(key);
+        }
+      } else if (dto.ids && dto.ids.length > 0) {
+        await this.provider.markMessagesStar(dto.ids, false);
+
+        if (email && this.dragonfly.enabled) {
+          const folders = new Set<string>();
+          for (const id of dto.ids) {
+            try {
+              const decoded = Buffer.from(id, 'base64').toString('utf8');
+              const [rawFolder] = decoded.split(':');
+              const folder = resolveFolderId(rawFolder, rawFolder);
+              if (folder) folders.add(folder);
+            } catch (e) {}
+          }
+
+          for (const folder of folders) {
+            const key = `exchange:count:${email}:${folder}`;
+            await this.dragonfly.del(key);
+          }
+        }
+      } else {
+        throw new BadRequestException(
+          'Payload khong hop le. Can ids hoac all + folder',
+        );
+      }
+    });
+
+    if (email) {
+      await this.getFolderCounts();
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * Trả lời một email dựa trên ID của thư gốc.
+   * EWS sẽ tự động kết nối luồng hội thoại (In-Reply-To, References headers).
+   */
+  async replyMessage(dto: ReplyMailDto) {
+    this.validateAttachmentsSize(dto.attachments);
+    const result = await this.withProvider(() =>
+      this.provider.replyMessage({
+        messageId: dto.messageId,
+        html: dto.html,
+        text: dto.text,
+        replyAll: dto.replyAll,
+        attachments: dto.attachments?.map((att) => ({
+          filename: att.filename,
+          contentType: att.contentType,
+          content: att.content,
+        })),
+      }),
+    );
+
+    // Xóa cache Sent Items để cập nhật số lượng mới
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Chuyển tiếp một email đến người nhận khác.
+   * EWS giữ nguyên thư, tệp đính kèm cũ được chuyển theo tự động.
+   */
+  async forwardMessage(dto: ForwardMailDto) {
+    this.validateAttachmentsSize(dto.attachments);
+    const result = await this.withProvider(() =>
+      this.provider.forwardMessage({
+        messageId: dto.messageId,
+        to: dto.to,
+        cc: dto.cc,
+        bcc: dto.bcc,
+        html: dto.html,
+        text: dto.text,
+        attachments: dto.attachments?.map((att) => ({
+          filename: att.filename,
+          contentType: att.contentType,
+          content: att.content,
+        })),
+      }),
+    );
+
+    // Xóa cache Sent Items để cập nhận số lượng mới
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Lấy toàn bộ email trong cùng luồng hội thoại theo messageId gốc.
+   * Backend tự bind email để lấy ConversationId, sau đó tìm xuyên Inbox/Sent/Drafts.
+   * @param messageId - Composite ID (base64) của email cần load thread
+   * @param maxItems  - Số lượng email tối đa (mặc định 50)
+   */
+  async getConversationMessages(messageId: string, maxItems: number = 50) {
+    return this.withProvider(() =>
+      this.provider.getConversationMessages(messageId, maxItems),
+    );
+  }
+
+  // ─── CALENDAR & REMINDERS ────────────────────────────────────────────────────────
+
+  async createEvent(payload: {
+    subject: string;
+    body: string;
+    start: string;
+    end: string;
+    location?: string;
+    isAllDayEvent?: boolean;
+    isReminderSet?: boolean;
+    reminderMinutesBeforeStart?: number;
+  }) {
+    return this.withProvider(() => this.provider.createEvent(payload));
+  }
+
+  async getEvents(startDate: string, endDate: string) {
+    return this.withProvider(() => this.provider.getEvents(startDate, endDate));
+  }
+
+  async getEventDetails(eventId: string) {
+    return this.withProvider(() => this.provider.getEventDetails(eventId));
+  }
+
+  async updateEvent(eventId: string, payload: any) {
+    return this.withProvider(() => this.provider.updateEvent(eventId, payload));
+  }
+
+  async deleteEvent(eventId: string) {
+    return this.withProvider(() => this.provider.deleteEvent(eventId));
+  }
+
+  async getActiveReminders() {
+    return this.withProvider(() => this.provider.getActiveReminders());
+  }
+
+  async dismissReminder(eventId: string) {
+    return this.withProvider(() => this.provider.dismissReminder(eventId));
+  }
+}
+````
+
+## File: src/exchange/controllers/exchange.controller.ts
+````typescript
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  UseGuards,
+  Query,
+  UseInterceptors,
+  Req,
+  Res,
+  Put,
+  Delete,
+  Param,
+} from '@nestjs/common';
+import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
+import { ExchangeAuthService } from '../services/exchange-auth.service';
+import { MailService } from '../services/mail.service';
+import {
+  ExchangeLoginDto,
+  SendMailDto,
+  SaveDraftDto,
+  MoveMailDto,
+  MarkReadDto,
+  MoveBatchDto,
+  PermanentDeleteMailDto,
+  StarMailDto,
+  ReplyMailDto,
+  ForwardMailDto,
+} from '../dto/exchange.dto';
+import { CreateEventDto, UpdateEventDto } from '../dto/calendar.dto';
+
+import { ExchangeErrorInterceptor } from '../interceptors/exchange-error.interceptor';
+import type { Request, Response } from 'express';
+import { ExchangeAuthGuard } from '../../auth/guards/exchange-auth.guard';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiOperation,
+  ApiQuery,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
+
+@ApiTags('Webmail')
+@Controller('webmail')
+@UseInterceptors(ExchangeErrorInterceptor)
+export class ExchangeController {
+  constructor(
+    private readonly authService: ExchangeAuthService,
+    private readonly mailService: MailService,
+  ) {}
+
+  @Post('auth/login')
+  @ApiOperation({ summary: 'Dang nhap mailbox' })
+  @ApiBody({ type: ExchangeLoginDto })
+  @ApiResponse({ status: 200, description: 'Exchange session tokens' })
+  async login(
+    @Body() dto: ExchangeLoginDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { accessToken, refreshToken, email } = await this.authService.login(
+      dto.email,
+      dto.password,
+    );
+
+    res.cookie('exchange_session', accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 3600000,
+    });
+
+    return {
+      success: true,
+      email,
+      accessToken,
+      refreshToken,
+    };
+  }
+
+  @Post('auth/refresh')
+  @ApiOperation({ summary: 'Refresh exchange token' })
+  async refresh(
+    @Body('refreshToken') refreshToken: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const tokens = await this.authService.rotateRefreshToken(refreshToken);
+
+    res.cookie('exchange_session', tokens.accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 3600000,
+    });
+
+    return tokens;
+  }
+
+  @Post('auth/logout')
+  @ApiOperation({ summary: 'Logout exchange session' })
+  async logout(
+    @Body('refreshToken') refreshToken: string,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const sessionToken = req.cookies['exchange_session'];
+
+    if (sessionToken) {
+      await this.authService.logout(sessionToken);
+    }
+
+    if (refreshToken) {
+      const [tokenId] = refreshToken.split('.');
+      if (tokenId) {
+        await (this.authService as any).cache.del(
+          `exchange:refresh:${tokenId}`,
+        );
+      }
+    }
+
+    res.clearCookie('exchange_session');
+    return { success: true, message: 'Dang xuat thanh cong' };
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Get('folders')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Danh sach folder' })
+  async getFolders() {
+    return this.mailService.getFolders();
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Get('folders/counts')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Dem mail theo folder' })
+  async getFolderCounts() {
+    return this.mailService.getFolderCounts();
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Get('mail')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Danh sach mail theo folder' })
+  @ApiQuery({ name: 'folder', required: false })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'pageSize', required: false })
+  async list(
+    @Query('folder') folder: string = 'inbox',
+    @Query('page') page: number = 1,
+    @Query('pageSize') pageSize: number = 20,
+  ) {
+    return this.mailService.getMessages(folder, Number(page), Number(pageSize));
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Get('mail/search')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Tim kiem mail nang cao' })
+  @ApiQuery({ name: 'q', required: true })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'pageSize', required: false })
+  @ApiQuery({ name: 'folder', required: false })
+  async search(
+    @Query('q') q: string,
+    @Query('page') page: number = 1,
+    @Query('pageSize') pageSize: number = 20,
+    @Query('folder') folder: string = 'inbox',
+  ) {
+    return this.mailService.searchMessages(
+      q,
+      Number(page),
+      Number(pageSize),
+      folder,
+    );
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Get('mail/conversation')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({
+    summary:
+      'Lấy toàn bộ email trong cùng một luồng hội thoại theo messageId gốc',
+  })
+  async getConversation(
+    @Query('messageId') messageId: string,
+    @Query('maxItems') maxItems?: string,
+  ) {
+    if (!messageId) {
+      throw new Error('messageId là bắt buộc');
+    }
+    const max = maxItems ? parseInt(maxItems, 10) : 50;
+    return this.mailService.getConversationMessages(messageId, max);
+  }
+  @UseGuards(ExchangeAuthGuard)
+  @Get('mail/:id/attachments/:index')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Tai attachment cua mail' })
+  async downloadAttachment(
+    @Param('id') id: string,
+    @Param('index') index: string,
+    @Query('download') download: string = 'true',
+    @Res() res: Response,
+  ) {
+    const attachment = await this.mailService.downloadAttachment(
+      id,
+      Number(index),
+    );
+
+    const disposition =
+      download === 'false'
+        ? 'inline'
+        : `attachment; filename="${encodeURIComponent(attachment.filename)}"`;
+
+    res.setHeader('Content-Type', attachment.contentType);
+    res.setHeader('Content-Disposition', disposition);
+    res.setHeader('Content-Length', attachment.size.toString());
+    res.send(attachment.content);
+  }
+  @UseGuards(ExchangeAuthGuard)
+  @Get('mail/:id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Chi tiết mail' })
+  async check(@Param('id') id: string) {
+    return this.mailService.getMessage(id);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/send')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Gửi mail' })
+  @ApiBody({ type: SendMailDto })
+  async send(@Body() dto: SendMailDto) {
+    return this.mailService.sendMessage(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/draft')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Lưu nháp' })
+  @ApiBody({ type: SaveDraftDto })
+  async saveDraft(@Body() dto: SaveDraftDto) {
+    return this.mailService.saveDraft(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/move')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Move 1 mail' })
+  @ApiBody({ type: MoveMailDto })
+  async move(@Body() dto: MoveMailDto) {
+    return this.mailService.moveMessage(dto.messageId, dto.targetFolder);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/mark-as-read')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Mark read/unread' })
+  @ApiBody({ type: MarkReadDto })
+  async markAsRead(@Body() dto: MarkReadDto) {
+    return this.mailService.markAsRead(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/move-batch')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Move batch mail' })
+  @ApiBody({ type: MoveBatchDto })
+  async moveBatch(@Body() dto: MoveBatchDto) {
+    return this.mailService.moveMessagesBatch(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/permanent-delete')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Xoa vinh vien mail' })
+  @ApiBody({ type: PermanentDeleteMailDto })
+  async permanentDelete(@Body() dto: PermanentDeleteMailDto) {
+    return this.mailService.permanentDelete(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/star')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Danh dau sao' })
+  @ApiBody({ type: StarMailDto })
+  async star(@Body() dto: StarMailDto) {
+    return this.mailService.markStar(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/unstar')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Bo danh dau sao' })
+  @ApiBody({ type: StarMailDto })
+  async unstar(@Body() dto: StarMailDto) {
+    return this.mailService.unmarkStar(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/reply')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Trả lời email (Reply / Reply All)' })
+  @ApiBody({ type: ReplyMailDto })
+  async reply(@Body() dto: ReplyMailDto) {
+    return this.mailService.replyMessage(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/forward')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Chuyển tiếp email (Forward)' })
+  @ApiBody({ type: ForwardMailDto })
+  async forward(@Body() dto: ForwardMailDto) {
+    return this.mailService.forwardMessage(dto);
+  }
+
+  // ─── LỊCH & SỰ KIỆN (CALENDAR & REMINDERS) ───────────────────────────────────
+
+  @UseGuards(ExchangeAuthGuard)
+  @Get('calendar')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Lấy các sự kiện trong khoảng thời gian' })
+  async getEvents(
+    @Query('startDate') startDate: string,
+    @Query('endDate') endDate: string,
+  ) {
+    return this.mailService.getEvents(startDate, endDate);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Get('calendar/reminders/active')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({
+    summary: 'Lấy danh sách lời nhắc (Reminders) đang kích hoạt',
+  })
+  async getActiveReminders() {
+    return this.mailService.getActiveReminders();
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('calendar/reminders/dismiss/:id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Ẩn/Tắt lời nhắc cho một sự kiện cụ thể' })
+  async dismissReminder(@Param('id') id: string) {
+    await this.mailService.dismissReminder(id);
+    return { success: true };
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('calendar')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Tạo một sự kiện mới' })
+  @ApiBody({ type: CreateEventDto })
+  async createEvent(@Body() dto: CreateEventDto) {
+    const id = await this.mailService.createEvent(dto);
+    return { success: true, id };
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Get('calendar/:id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Xem chi tiết một sự kiện' })
+  async getEventDetails(@Param('id') id: string) {
+    return this.mailService.getEventDetails(id);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Put('calendar/:id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Cập nhật sự kiện' })
+  @ApiBody({ type: UpdateEventDto })
+  async updateEvent(@Param('id') id: string, @Body() dto: UpdateEventDto) {
+    await this.mailService.updateEvent(id, dto);
+    return { success: true };
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Delete('calendar/:id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Xoá sự kiện' })
+  async deleteEvent(@Param('id') id: string) {
+    await this.mailService.deleteEvent(id);
+    return { success: true };
   }
 }
 ````

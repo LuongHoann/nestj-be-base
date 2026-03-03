@@ -37,11 +37,11 @@ export interface Attachment {
 
 export interface SendMailOptions {
   from?: string;
-  to: string[];
+  to?: string[];
   cc?: string[];
   bcc?: string[];
   replyTo?: string[];
-  subject: string;
+  subject?: string;
   text?: string; // Plain text version
   html?: string; // HTML version
   attachments?: Attachment[];

@@ -104,31 +104,23 @@ export class ExchangeAuthService {
     password: string,
   ): Promise<{ accessToken: string; refreshToken: string; email: string }> {
     // Ensure user exists and verify password in DB
-    let user = await this.em.findOne(User, { email });
+    const user = await this.em.findOne(User, { email });
     if (!user) {
-      const now = new Date();
-      const passwordHash = await argon2.hash(password);
-      user = this.em.create(User, {
-        email,
-        password: passwordHash,
-        isActive: true,
-        mailboxInitialized: false,
-        createdAt: now,
-        updatedAt: now,
-      });
+      // Ném lỗi và ngừng lại nếu người dùng chưa được cấu hình tài khoản (người dùng chưa có bản ghi trên DB)
+      throw new UnauthorizedException('Tài khoản không tồn tại trên hệ thống');
+    }
+
+    if (!user.isActive) {
+      throw new ForbiddenException('Tài khoản đã bị vô hiệu hoá');
+    }
+    
+    if (!user.password) {
+      user.password = await argon2.hash(password);
       await this.em.persistAndFlush(user);
     } else {
-      if (!user.isActive) {
-        throw new ForbiddenException('Tài khoản đã bị vô hiệu hoá');
-      }
-      if (!user.password) {
-        user.password = await argon2.hash(password);
-        await this.em.persistAndFlush(user);
-      } else {
-        const valid = await argon2.verify(user.password, password);
-        if (!valid) {
-          throw new UnauthorizedException('Invalid Exchange credentials');
-        }
+      const valid = await argon2.verify(user.password, password);
+      if (!valid) {
+        throw new UnauthorizedException('Invalid Exchange credentials');
       }
     }
 
@@ -266,18 +258,10 @@ export class ExchangeAuthService {
     email: string,
     password: string,
   ): Promise<void> {
-    let user = await this.em.findOne(User, { email });
+    const user = await this.em.findOne(User, { email });
 
     if (!user) {
-      const now = new Date();
-      user = this.em.create(User, {
-        email,
-        isActive: true,
-        mailboxInitialized: false,
-        createdAt: now,
-        updatedAt: now,
-      });
-      await this.em.persistAndFlush(user);
+      throw new UnauthorizedException('Tài khoản không tồn tại trên hệ thống');
     }
 
     if (user.mailboxInitialized) {
