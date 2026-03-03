@@ -3,9 +3,16 @@ import { AppModule } from './app.module';
 import { BadRequestException, ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { json, urlencoded } from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  // Keep request body limit fixed in code.
+  // 25MB file in base64 is larger than 25MB, so transport limit must be higher.
+  const bodyLimit = '40mb';
+
+  app.use(json({ limit: bodyLimit }));
+  app.use(urlencoded({ extended: true, limit: bodyLimit }));
 
   app.useGlobalPipes(
     new ValidationPipe({

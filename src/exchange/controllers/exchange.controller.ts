@@ -192,7 +192,31 @@ export class ExchangeController {
     const max = maxItems ? parseInt(maxItems, 10) : 50;
     return this.mailService.getConversationMessages(messageId, max);
   }
+  @UseGuards(ExchangeAuthGuard)
+  @Get('mail/:id/attachments/:index')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Tai attachment cua mail' })
+  async downloadAttachment(
+    @Param('id') id: string,
+    @Param('index') index: string,
+    @Query('download') download: string = 'true',
+    @Res() res: Response,
+  ) {
+    const attachment = await this.mailService.downloadAttachment(
+      id,
+      Number(index),
+    );
 
+    const disposition =
+      download === 'false'
+        ? 'inline'
+        : `attachment; filename="${encodeURIComponent(attachment.filename)}"`;
+
+    res.setHeader('Content-Type', attachment.contentType);
+    res.setHeader('Content-Disposition', disposition);
+    res.setHeader('Content-Length', attachment.size.toString());
+    res.send(attachment.content);
+  }
   @UseGuards(ExchangeAuthGuard)
   @Get('mail/:id')
   @ApiBearerAuth('exchange_cookie')
@@ -360,3 +384,4 @@ export class ExchangeController {
     return { success: true };
   }
 }
+
