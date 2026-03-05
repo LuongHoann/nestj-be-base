@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  webmail_be:
+    image: web_mail_be:latest
+    container_name: web_mail_be
+    restart: always
+    ports:
+      - '3001:3001'
+    environment:
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
+      - REDIS_URL=redis://redis-service:6379
+      - JWT_SECRET=123
+      - DB_HOST=10.10.20.109
+      - DB_PORT=5555
+      - DB_USER=postgres
+      - DB_PASSWORD=123
+      - DB_NAME=postgres
+      - DB_ALLOW_GLOBAL_CONTEXT=false
+      - RUN_SEEDING=false
+      - JWT_EXPIRES_IN=15m
+      - AUTH_MAX_FAILED_REFRESH=5
+      - REFRESH_EXPIRES_IN=7d
+      - DRAGONFLY_ENABLED=true
+      - DRAGONFLY_HOST=10.10.20.70
+      - DRAGONFLY_PORT=6379
+      - DRAGONFLY_TTL=300
+      - EXCHANGE_CRED_SECRET=123456
+      - EWS_URL=https://10.10.20.179/EWS/Exchange.asmx
+      - EWS_VERSION=Exchange2019
+      - EWS_IMPERSONATE=true
+      - EWS_VALIDATE_ON_LOGIN=false
+      - EWS_SSO_ENABLED=false
+      - EWS_TLS_REJECT_UNAUTHORIZED=false
+      - SMTP_HOST=10.10.20.179
+      - SMTP_PORT=587
+      - SMTP_SECURE=false
+      - SMTP_POOL_IDLE_TTL_MS=1800000
+      - SMTP_POOL_MAX_CONNECTIONS=2
+      - SMTP_POOL_MAX_MESSAGES=100
+      - SMTP_RATE_LIMIT=3
+      - SMTP_RATE_DELTA_MS=1000
+      - MAILBOX_SCRIPT_CREATE=./scripts/mailbox/create-mailbox.py
+      - MAILBOX_SCRIPT_UPDATE=./scripts/mailbox/update-mailbox.py
+      - MAILBOX_SCRIPT_DISABLE=./scripts/mailbox/disable-mailbox.py
+      - MAILBOX_SCRIPT_RESTORE=./scripts/mailbox/restore-mailbox.py
+      - MAILBOX_SCRIPT_DELETE=./scripts/mailbox/delete-mailbox.py
+      - MAILBOX_SCRIPT_TIMEOUT_MS=60000
+
+    # Bỏ comment cục dưới nếu Server VPS KHÔNG TỰ PHÂN GIẢI được tên miền mail.exchange.local
+    # extra_hosts:
+    #   - "mail.exchange.local:192.168.1.50" # Thay domain và IP bằng IP của máy chủ Exchange

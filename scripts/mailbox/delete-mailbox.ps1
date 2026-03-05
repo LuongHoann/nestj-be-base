@@ -12,18 +12,20 @@ if (-not $data.email) {
 
 # --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
 $ExchangeServer = $data.ExchangeServer
+# Giữ nguyên định dạng domain\user cho Negotiate/NTLM auth
 $UserAdmin = $data.UserAdmin
-$Password = $data.Password | ConvertTo-SecureString -AsPlainText -Force
+$Password = $data.AdminPassword | ConvertTo-SecureString -AsPlainText -Force
 $Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
 
 try {
     # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
-    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+    # Sử dụng Negotiate (NTLM) qua HTTP
+    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck
 
     $Session = New-PSSession `
         -ConfigurationName Microsoft.Exchange `
         -ConnectionUri "http://$ExchangeServer/PowerShell/" `
-        -Authentication Basic `
+        -Authentication Negotiate `
         -Credential $Credential `
         -SessionOption $SessionOption `
         -AllowRedirection `

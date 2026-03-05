@@ -2335,6 +2335,16 @@ export class EwsMailProvider implements IMailProvider {
 
     const results = await folder.FindAppointments(view);
 
+    // FindAppointments chỉ trả về First-Class Properties, Body KHÔNG được load tự động.
+    // Cần gọi LoadPropertiesForItems để load thêm Body trước khi truy cập.
+    if (results.Items.length > 0) {
+      const propertySet = new PropertySet(
+        BasePropertySet.FirstClassProperties,
+        ItemSchema.Body,
+      );
+      await this.service.LoadPropertiesForItems(results.Items, propertySet);
+    }
+
     return results.Items.map((apt: Appointment) => ({
       id: apt.Id?.UniqueId ?? '',
       subject: apt.Subject ?? '',
@@ -2344,7 +2354,14 @@ export class EwsMailProvider implements IMailProvider {
       isAllDayEvent: apt.IsAllDayEvent ?? false,
       isReminderSet: apt.IsReminderSet ?? false,
       reminderMinutesBeforeStart: apt.ReminderMinutesBeforeStart ?? 0,
-      bodyPreview: apt.Body?.Text ?? '',
+      // Lấy text của Body, fallback về chuỗi rỗng nếu vẫn chưa được load
+      bodyPreview: (() => {
+        try {
+          return apt.Body?.Text ?? '';
+        } catch {
+          return '';
+        }
+      })(),
     }));
   }
 

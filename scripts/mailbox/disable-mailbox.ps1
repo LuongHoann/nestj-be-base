@@ -12,19 +12,20 @@ if (-not $data.email) {
 
 # --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
 $ExchangeServer = $data.ExchangeServer
+# Giữ nguyên định dạng domain\user cho Negotiate/NTLM auth
 $UserAdmin = $data.UserAdmin
-$Password = $data.Password | ConvertTo-SecureString -AsPlainText -Force
+$Password = $data.AdminPassword | ConvertTo-SecureString -AsPlainText -Force
 $Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
 
 try {
     # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
-    # Sử dụng Kerberos authentication cho môi trường Domain
-    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+    # Sử dụng Negotiate (NTLM) qua HTTP
+    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck
 
     $Session = New-PSSession `
         -ConfigurationName Microsoft.Exchange `
         -ConnectionUri "http://$ExchangeServer/PowerShell/" `
-        -Authentication Basic `
+        -Authentication Negotiate `
         -Credential $Credential `
         -SessionOption $SessionOption `
         -AllowRedirection `
@@ -33,7 +34,6 @@ try {
     # 3. Chạy lệnh Disable-Mailbox trực tiếp trên Session đó bằng Invoke-Command
     Invoke-Command -Session $Session -ScriptBlock {
         param($email)
-        # Load module Exchange nếu cần (trong session thường đã có sẵn)
         Disable-Mailbox -Identity $email -Confirm:$false
     } -ArgumentList $data.email
 

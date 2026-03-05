@@ -33,8 +33,6 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 # Thực hiện build NestJS (chuyển TypeScript sang JavaScript)
-# Lệnh 'build' thường được định nghĩa trong package.json
-# Ví dụ: "build": "nest build"
 RUN \
   if [ -f yarn.lock ]; then yarn run build; \
   elif [ -f package-lock.json ]; then npm run build; \
@@ -44,35 +42,39 @@ RUN \
 
 # ----------------------------------------------------------------
 # Stage 3: Runner (Final Image)
-# Image cuối cùng, nhỏ nhất, chỉ chứa code đã build và dependencies cần thiết
+# Sử dụng Debian-slim + Python3 + pywinrm thay vì PowerShell.
+# pywinrm kết nối trực tiếp tới WinRM (NTLM) trên Exchange Server,
+# không cần pwsh/PSWSMan/OMI — loại bỏ hoàn toàn lỗi MI_RESULT_FAILED.
 # ----------------------------------------------------------------
-FROM base AS runner
+FROM node:22-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Tạo user và group không phải root để tăng cường bảo mật
-# UID/GID tùy ý, miễn là không phải 0 (root)
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nestjs
+# Cài đặt Python3 + pip + pywinrm cho xác thực WinRM/NTLM tới Exchange
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    python3 \
+    python3-pip \
+    && pip3 install --no-cache-dir --break-system-packages pypsrp \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Sao chép node_modules cần thiết cho môi trường production
-# (Chỉ bao gồm production dependencies)
-COPY --from=deps /app/node_modules ./node_modules
+# Tạo user bảo mật
+RUN groupadd --system --gid 1001 nodejs
+RUN useradd --system --uid 1001 --gid nodejs --no-create-home nestjs
 
-# Sao chép thư mục dist đã build từ stage builder (đầu ra của 'nest build')
+# CHỈ copy những thứ cần thiết
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder --chown=nestjs:nodejs /app/dist ./dist
-# Sao chép package.json (cần cho lệnh 'node dist/main')
-COPY package.json .
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder --chown=nestjs:nodejs /app/scripts ./scripts
 
-# Chuyển sang user không phải root
+# Chuyển sang user nestjs
 USER nestjs
 
-# Thiết lập cổng và export
 EXPOSE 3001
 ENV PORT=3001
-ENV HOSTNAME="0.0.0.0"
 
-# Chạy ứng dụng đã được build
-# Giả định file khởi chạy là 'main.js' trong thư mục 'dist'
-CMD ["node", "dist/main.js"]
+# Chạy trực tiếp file đã build bằng node
+CMD ["node", "dist/src/main.js"]

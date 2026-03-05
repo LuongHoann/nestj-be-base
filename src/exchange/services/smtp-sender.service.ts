@@ -20,9 +20,10 @@ export class SmtpSenderService implements OnModuleDestroy {
   private readonly idleTtlMs: number;
 
   constructor(private readonly configService: ConfigService) {
+    // Giảm idle TTL mặc định xuống 2 phút để Exchange dọn hết connection zombie khi app restart
     this.idleTtlMs = this.configService.get<number>(
       'SMTP_POOL_IDLE_TTL_MS',
-      30 * 60 * 1000,
+      2 * 60 * 1000,
     );
   }
 
@@ -118,7 +119,11 @@ export class SmtpSenderService implements OnModuleDestroy {
         minVersion: 'TLSv1.2',
         rejectUnauthorized: false,
       },
-      debug: true,
+      // Timeout để Exchange cleanup connection đúng cách, tránh zombie PRX6
+      greetingTimeout: 15000,  // 15 giây chờ greeting SMTP
+      socketTimeout: 30000,    // 30 giây idle socket timeout
+      idleTimeout: 300000,      // 5 phút thì đóng connection nhàn rỗi
+      debug: false,
       logger: true,
       pool: true,
       maxConnections,
