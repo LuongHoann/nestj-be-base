@@ -7,6 +7,10 @@ export class DragonflyService implements OnModuleDestroy {
   private readonly logger = new Logger(DragonflyService.name);
   private client: Redis | null = null;
   private isConnected = false;
+  private lastErrorMessage: string | null = null;
+  private lastErrorLoggedAt = 0;
+  private suppressedErrorCount = 0;
+  private readonly errorThrottleMs = 30000;
 
   constructor(
     @Inject(dragonflyConfig.KEY)
@@ -26,11 +30,13 @@ export class DragonflyService implements OnModuleDestroy {
       host: this.config.host,
       port: this.config.port,
       password: this.config.password,
+      connectTimeout: 5000,
       // Retry strategy: keep trying to reconnect but don't block
       retryStrategy: (times) => {
-        const delay = Math.min(times * 50, 2000);
+        const delay = Math.min(times * 250, 5000);
         return delay;
       },
+      maxRetriesPerRequest: 1,
       // Don't crash on connection error
       enableOfflineQueue: false,
       lazyConnect: true, // Don't connect immediately in constructor
@@ -43,12 +49,20 @@ export class DragonflyService implements OnModuleDestroy {
     });
 
     this.client.on('connect', () => {
+      if (this.suppressedErrorCount > 0) {
+        this.logger.warn(
+          `DragonflyDB reconnected after ${this.suppressedErrorCount} suppressed connection errors`,
+        );
+        this.suppressedErrorCount = 0;
+      }
       this.logger.log('✅ Connected to DragonflyDB');
       this.isConnected = true;
+      this.lastErrorMessage = null;
+      this.lastErrorLoggedAt = 0;
     });
 
     this.client.on('error', (err) => {
-      this.logger.error(`❌ DragonflyDB Error: ${err.message}`);
+      this.logConnectionError(err);
       this.isConnected = false;
     });
 
@@ -62,8 +76,38 @@ export class DragonflyService implements OnModuleDestroy {
 
   async onModuleDestroy() {
     if (this.client) {
-      await this.client.quit();
+      try {
+        await this.client.quit();
+      } catch {
+        this.client.disconnect();
+      }
     }
+  }
+
+  private logConnectionError(err: Error) {
+    const message = err.message || 'Unknown DragonflyDB error';
+    const now = Date.now();
+    const shouldLog =
+      this.lastErrorMessage !== message ||
+      now - this.lastErrorLoggedAt >= this.errorThrottleMs;
+
+    if (shouldLog) {
+      if (this.suppressedErrorCount > 0) {
+        this.logger.warn(
+          `Suppressed ${this.suppressedErrorCount} repeated DragonflyDB connection errors`,
+        );
+        this.suppressedErrorCount = 0;
+      }
+
+      this.logger.error(
+        `❌ DragonflyDB unavailable. Cache is temporarily disabled: ${message}`,
+      );
+      this.lastErrorMessage = message;
+      this.lastErrorLoggedAt = now;
+      return;
+    }
+
+    this.suppressedErrorCount += 1;
   }
 
   get enabled(): boolean {

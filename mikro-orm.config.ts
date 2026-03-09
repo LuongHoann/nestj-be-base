@@ -3,9 +3,11 @@ import { defineConfig } from '@mikro-orm/postgresql';
 import { User } from './src/database/entities/user.entity';
 import { File } from './src/database/entities/file.entity';
 import { AuditLog } from './src/database/entities/audit-log.entity';
+import { RssFeed } from './src/database/entities/rss-feed.entity';
+import { RssArticle } from './src/database/entities/rss-article.entity';
 
 export default defineConfig({
-  entities: [User, File, AuditLog],
+  entities: [User, File, AuditLog, RssFeed, RssArticle],
   dbName: process.env.DB_NAME || 'postgres',
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT || '5432', 10),

@@ -15,10 +15,13 @@ import { File } from './database/entities/file.entity';
 import { AuditLog } from './database/entities/audit-log.entity';
 import { Role } from './database/entities/role.entity';
 import { Permission } from './database/entities/permission.entity';
+import { RssFeed } from './database/entities/rss-feed.entity';
+import { RssArticle } from './database/entities/rss-article.entity';
 import { AuditLogModule } from './audit/audit.module';
 import { ExchangeModule } from './exchange/exchange.module';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { MailboxModule } from './mailbox/mailbox.module';
+import { RssModule } from './rss/rss.module';
 
 @Module({
   imports: [
@@ -30,7 +33,15 @@ import { MailboxModule } from './mailbox/mailbox.module';
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
         driver: PostgreSqlDriver,
-        entities: [User, File, AuditLog, Role, Permission],
+        entities: [
+          User,
+          File,
+          AuditLog,
+          Role,
+          Permission,
+          RssFeed,
+          RssArticle,
+        ],
         dbName: configService.get<string>('database.name'),
         host: configService.get<string>('database.host'),
         port: configService.get<number>('database.port'),
@@ -54,6 +65,7 @@ import { MailboxModule } from './mailbox/mailbox.module';
     AuditLogModule,
     ExchangeModule,
     MailboxModule,
+    RssModule,
   ],
   controllers: [],
   providers: [],
