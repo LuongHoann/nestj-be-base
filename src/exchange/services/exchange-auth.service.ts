@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EntityManager } from '@mikro-orm/core';
+import { JwtService } from '@nestjs/jwt';
 import { User } from 'src/database/entities/user.entity';
 import { DragonflyService } from 'src/common/cache/dragonfly.service';
 import { ulid } from 'ulid';
@@ -35,11 +36,57 @@ export class ExchangeAuthService {
   private readonly SESSION_TTL = 3600; // 1 hour
   private readonly REFRESH_TTL = 7 * 24 * 3600; // 7 days
 
+  private buildDefaultName(email: string): string {
+    return email.split('@')[0] || email;
+  }
+
+  private async ensureLocalUser(email: string): Promise<User> {
+    let user = await this.em.findOne(User, { email });
+
+    if (!user) {
+      user = this.em.create(User, {
+        email,
+        name: this.buildDefaultName(email),
+        isActive: true,
+        mailboxInitialized: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      await this.em.persistAndFlush(user);
+      this.logger.log(`Provisioned local webmail user for ${email}`);
+    }
+
+    if (!user.isActive) {
+      throw new ForbiddenException('Tài khoản đã bị vô hiệu hoá');
+    }
+
+    return user;
+  }
+
   constructor(
     private readonly cache: DragonflyService,
     private readonly configService: ConfigService,
     private readonly em: EntityManager,
+    private readonly jwtService: JwtService,
   ) {}
+
+  private async issueAppAccessToken(email: string): Promise<string> {
+    const user = await this.em.findOne(User, { email });
+
+    if (!user) {
+      throw new UnauthorizedException('Tài khoản không tồn tại trên hệ thống');
+    }
+
+    if (!user.isActive) {
+      throw new ForbiddenException('Tài khoản đã bị vô hiệu hoá');
+    }
+
+    return this.jwtService.signAsync({
+      sub: user.id,
+      email: user.email,
+    });
+  }
 
   /**
    * Generate secure session token
@@ -102,30 +149,15 @@ export class ExchangeAuthService {
   async login(
     email: string,
     password: string,
-  ): Promise<{ accessToken: string; refreshToken: string; email: string }> {
-    // Ensure user exists and verify password in DB
-    const user = await this.em.findOne(User, { email });
-    if (!user) {
-      // Ném lỗi và ngừng lại nếu người dùng chưa được cấu hình tài khoản (người dùng chưa có bản ghi trên DB)
-      throw new UnauthorizedException('Tài khoản không tồn tại trên hệ thống');
-    }
-
-    if (!user.isActive) {
-      throw new ForbiddenException('Tài khoản đã bị vô hiệu hoá');
-    }
-    
-    if (!user.password) {
-      user.password = await argon2.hash(password);
-      await this.em.persistAndFlush(user);
-    } else {
-      const valid = await argon2.verify(user.password, password);
-      if (!valid) {
-        throw new UnauthorizedException('Invalid Exchange credentials');
-      }
-    }
-
+  ): Promise<{
+    accessToken: string;
+    refreshToken: string;
+    email: string;
+    appAccessToken: string;
+  }> {
     const ssoEnabled =
       this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
+
     if (ssoEnabled) {
       // 1. Verify credentials against Exchange/EWS (SSO)
       await this.verifyExchangeCredentials(email);
@@ -134,11 +166,23 @@ export class ExchangeAuthService {
       await this.verifyExchangeCredentialsBasic(email, password);
     }
 
+    const user = await this.ensureLocalUser(email);
+
+    if (!user.password || !(await argon2.verify(user.password, password))) {
+      user.password = await argon2.hash(password);
+      await this.em.persistAndFlush(user);
+    }
+
     // 2. Ensure mailbox folders are initialized once per account
     await this.initializeMailboxIfNeeded(email, password);
 
     // 3. Issue tokens
-    return this.issueTokens(email, password);
+    const tokens = await this.issueTokens(email, password);
+
+    return {
+      ...tokens,
+      appAccessToken: await this.issueAppAccessToken(email),
+    };
   }
 
   /**
@@ -188,7 +232,7 @@ export class ExchangeAuthService {
    */
   async rotateRefreshToken(
     fullToken: string,
-  ): Promise<{ accessToken: string; refreshToken: string }> {
+  ): Promise<{ accessToken: string; refreshToken: string; appAccessToken: string }> {
     const [tokenId, tokenSecret] = fullToken.split('.');
 
     if (!tokenId || !tokenSecret) {
@@ -220,7 +264,12 @@ export class ExchangeAuthService {
 
       // Issue new tokens
       this.logger.log(`Exchange tokens rotated for ${email}`);
-      return this.issueTokens(email, password);
+      const tokens = await this.issueTokens(email, password);
+
+      return {
+        ...tokens,
+        appAccessToken: await this.issueAppAccessToken(email),
+      };
     } catch (error) {
       this.logger.error(`Failed to rotate exchange token: ${error.message}`);
       throw new UnauthorizedException('Không thể làm mới token !');

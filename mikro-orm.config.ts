@@ -5,9 +5,19 @@ import { File } from './src/database/entities/file.entity';
 import { AuditLog } from './src/database/entities/audit-log.entity';
 import { RssFeed } from './src/database/entities/rss-feed.entity';
 import { RssArticle } from './src/database/entities/rss-article.entity';
+import { UserRssSubscription } from './src/database/entities/user-rss-subscription.entity';
+import { UserRssState } from './src/database/entities/user-rss-state.entity';
 
 export default defineConfig({
-  entities: [User, File, AuditLog, RssFeed, RssArticle],
+  entities: [
+    User,
+    File,
+    AuditLog,
+    RssFeed,
+    RssArticle,
+    UserRssSubscription,
+    UserRssState,
+  ],
   dbName: process.env.DB_NAME || 'postgres',
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT || '5432', 10),

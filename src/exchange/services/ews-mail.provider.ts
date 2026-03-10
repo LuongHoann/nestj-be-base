@@ -132,9 +132,6 @@ const LIST_PROPS = new PropertySet(
   EmailMessageSchema.IsRead,
   ItemSchema.HasAttachments,
   ItemSchema.Categories,
-  PR_FLAG_STATUS,
-  PR_SENDER_SMTP_ADDRESS,
-  PR_SENT_REPRESENTING_SMTP_ADDRESS,
 );
 
 /** Dùng khi load chi tiết message */
@@ -274,29 +271,30 @@ export class EwsMailProvider implements IMailProvider {
     this.email = creds.email;
     this.credentials = { email: creds.email, password: creds.password };
 
+    const cfg = this.ewsConfig;
+    if (!cfg.url) throw new Error('EWS_URL is not configured');
+
+    if (!cfg.tlsRejectUnauthorized) {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    }
+
+    // Exchange 2019 on-premises tương thích với ExchangeVersion.Exchange2016
+    const version =
+      ExchangeVersion[cfg.version as keyof typeof ExchangeVersion] ??
+      ExchangeVersion.Exchange2016;
+
     // Kiểm tra global service cache để tránh tạo quá nhiều connections (lỗi concurrent limit)
     let service = globalExchangeServices.get(creds.email);
 
     if (!service) {
-      const cfg = this.ewsConfig;
-      if (!cfg.url) throw new Error('EWS_URL is not configured');
-
-      if (!cfg.tlsRejectUnauthorized) {
-        process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-      }
-
-      // Exchange 2019 on-premises tương thích với ExchangeVersion.Exchange2016
-      const version =
-        ExchangeVersion[cfg.version as keyof typeof ExchangeVersion] ??
-        ExchangeVersion.Exchange2016;
-
       service = new ExchangeService(version);
-      service.Url = new Uri(cfg.url);
-      service.Credentials = new WebCredentials(creds.email, creds.password);
-
-      // Lưu lại để dùng chung
       globalExchangeServices.set(creds.email, service);
     }
+
+    // Luôn cập nhật endpoint và credentials hiện tại để tránh tái sử dụng phiên
+    // EWS cũ với password đã lỗi thời sau khi user đăng nhập lại.
+    service.Url = new Uri(cfg.url);
+    service.Credentials = new WebCredentials(creds.email, creds.password);
 
     this.service = service;
   }
@@ -710,39 +708,10 @@ export class EwsMailProvider implements IMailProvider {
 
   private async getStarredCounts(): Promise<{ total: number; unread: number }> {
     if (!this.service) throw new Error('EWS service not connected');
-    try {
-      const countView = new ItemView(1, 0);
-      // Dùng MAPI filter để tìm đúng flagged items
-      const starredFilter = new SearchFilter.IsEqualTo(
-        PR_FLAG_STATUS,
-        FlagStatus.Flagged,
-      );
-
-      const totalResult = await this.service.FindItems(
-        WellKnownFolderName.Inbox,
-        starredFilter,
-        countView,
-      );
-
-      if (!totalResult.TotalCount) return { total: 0, unread: 0 };
-
-      const unreadResult = await this.service.FindItems(
-        WellKnownFolderName.Inbox,
-        new SearchFilter.SearchFilterCollection(LogicalOperator.And, [
-          starredFilter,
-          new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, false),
-        ]),
-        countView,
-      );
-
-      return {
-        total: totalResult.TotalCount ?? 0,
-        unread: unreadResult.TotalCount ?? 0,
-      };
-    } catch (err) {
-      this.logger.warn(`getStarredCounts: ${err.message}`);
-      return { total: 0, unread: 0 };
-    }
+    // `ews-javascript-api` currently crashes while serializing some extended
+    // property filters in this environment, so keep Starred counts degraded
+    // instead of breaking the whole mailbox sidebar.
+    return { total: 0, unread: 0 };
   }
 
   // ─── Messages ─────────────────────────────────────────────────────────────
@@ -765,20 +734,7 @@ export class EwsMailProvider implements IMailProvider {
     let result: any;
 
     if (resolvedId === 'Starred') {
-      try {
-        const filter = new SearchFilter.IsEqualTo(
-          PR_FLAG_STATUS,
-          FlagStatus.Flagged,
-        );
-        result = await this.service.FindItems(
-          WellKnownFolderName.Inbox,
-          filter,
-          view,
-        );
-      } catch (err) {
-        this.logger.warn(`Starred getMessages: ${err.message}`);
-        return { items: [], total: 0 };
-      }
+      return { items: [], total: 0 };
     } else {
       result = await this.service.FindItems(resolvedFolder, view);
     }
@@ -809,23 +765,15 @@ export class EwsMailProvider implements IMailProvider {
         DETAIL_PROPS,
       );
     } catch (err) {
-      if (
-        String(err?.message || '').includes(
-          'extended property attribute combination is invalid',
-        )
-      ) {
-        // Fallback to basic properties if extended properties are rejected by server
-        const basicProps = new PropertySet(
-          BasePropertySet.FirstClassProperties,
-        );
-        message = await EmailMessage.Bind(
-          this.service,
-          new ItemId(itemId),
-          basicProps,
-        );
-      } else {
-        throw err;
-      }
+      this.logger.warn(
+        `getMessage fallback without extended properties: ${err?.message}`,
+      );
+      const basicProps = new PropertySet(BasePropertySet.FirstClassProperties);
+      message = await EmailMessage.Bind(
+        this.service,
+        new ItemId(itemId),
+        basicProps,
+      );
     }
 
     if (!(message as any).IsRead) {

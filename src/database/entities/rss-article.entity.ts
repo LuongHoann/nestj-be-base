@@ -1,10 +1,11 @@
 import { Entity, PrimaryKey, Property, ManyToOne, Index } from '@mikro-orm/core';
+import { randomUUID } from 'crypto';
 import { RssFeed } from './rss-feed.entity';
 
 @Entity({ tableName: 'rss_articles' })
 export class RssArticle {
-  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
-  id!: string;
+  @PrimaryKey({ type: 'uuid' })
+  id: string = randomUUID();
 
   @ManyToOne(() => RssFeed, { nullable: true })
   @Index()

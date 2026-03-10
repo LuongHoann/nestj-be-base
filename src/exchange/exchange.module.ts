@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { JwtModule } from '@nestjs/jwt';
 import { ExchangeController } from './controllers/exchange.controller';
 import { ContactsController } from './controllers/contacts.controller';
 import { NotesController } from './controllers/notes.controller';
@@ -11,7 +13,21 @@ import { SmtpSenderService } from './services/smtp-sender.service';
 import { ContactNoteService } from './services/contact-note.service';
 
 @Module({
-  imports: [CacheModule, CommonModule],
+  imports: [
+    CacheModule,
+    CommonModule,
+    JwtModule.registerAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        secret:
+          configService.get<string>('JWT_SECRET') ||
+          'your-secret-key-change-in-production',
+        signOptions: {
+          expiresIn: configService.get<any>('JWT_EXPIRES_IN') || '15m',
+        },
+      }),
+    }),
+  ],
   controllers: [ExchangeController, ContactsController, NotesController],
   providers: [
     ExchangeAuthService,

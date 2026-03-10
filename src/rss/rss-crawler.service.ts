@@ -1,17 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { EntityManager } from '@mikro-orm/core';
-import Parser from 'rss-parser';
-import sanitizeHtml from 'sanitize-html';
 import { RssFeed } from '../database/entities/rss-feed.entity';
-import { RssArticle } from '../database/entities/rss-article.entity';
+import { RssQueueService } from './rss-queue.service';
 
 @Injectable()
 export class RssCrawlerService {
   private readonly logger = new Logger(RssCrawlerService.name);
-  private readonly parser = new Parser({ timeout: 15000 });
 
-  constructor(private readonly em: EntityManager) {}
+  constructor(
+    private readonly em: EntityManager,
+    private readonly rssQueueService: RssQueueService,
+  ) { }
 
   @Cron('0 */30 * * * *', {
     name: 'rss-news-pooling',
@@ -34,82 +34,17 @@ export class RssCrawlerService {
       }
     }
 
-    let insertedCount = 0;
-    let skippedCount = 0;
-
     for (const [url, feed] of uniqueFeeds) {
       try {
-        const parsedFeed = await this.parser.parseURL(url);
-
-        for (const item of parsedFeed.items ?? []) {
-          const guid = this.normalize(item.guid);
-          const link = this.normalize(item.link);
-
-          if (!guid && !link) {
-            skippedCount += 1;
-            continue;
-          }
-
-          const where = guid && link ? { $or: [{ guid }, { link }] } : guid ? { guid } : { link };
-          const existingArticle = await this.em.findOne(RssArticle, where);
-
-          if (existingArticle) {
-            skippedCount += 1;
-            continue;
-          }
-
-          const article = this.em.create(RssArticle, {
-            feed,
-            guid,
-            link,
-            title: this.normalize(item.title),
-            summary: this.buildSummary(
-              item.contentSnippet ?? item.description ?? '',
-            ),
-            isRead: false,
-            publishedAt: this.parseDate(item.pubDate),
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          });
-
-          this.em.persist(article);
-          insertedCount += 1;
-        }
-
-        await this.em.flush();
+        await this.rssQueueService.enqueueFeedCrawl(feed);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.logger.warn(`RSS fetch failed for ${url}: ${message}`);
+        this.logger.warn(`RSS queue enqueue failed for ${url}: ${message}`);
       }
     }
 
     this.logger.log(
-      `Finished RSS crawl. inserted=${insertedCount}, skipped=${skippedCount}, feeds=${uniqueFeeds.size}`,
+      `Finished RSS crawl enqueue. feeds=${uniqueFeeds.size}`,
     );
-  }
-
-  private buildSummary(rawText: string): string {
-    const sanitized = sanitizeHtml(rawText, {
-      allowedTags: [],
-      allowedAttributes: {},
-    })
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    return sanitized.slice(0, 250);
-  }
-
-  private parseDate(pubDate?: string): Date | undefined {
-    if (!pubDate) {
-      return undefined;
-    }
-
-    const parsed = new Date(pubDate);
-    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
-  }
-
-  private normalize(value?: string): string | undefined {
-    const normalized = value?.trim();
-    return normalized ? normalized : undefined;
   }
 }

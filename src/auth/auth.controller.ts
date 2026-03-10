@@ -6,6 +6,7 @@ import { RegisterDto } from './dto/register.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import type { Response } from 'express';
+import { buildAuthCookieOptions } from './auth-cookie.util';
 import {
   ApiBearerAuth,
   ApiBody,
@@ -40,12 +41,13 @@ export class AuthController {
   ) {
     const tokens = await this.authService.login(dto.email, dto.password);
 
-    res.cookie('exchange_session', tokens.exchangeAccessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 3600000,
-    });
+    res.cookie('access_token', tokens.accessToken, buildAuthCookieOptions(900000));
+
+    res.cookie(
+      'exchange_session',
+      tokens.exchangeAccessToken,
+      buildAuthCookieOptions(3600000),
+    );
 
     return tokens;
   }

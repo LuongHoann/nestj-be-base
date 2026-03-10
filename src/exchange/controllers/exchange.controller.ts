@@ -12,9 +12,9 @@ import {
   Delete,
   Param,
 } from '@nestjs/common';
-import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { ExchangeAuthService } from '../services/exchange-auth.service';
 import { MailService } from '../services/mail.service';
+import { buildAuthCookieOptions } from '../../auth/auth-cookie.util';
 import {
   ExchangeLoginDto,
   SendMailDto,
@@ -58,23 +58,22 @@ export class ExchangeController {
     @Body() dto: ExchangeLoginDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { accessToken, refreshToken, email } = await this.authService.login(
-      dto.email,
-      dto.password,
-    );
+    const { accessToken, refreshToken, email, appAccessToken } =
+      await this.authService.login(dto.email, dto.password);
 
-    res.cookie('exchange_session', accessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 3600000,
-    });
+    res.cookie(
+      'exchange_session',
+      accessToken,
+      buildAuthCookieOptions(3600000),
+    );
+    res.cookie('access_token', appAccessToken, buildAuthCookieOptions(900000));
 
     return {
       success: true,
       email,
       accessToken,
       refreshToken,
+      appAccessToken,
     };
   }
 
@@ -86,12 +85,16 @@ export class ExchangeController {
   ) {
     const tokens = await this.authService.rotateRefreshToken(refreshToken);
 
-    res.cookie('exchange_session', tokens.accessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 3600000,
-    });
+    res.cookie(
+      'exchange_session',
+      tokens.accessToken,
+      buildAuthCookieOptions(3600000),
+    );
+    res.cookie(
+      'access_token',
+      tokens.appAccessToken,
+      buildAuthCookieOptions(900000),
+    );
 
     return tokens;
   }
@@ -118,7 +121,9 @@ export class ExchangeController {
       }
     }
 
-    res.clearCookie('exchange_session');
+    const clearOptions = buildAuthCookieOptions(0);
+    res.clearCookie('exchange_session', clearOptions);
+    res.clearCookie('access_token', clearOptions);
     return { success: true, message: 'Dang xuat thanh cong' };
   }
 

@@ -1,9 +1,10 @@
 import { Entity, PrimaryKey, Property, Index } from '@mikro-orm/core';
+import { randomUUID } from 'crypto';
 
 @Entity({ tableName: 'rss_feeds' })
 export class RssFeed {
-  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
-  id!: string;
+  @PrimaryKey({ type: 'uuid' })
+  id: string = randomUUID();
 
   @Property({ unique: true })
   @Index()

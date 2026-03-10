@@ -17,6 +17,8 @@ import { Role } from './database/entities/role.entity';
 import { Permission } from './database/entities/permission.entity';
 import { RssFeed } from './database/entities/rss-feed.entity';
 import { RssArticle } from './database/entities/rss-article.entity';
+import { UserRssSubscription } from './database/entities/user-rss-subscription.entity';
+import { UserRssState } from './database/entities/user-rss-state.entity';
 import { AuditLogModule } from './audit/audit.module';
 import { ExchangeModule } from './exchange/exchange.module';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
@@ -41,6 +43,8 @@ import { RssModule } from './rss/rss.module';
           Permission,
           RssFeed,
           RssArticle,
+          UserRssSubscription,
+          UserRssState,
         ],
         dbName: configService.get<string>('database.name'),
         host: configService.get<string>('database.host'),
@@ -70,4 +74,4 @@ import { RssModule } from './rss/rss.module';
   controllers: [],
   providers: [],
 })
-export class AppModule {}
+export class AppModule { }
