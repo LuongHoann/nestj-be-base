@@ -14,13 +14,19 @@ function runPowerShell(command) {
 
 function stopProcess(processId) {
   try {
-    execFileSync('powershell', ['-NoProfile', '-Command', `Stop-Process -Id ${processId} -Force`], {
-      cwd: repoRoot,
-      stdio: 'ignore',
-    });
+    execFileSync(
+      'powershell',
+      ['-NoProfile', '-Command', `Stop-Process -Id ${processId} -Force`],
+      {
+        cwd: repoRoot,
+        stdio: 'ignore',
+      },
+    );
     console.log(`[dev-clean] Stopped stale backend process ${processId}.`);
   } catch {
-    console.log(`[dev-clean] Skipped backend process ${processId}; it already exited.`);
+    console.log(
+      `[dev-clean] Skipped backend process ${processId}; it already exited.`,
+    );
   }
 }
 
@@ -32,21 +38,21 @@ function main() {
   const command = [
     `$repo = '${repoRootPattern}';`,
     `$currentPid = ${currentPid};`,
-    "$repoProcessIds = Get-CimInstance Win32_Process |",
-    "  Where-Object {",
+    '$repoProcessIds = Get-CimInstance Win32_Process |',
+    '  Where-Object {',
     "    $_.Name -eq 'node.exe' -and",
-    "    $_.ProcessId -ne $currentPid -and",
-    "    $_.CommandLine -like \"*$repo*\" -and",
+    '    $_.ProcessId -ne $currentPid -and',
+    '    $_.CommandLine -like "*$repo*" -and',
     "    ($_.CommandLine -like '*@nestjs*' -or $_.CommandLine -like '*nest start*' -or $_.CommandLine -like '*dist\\src\\main*')",
-    "  } |",
-    "  Select-Object -ExpandProperty ProcessId;",
-    "$portProcessIds = Get-NetTCPConnection -LocalPort 3005 -State Listen -ErrorAction SilentlyContinue |",
-    "  ForEach-Object {",
-    "    $procId = $_.OwningProcess;",
-    "    $proc = Get-CimInstance Win32_Process -Filter \"ProcessId = $procId\";",
-    "    if ($proc -and $proc.Name -eq 'node.exe' -and $proc.CommandLine -like \"*$repo*\") { $procId }",
-    "  };",
-    "($repoProcessIds + $portProcessIds) | Sort-Object -Unique",
+    '  } |',
+    '  Select-Object -ExpandProperty ProcessId;',
+    '$portProcessIds = Get-NetTCPConnection -LocalPort 3005 -State Listen -ErrorAction SilentlyContinue |',
+    '  ForEach-Object {',
+    '    $procId = $_.OwningProcess;',
+    '    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $procId";',
+    '    if ($proc -and $proc.Name -eq \'node.exe\' -and $proc.CommandLine -like "*$repo*") { $procId }',
+    '  };',
+    '($repoProcessIds + $portProcessIds) | Sort-Object -Unique',
   ].join(' ');
 
   const output = runPowerShell(command);

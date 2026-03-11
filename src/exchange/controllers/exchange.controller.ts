@@ -207,10 +207,15 @@ export class ExchangeController {
     @Query('download') download: string = 'true',
     @Res() res: Response,
   ) {
-    const attachment = await this.mailService.downloadAttachment(
+    const attachment = (await this.mailService.downloadAttachment(
       id,
       Number(index),
-    );
+    )) as {
+      filename: string;
+      contentType: string;
+      size: number;
+      content: Buffer | string;
+    };
 
     const disposition =
       download === 'false'

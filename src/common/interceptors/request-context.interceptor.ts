@@ -13,7 +13,7 @@ import { RequestContext } from '../context/request.context';
 export class RequestContextInterceptor implements NestInterceptor {
   constructor(
     @Inject(RequestContext) private readonly requestContext: RequestContext,
-  ) {}
+  ) { }
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
     const request = context.switchToHttp().getRequest();

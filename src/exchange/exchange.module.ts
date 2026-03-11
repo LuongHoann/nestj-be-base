@@ -9,6 +9,7 @@ import { CacheModule } from '../common/cache/cache.module';
 import { CommonModule } from '../common/common.module';
 import { MailService } from './services/mail.service';
 import { EwsMailProvider } from './services/ews-mail.provider';
+import { ImapMailProvider } from './services/imap-mail.provider';
 import { SmtpSenderService } from './services/smtp-sender.service';
 import { ContactNoteService } from './services/contact-note.service';
 
@@ -33,6 +34,7 @@ import { ContactNoteService } from './services/contact-note.service';
     ExchangeAuthService,
     SmtpSenderService,
     EwsMailProvider,
+    ImapMailProvider,
     MailService,
     ContactNoteService,
   ],

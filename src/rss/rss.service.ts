@@ -112,9 +112,9 @@ export class RssService {
     const articleIds = articles.map((article) => article.id);
     const states = articleIds.length
       ? await this.em.find(UserRssState, {
-          user: { id: userId },
-          article: { id: { $in: articleIds } },
-        })
+        user: { id: userId },
+        article: { id: { $in: articleIds } },
+      })
       : [];
     const stateByArticleId = new Map(
       states.map((state) => [state.article.id, state]),
@@ -126,19 +126,19 @@ export class RssService {
         const state = stateByArticleId.get(article.id);
 
         return {
-        id: article.id,
-        from:
-          article.feed?.name ||
-          article.feed?.legacyTitle ||
-          article.feed?.url ||
-          'RSS Feed',
-        subject: article.title || '(No title)',
-        preview: article.summary,
-        isRead: state?.isRead ?? false,
-        isStarred: state?.isStarred ?? false,
-        receivedAt: article.publishedAt || article.createdAt,
-        originalLink: article.link,
-        feedId: article.feed?.id,
+          id: article.id,
+          from:
+            article.feed?.name ||
+            article.feed?.legacyTitle ||
+            article.feed?.url ||
+            'RSS Feed',
+          subject: article.title || '(No title)',
+          preview: article.summary,
+          isRead: state?.isRead ?? false,
+          isStarred: state?.isStarred ?? false,
+          receivedAt: article.publishedAt || article.createdAt,
+          originalLink: article.link,
+          feedId: article.feed?.id,
         };
       }),
       page: safePage,

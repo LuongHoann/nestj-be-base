@@ -27,14 +27,100 @@ import {
   ImpersonatedUserId,
   ConnectingIdType,
 } from 'ews-javascript-api';
+import { ImapFlow } from 'imapflow';
 import { XhrApi } from '@ewsjs/xhr';
 
 // exchange-auth.service.ts
+export type MailProviderType = 'ews' | 'imap';
+
 @Injectable()
 export class ExchangeAuthService {
   private readonly logger = new Logger(ExchangeAuthService.name);
   private readonly SESSION_TTL = 3600; // 1 hour
   private readonly REFRESH_TTL = 7 * 24 * 3600; // 7 days
+
+  private normalizeEmail(email: string): string {
+    return (email || '').trim().toLowerCase();
+  }
+
+  private getBasicIdentityCacheKey(email: string): string {
+    return `exchange:basic-identity:${this.normalizeEmail(email)}`;
+  }
+
+  private getMailProviderPreference(): 'auto' | MailProviderType {
+    const configured =
+      this.configService.get<string>('MAIL_PROVIDER')?.trim().toLowerCase() ||
+      'auto';
+
+    if (configured === 'ews' || configured === 'imap') {
+      return configured;
+    }
+
+    return 'auto';
+  }
+
+  private buildBasicAuthIdentityCandidates(email: string): string[] {
+    const normalizedEmail = this.normalizeEmail(email);
+    const [localPart = '', domainPart = ''] = normalizedEmail.split('@');
+    const configuredDomain =
+      this.configService.get<string>('EWS_BASIC_AUTH_DOMAIN')?.trim() || '';
+    const configuredUpnSuffix =
+      this.configService.get<string>('EWS_BASIC_AUTH_UPN_SUFFIX')?.trim() || '';
+    const inferredNetbiosDomain = domainPart.split('.')[0] || '';
+    const domainForSam = configuredDomain || inferredNetbiosDomain;
+
+    const candidates = [
+      normalizedEmail,
+      configuredUpnSuffix && localPart
+        ? `${localPart}@${configuredUpnSuffix.toLowerCase()}`
+        : '',
+      domainForSam && localPart ? `${domainForSam}\\${localPart}` : '',
+      localPart,
+    ];
+
+    return Array.from(
+      new Set(
+        candidates
+          .map((candidate) => candidate.trim())
+          .filter(Boolean),
+      ),
+    );
+  }
+
+  private async getCachedBasicAuthIdentity(email: string): Promise<string | null> {
+    const cached = await this.cache.get<{ identity?: string }>(
+      this.getBasicIdentityCacheKey(email),
+    );
+    return cached?.identity?.trim() || null;
+  }
+
+  private async cacheBasicAuthIdentity(
+    email: string,
+    identity: string,
+  ): Promise<void> {
+    await this.cache.set(
+      this.getBasicIdentityCacheKey(email),
+      { identity },
+      this.REFRESH_TTL,
+    );
+  }
+
+  private buildImapConfig(authUser: string, password: string) {
+    return {
+      host: this.configService.get<string>('IMAP_HOST', 'outlook.office365.com'),
+      port: this.configService.get<number>('IMAP_PORT', 993),
+      secure: this.configService.get<string>('IMAP_SECURE', 'true') !== 'false',
+      auth: {
+        user: authUser,
+        pass: password,
+      },
+      tls: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: false,
+      },
+      logger: false,
+    };
+  }
 
   private buildDefaultName(email: string): string {
     return email.split('@')[0] || email;
@@ -69,7 +155,7 @@ export class ExchangeAuthService {
     private readonly configService: ConfigService,
     private readonly em: EntityManager,
     private readonly jwtService: JwtService,
-  ) {}
+  ) { }
 
   private async issueAppAccessToken(email: string): Promise<string> {
     const user = await this.em.findOne(User, { email });
@@ -157,13 +243,39 @@ export class ExchangeAuthService {
   }> {
     const ssoEnabled =
       this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
+    let exchangeAuthIdentity = this.normalizeEmail(email);
+    let mailProvider: MailProviderType = 'ews';
 
     if (ssoEnabled) {
       // 1. Verify credentials against Exchange/EWS (SSO)
-      await this.verifyExchangeCredentials(email);
+      exchangeAuthIdentity = await this.verifyExchangeCredentials(email);
     } else {
-      // 1. Verify credentials against Exchange/EWS (basic)
-      await this.verifyExchangeCredentialsBasic(email, password);
+      const providerPreference = this.getMailProviderPreference();
+
+      if (providerPreference === 'imap') {
+        exchangeAuthIdentity = await this.verifyImapCredentials(email, password);
+        mailProvider = 'imap';
+      } else {
+        try {
+          exchangeAuthIdentity = await this.verifyExchangeCredentialsBasic(
+            email,
+            password,
+          );
+        } catch (error) {
+          if (providerPreference !== 'auto') {
+            throw error;
+          }
+
+          this.logger.warn(
+            `EWS basic auth rejected ${email}. Falling back to IMAP authentication.`,
+          );
+          exchangeAuthIdentity = await this.verifyImapCredentials(
+            email,
+            password,
+          );
+          mailProvider = 'imap';
+        }
+      }
     }
 
     const user = await this.ensureLocalUser(email);
@@ -174,10 +286,20 @@ export class ExchangeAuthService {
     }
 
     // 2. Ensure mailbox folders are initialized once per account
-    await this.initializeMailboxIfNeeded(email, password);
+    await this.initializeMailboxIfNeeded(
+      email,
+      password,
+      exchangeAuthIdentity,
+      mailProvider,
+    );
 
     // 3. Issue tokens
-    const tokens = await this.issueTokens(email, password);
+    const tokens = await this.issueTokens(
+      email,
+      password,
+      exchangeAuthIdentity,
+      mailProvider,
+    );
 
     return {
       ...tokens,
@@ -191,16 +313,26 @@ export class ExchangeAuthService {
   private async issueTokens(
     email: string,
     password: string,
+    authIdentity?: string,
+    mailProvider: MailProviderType = 'ews',
   ): Promise<{ accessToken: string; refreshToken: string; email: string }> {
     // A. Issue Access Token (Session)
     const accessToken = this.generateSessionToken();
     const accessKey = await this.deriveKey(accessToken);
     const encryptedEmail = this.encrypt(email, accessKey);
     const encryptedPass = this.encrypt(password, accessKey);
+    const normalizedAuthIdentity = (authIdentity || email).trim();
+    const encryptedAuthIdentity = this.encrypt(normalizedAuthIdentity, accessKey);
 
     await this.cache.set(
       `exchange:session:${accessToken}`,
-      { e: encryptedEmail, p: encryptedPass, createdAt: Date.now() },
+      {
+        e: encryptedEmail,
+        p: encryptedPass,
+        u: encryptedAuthIdentity,
+        m: mailProvider,
+        createdAt: Date.now(),
+      },
       this.SESSION_TTL,
     );
 
@@ -213,12 +345,15 @@ export class ExchangeAuthService {
     const refreshKey = await this.deriveKey(tokenId);
     const re = this.encrypt(email, refreshKey);
     const rp = this.encrypt(password, refreshKey);
+    const ru = this.encrypt(normalizedAuthIdentity, refreshKey);
 
     await this.cache.set(
       `exchange:refresh:${tokenId}`,
-      { h: secretHash, e: re, p: rp },
+      { h: secretHash, e: re, p: rp, u: ru, m: mailProvider },
       this.REFRESH_TTL,
     );
+
+    await this.cacheBasicAuthIdentity(email, normalizedAuthIdentity);
 
     return {
       email,
@@ -239,7 +374,13 @@ export class ExchangeAuthService {
       throw new UnauthorizedException('Token không hợp lệ !');
     }
 
-    const stored = await this.cache.get<{ h: string; e: string; p: string }>(
+    const stored = await this.cache.get<{
+      h: string;
+      e: string;
+      p: string;
+      u?: string;
+      m?: MailProviderType;
+    }>(
       `exchange:refresh:${tokenId}`,
     );
 
@@ -258,13 +399,22 @@ export class ExchangeAuthService {
       const key = await this.deriveKey(tokenId);
       const email = this.decrypt(stored.e, key);
       const password = this.decrypt(stored.p, key);
+      const authIdentity = stored.u
+        ? this.decrypt(stored.u, key)
+        : (await this.getCachedBasicAuthIdentity(email)) || email;
+      const mailProvider = stored.m === 'imap' ? 'imap' : 'ews';
 
       // Revoke old refresh token
       await this.cache.del(`exchange:refresh:${tokenId}`);
 
       // Issue new tokens
       this.logger.log(`Exchange tokens rotated for ${email}`);
-      const tokens = await this.issueTokens(email, password);
+      const tokens = await this.issueTokens(
+        email,
+        password,
+        authIdentity,
+        mailProvider,
+      );
 
       return {
         ...tokens,
@@ -279,22 +429,23 @@ export class ExchangeAuthService {
   /**
    * Verify Exchange credentials
    */
-  private async verifyExchangeCredentials(email: string): Promise<void> {
+  private async verifyExchangeCredentials(email: string): Promise<string> {
     const ssoEnabled =
       this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
     if (!ssoEnabled) {
-      return;
+      return this.normalizeEmail(email);
     }
     const validate = this.configService.get<boolean>('EWS_VALIDATE_ON_LOGIN');
     if (!validate) {
       this.logger.log(`Skip EWS validation for ${email}`);
-      return;
+      return this.normalizeEmail(email);
     }
 
     const service = await this.createEwsService(email);
     try {
       await Folder.Bind(service, WellKnownFolderName.Inbox);
       this.logger.log(`EWS authentication successful for ${email}`);
+      return this.normalizeEmail(email);
     } catch (error) {
       this.logger.warn(
         `EWS authentication failed for ${email}: ${error.message}`,
@@ -306,6 +457,8 @@ export class ExchangeAuthService {
   private async initializeMailboxIfNeeded(
     email: string,
     password: string,
+    authIdentity?: string,
+    mailProvider: MailProviderType = 'ews',
   ): Promise<void> {
     const user = await this.em.findOne(User, { email });
 
@@ -317,8 +470,14 @@ export class ExchangeAuthService {
       return;
     }
 
+    if (mailProvider !== 'ews') {
+      user.mailboxInitialized = false;
+      await this.em.persistAndFlush(user);
+      return;
+    }
+
     try {
-      const service = await this.createEwsService(email, password);
+      const service = await this.createEwsService(email, password, authIdentity);
       await this.ensureSystemFolders(service);
       user.mailboxInitialized = true;
     } catch (error) {
@@ -334,18 +493,53 @@ export class ExchangeAuthService {
   async createSessionFromCredentials(
     email: string,
     password: string,
+    authIdentity?: string,
+    mailProvider: MailProviderType = 'ews',
   ): Promise<{ accessToken: string; refreshToken: string }> {
-    return this.issueTokens(email, password);
+    return this.issueTokens(email, password, authIdentity, mailProvider);
   }
 
-  async ensureMailboxExists(email: string, password?: string): Promise<void> {
-    const service = await this.createEwsService(email, password);
+  async ensureMailboxExists(
+    email: string,
+    password?: string,
+    authIdentity?: string,
+    mailProvider: MailProviderType = 'ews',
+  ): Promise<void> {
+    if (mailProvider === 'imap') {
+      if (!password) {
+        throw new UnauthorizedException('Missing password for IMAP auth');
+      }
+
+      await this.verifyImapCredentials(email, password, authIdentity);
+      return;
+    }
+
+    const service = await this.createEwsService(email, password, authIdentity);
     await Folder.Bind(service, WellKnownFolderName.Inbox);
+  }
+
+  async resolveAuthIdentity(
+    email: string,
+    authIdentity?: string,
+  ): Promise<string> {
+    if (authIdentity?.trim()) {
+      return authIdentity.trim();
+    }
+
+    return (await this.getCachedBasicAuthIdentity(email)) || this.normalizeEmail(email);
+  }
+
+  async resolveMailProvider(
+    sessionToken: string,
+  ): Promise<MailProviderType> {
+    const credentials = await this.getCredentials(sessionToken);
+    return credentials?.mailProvider === 'imap' ? 'imap' : 'ews';
   }
 
   private async createEwsService(
     email: string,
     password?: string,
+    authIdentity?: string,
   ): Promise<ExchangeService> {
     const rejectUnauthorized =
       this.configService.get<string>('EWS_TLS_REJECT_UNAUTHORIZED') !== 'false';
@@ -369,7 +563,7 @@ export class ExchangeAuthService {
     (ExchangeService as any).XHRApi = new XhrApi();
     const service = new ExchangeService(
       ExchangeVersion[version as keyof typeof ExchangeVersion] ||
-        ExchangeVersion.Exchange2016,
+      ExchangeVersion.Exchange2016,
     );
     const ssoEnabled =
       this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
@@ -405,7 +599,7 @@ export class ExchangeAuthService {
       if (!password) {
         throw new UnauthorizedException('Missing password for basic auth');
       }
-      service.Credentials = new WebCredentials(email, password);
+      service.Credentials = new WebCredentials(authIdentity || email, password);
     }
     service.Url = new Uri(url);
 
@@ -425,17 +619,80 @@ export class ExchangeAuthService {
   private async verifyExchangeCredentialsBasic(
     email: string,
     password: string,
-  ): Promise<void> {
-    const service = await this.createEwsService(email, password);
-    try {
-      await Folder.Bind(service, WellKnownFolderName.Inbox);
-      this.logger.log(`EWS basic authentication successful for ${email}`);
-    } catch (error) {
-      this.logger.warn(
-        `EWS basic authentication failed for ${email}: ${error.message}`,
-      );
-      throw new UnauthorizedException('Invalid Exchange credentials');
+  ): Promise<string> {
+    const cachedIdentity = await this.getCachedBasicAuthIdentity(email);
+    const candidates = cachedIdentity
+      ? [cachedIdentity, ...this.buildBasicAuthIdentityCandidates(email)]
+      : this.buildBasicAuthIdentityCandidates(email);
+
+    let lastError: unknown;
+
+    for (const candidate of candidates) {
+      const service = await this.createEwsService(email, password, candidate);
+
+      try {
+        await Folder.Bind(service, WellKnownFolderName.Inbox);
+        await this.cacheBasicAuthIdentity(email, candidate);
+        this.logger.log(
+          `EWS basic authentication successful for ${email} using identity ${candidate}`,
+        );
+        return candidate;
+      } catch (error) {
+        lastError = error;
+        this.logger.warn(
+          `EWS basic authentication failed for ${email} using identity ${candidate}: ${error.message}`,
+        );
+      }
     }
+
+    throw new UnauthorizedException(
+      lastError instanceof Error && lastError.message
+        ? `Invalid Exchange credentials`
+        : 'Invalid Exchange credentials',
+    );
+  }
+
+  private async verifyImapCredentials(
+    email: string,
+    password: string,
+    authIdentity?: string,
+  ): Promise<string> {
+    const prioritizedCandidates = authIdentity?.trim()
+      ? [authIdentity.trim(), ...this.buildBasicAuthIdentityCandidates(email)]
+      : this.buildBasicAuthIdentityCandidates(email);
+    const candidates = Array.from(new Set(prioritizedCandidates));
+
+    let lastError: unknown;
+
+    for (const candidate of candidates) {
+      const client = new ImapFlow(this.buildImapConfig(candidate, password) as any);
+
+      try {
+        await client.connect();
+        await client.logout();
+        await this.cacheBasicAuthIdentity(email, candidate);
+        this.logger.log(
+          `IMAP authentication successful for ${email} using identity ${candidate}`,
+        );
+        return candidate;
+      } catch (error) {
+        lastError = error;
+        try {
+          await client.logout();
+        } catch {
+          // ignore disconnect errors after failed auth
+        }
+        this.logger.warn(
+          `IMAP authentication failed for ${email} using identity ${candidate}: ${error.message}`,
+        );
+      }
+    }
+
+    throw new UnauthorizedException(
+      lastError instanceof Error && lastError.message
+        ? 'Invalid Exchange credentials'
+        : 'Invalid Exchange credentials',
+    );
   }
 
   private async ensureSystemFolders(service: ExchangeService): Promise<void> {
@@ -475,10 +732,17 @@ export class ExchangeAuthService {
    */
   async getCredentials(
     sessionToken: string,
-  ): Promise<{ email: string; password: string } | null> {
+  ): Promise<{
+    email: string;
+    password: string;
+    authIdentity: string;
+    mailProvider: MailProviderType;
+  } | null> {
     const session = await this.cache.get<{
       e: string;
       p: string;
+      u?: string;
+      m?: MailProviderType;
       createdAt: number;
     }>(`exchange:session:${sessionToken}`);
 
@@ -490,8 +754,12 @@ export class ExchangeAuthService {
       const key = await this.deriveKey(sessionToken);
       const email = this.decrypt(session.e, key);
       const password = this.decrypt(session.p, key);
+      const authIdentity = session.u
+        ? this.decrypt(session.u, key)
+        : (await this.getCachedBasicAuthIdentity(email)) || email;
+      const mailProvider = session.m === 'imap' ? 'imap' : 'ews';
 
-      return { email, password };
+      return { email, password, authIdentity, mailProvider };
     } catch (error) {
       this.logger.error(
         `Failed to decrypt credentials for session ${sessionToken}`,

@@ -29,7 +29,11 @@ import { safeStringify } from '../utils/json.helper';
 export class ImapMailProvider implements IMailProvider {
   private readonly logger = new Logger(ImapMailProvider.name);
   private client: ImapFlow;
-  private credentials: { email: string; password: string };
+  private credentials: {
+    email: string;
+    password: string;
+    authIdentity?: string;
+  };
   private sessionToken: string;
 
   constructor(
@@ -52,7 +56,7 @@ export class ImapMailProvider implements IMailProvider {
       port,
       secure,
       auth: {
-        user: this.credentials.email,
+        user: this.credentials.authIdentity || this.credentials.email,
         pass: this.credentials.password,
       },
       tls: {
@@ -87,7 +91,9 @@ export class ImapMailProvider implements IMailProvider {
     // IMAP
     this.client = new ImapFlow(this.getImapConfig() as any);
     await this.client.connect();
-    this.logger.log(`IMAP connected for ${this.credentials.email}`);
+    this.logger.log(
+      `IMAP connected for ${this.credentials.email} using ${this.credentials.authIdentity || this.credentials.email}`,
+    );
   }
 
   async disconnect(): Promise<void> {

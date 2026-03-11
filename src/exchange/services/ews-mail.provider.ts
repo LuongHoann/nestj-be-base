@@ -206,7 +206,11 @@ export class EwsMailProvider implements IMailProvider {
   private readonly logger = new Logger(EwsMailProvider.name);
   private service: ExchangeService | null = null;
   private email: string | null = null;
-  private credentials: { email: string; password: string } | null = null;
+  private credentials: {
+    email: string;
+    password: string;
+    authIdentity?: string;
+  } | null = null;
 
   constructor(
     private readonly configService: ConfigService,
@@ -214,7 +218,7 @@ export class EwsMailProvider implements IMailProvider {
     private readonly authService: ExchangeAuthService,
     private readonly smtpSenderService: SmtpSenderService,
     @Inject(REQUEST) private readonly request: any,
-  ) {}
+  ) { }
 
   private parseEmailAddress(value: string): { name: string; email: string } {
     const trimmed = value?.trim?.() ?? '';
@@ -269,7 +273,11 @@ export class EwsMailProvider implements IMailProvider {
       throw new UnauthorizedException('Password not found in credentials');
 
     this.email = creds.email;
-    this.credentials = { email: creds.email, password: creds.password };
+    this.credentials = {
+      email: creds.email,
+      password: creds.password,
+      authIdentity: creds.authIdentity,
+    };
 
     const cfg = this.ewsConfig;
     if (!cfg.url) throw new Error('EWS_URL is not configured');
@@ -294,7 +302,10 @@ export class EwsMailProvider implements IMailProvider {
     // Luôn cập nhật endpoint và credentials hiện tại để tránh tái sử dụng phiên
     // EWS cũ với password đã lỗi thời sau khi user đăng nhập lại.
     service.Url = new Uri(cfg.url);
-    service.Credentials = new WebCredentials(creds.email, creds.password);
+    service.Credentials = new WebCredentials(
+      creds.authIdentity || creds.email,
+      creds.password,
+    );
 
     this.service = service;
   }
@@ -1057,7 +1068,7 @@ export class EwsMailProvider implements IMailProvider {
     message.Subject = options.subject ?? '';
     const bodyString = options.html ?? options.text ?? '';
     const encodedBody = this.xmlEncodeForSoap(bodyString);
-    
+
     message.Body = new MessageBody(
       options.html ? BodyType.HTML : BodyType.Text,
       encodedBody,
@@ -1278,7 +1289,7 @@ export class EwsMailProvider implements IMailProvider {
           att.content,
         );
         if (file && att.contentType) file.ContentType = att.contentType;
-      } catch (_) {}
+      } catch (_) { }
     }
 
     // Gửi thẳng, lưu bản sao vào SentItems — không qua bước Save/FindItems/Bind
@@ -1323,7 +1334,7 @@ export class EwsMailProvider implements IMailProvider {
       for (const r of recipients.GetEnumerator?.() ?? []) {
         out.push(r.Name || r.Address || '');
       }
-    } catch (_) {}
+    } catch (_) { }
     return out.join('; ');
   }
 
@@ -1441,7 +1452,7 @@ export class EwsMailProvider implements IMailProvider {
           att.content,
         );
         if (file && att.contentType) file.ContentType = att.contentType;
-      } catch (_) {}
+      } catch (_) { }
     }
 
     // Gửi trực tiếp và lưu Sent Items, không cần Save() sang Draft để tránh race condition
@@ -1940,7 +1951,7 @@ export class EwsMailProvider implements IMailProvider {
     if (
       payload.email &&
       this.normalizeEmail(payload.email) !==
-        this.normalizeEmail(this.getContactPrimaryEmail(contact))
+      this.normalizeEmail(this.getContactPrimaryEmail(contact))
     ) {
       const existing = await this.findContactByEmail(payload.email);
       if (existing && existing.Id?.UniqueId !== contact.Id?.UniqueId) {
