@@ -40,7 +40,7 @@ export class MailService {
     private readonly dragonfly: DragonflyService,
     private readonly authService: ExchangeAuthService,
     @Inject(REQUEST) private readonly request: any,
-  ) {}
+  ) { }
 
   private async resolveMailProvider() {
     const token = this.request.cookies?.['exchange_session'];
@@ -297,7 +297,7 @@ export class MailService {
               const [rawFolder] = decoded.split(':');
               const folder = resolveFolderId(rawFolder, rawFolder);
               if (folder) folders.add(folder);
-            } catch (e) {}
+            } catch (e) { }
           }
 
           for (const folder of folders) {
@@ -344,7 +344,7 @@ export class MailService {
               const [rawFolder] = decoded.split(':');
               const folder = resolveFolderId(rawFolder, rawFolder);
               if (folder) folders.add(folder);
-            } catch (e) {}
+            } catch (e) { }
           }
 
           for (const folder of folders) {
@@ -395,7 +395,7 @@ export class MailService {
             const [rawFolder] = decoded.split(':');
             const folder = resolveFolderId(rawFolder, rawFolder);
             if (folder) affectedFolders.add(folder);
-          } catch (e) {}
+          } catch (e) { }
         }
 
         if (dto.sourceFolder) {
@@ -463,7 +463,7 @@ export class MailService {
               const [rawFolder] = decoded.split(':');
               const folder = resolveFolderId(rawFolder, rawFolder);
               if (folder) folders.add(folder);
-            } catch (e) {}
+            } catch (e) { }
           }
 
           for (const folder of folders) {
@@ -510,7 +510,7 @@ export class MailService {
               const [rawFolder] = decoded.split(':');
               const folder = resolveFolderId(rawFolder, rawFolder);
               if (folder) folders.add(folder);
-            } catch (e) {}
+            } catch (e) { }
           }
 
           for (const folder of folders) {

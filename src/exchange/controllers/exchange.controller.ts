@@ -48,7 +48,7 @@ export class ExchangeController {
   constructor(
     private readonly authService: ExchangeAuthService,
     private readonly mailService: MailService,
-  ) {}
+  ) { }
 
   @Post('auth/login')
   @ApiOperation({ summary: 'Dang nhap mailbox' })
