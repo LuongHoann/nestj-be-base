@@ -56,9 +56,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     python3 \
     python3-pip \
-    && pip3 install --no-cache-dir --break-system-packages pypsrp \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# pypsrp 0.9.0 stable: ket noi WinRM toi Exchange Server
+RUN pip3 install --no-cache-dir --break-system-packages "pypsrp==0.9.0"
 
 # Tạo user bảo mật
 RUN groupadd --system --gid 1001 nodejs

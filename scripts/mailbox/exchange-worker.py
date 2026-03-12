@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Worker duy trì kết nối PSRP persistent tới Exchange Server.
-Sử dụng pypsrp kết nối trực tiếp vào /PowerShell/ endpoint của Exchange.
-Tương thích Windows (auth negotiate) và Linux.
+Exchange Worker - Ket noi PSRP/WinRM toi Exchange Server.
+Tuong thich hoan hao voi pypsrp 0.9.0 stable.
+
+SU DUNG BÍ QUYẾT: TaggedValue("SS", password)
+pypsrp 0.9.0 khong co PSSecureString ngoai mat, nhung thuc chat loi Serializer
+cua no ho tro the <SS> (SecureString) bang cach dung TaggedValue(). 
+Cach nay ma hoa mat khau truc tiep bang AES/PKCS7 qua SessionKey cua RunspacePool 
+phia client (Python) roi gui thang vao Exchange ma khong can bat ky cmdlet nao
+thuoc Microsoft.PowerShell.Security nhu ConvertTo-SecureString xep hang tren server.
 """
 import sys
 import json
 import time
 from pypsrp.powershell import PowerShell, RunspacePool
 from pypsrp.wsman import WSMan
+from pypsrp.serializer import TaggedValue
 
 def create_pool(exchange_server, user_admin, admin_password):
-    """Tạo RunspacePool tới Exchange PowerShell endpoint"""
-    # Exchange PowerShell endpoint URI chuẩn
+    """Ket noi truc tiep vao Exchange endpoint (/PowerShell/)."""
     resource_uri = "http://schemas.microsoft.com/powershell/Microsoft.Exchange"
-    
     wsman = WSMan(
         server=exchange_server,
         port=443,
@@ -24,141 +30,146 @@ def create_pool(exchange_server, user_admin, admin_password):
         password=admin_password,
         ssl=True,
         cert_validation=False,
-        resource_uri=resource_uri
+        resource_uri=resource_uri,
     )
-    # Configuration name cũng phải là Microsoft.Exchange
     pool = RunspacePool(wsman, configuration_name="Microsoft.Exchange")
     pool.open()
+    # PSRP Protocol yeu cau exchange key de ma hoa SecureString phia client.
+    # Phải gọi hàm này trước khi dùng TaggedValue("SS")
+    pool.exchange_keys()
     return pool
 
-def run_exchange_script(pool, script):
-    """Chạy script PowerShell trên Exchange và trả kết quả"""
+def run_cmdlet(pool, cmdlet_name, params=None):
+    """Chay Exchange cmdlet qua pypsrp trong ConstrainedLanguage mode."""
     ps = PowerShell(pool)
-    ps.add_script(script)
+    cmd = ps.add_cmdlet(cmdlet_name)
+    if params:
+        for key, value in params.items():
+            if value is True:
+                cmd.add_parameter(key)
+            elif value is not None:
+                cmd.add_parameter(key, value)
     ps.invoke()
-
-    output = "\n".join(str(o) for o in ps.output) if ps.output else ""
-    errors = "\n".join(str(e) for e in ps.streams.error) if ps.streams.error else ""
-
-    return {
-        "had_errors": ps.had_errors,
-        "output": output,
-        "errors": errors,
-    }
+    return ps.output, ps.streams.error, ps.had_errors
 
 def handle_create(pool, data):
-    """
-    Xử lý tạo mailbox với logic an toàn và cơ chế Retry.
-    """
-    email = data.get("email", "").replace("'", "''")
-    name = data.get("name", "").replace("'", "''")
-    password = data.get("password", "").replace("'", "''")
+    email = data.get("email", "")
+    name = data.get("name", "")
+    password = data.get("password", "")
 
-    # Kiểm tra trạng thái hiện tại
-    check_ps = f"""
-        $m = Get-Mailbox -Identity '{email}' -ErrorAction SilentlyContinue
-        if ($m) {{ "EXISTS" }}
-        else {{
-            $u = Get-User -Identity '{email}' -ErrorAction SilentlyContinue
-            if ($u) {{ "USER_ONLY" }} else {{ "NONE" }}
-        }}
-    """
-    status_res = run_exchange_script(pool, check_ps)
-    status = status_res["output"].strip()
-
-    if status == "EXISTS":
+    mb_output, _, _ = run_cmdlet(pool, "Get-Mailbox", {
+        "Identity": email, "ErrorAction": "SilentlyContinue",
+    })
+    if mb_output:
         return {"success": True, "message": f"already_exists:{email}"}
 
-    # Thực hiện lệnh tạo phù hợp
-    if status == "USER_ONLY":
-        action_ps = f"Enable-Mailbox -Identity '{email}'"
-    else:
-        action_ps = f"$pw = ConvertTo-SecureString '{password}' -AsPlainText -Force; New-Mailbox -UserPrincipalName '{email}' -Name '{name}' -Password $pw"
+    user_output, _, _ = run_cmdlet(pool, "Get-User", {
+        "Identity": email, "ErrorAction": "SilentlyContinue",
+    })
+    if user_output:
+        _, errors, had_errors = run_cmdlet(pool, "Enable-Mailbox", {"Identity": email})
+        if had_errors:
+            err_msg = str(errors[0]) if errors else "Unknown error"
+            return {"success": False, "message": err_msg}
+        return {"success": True, "message": f"created:{email}"}
 
-    res = run_exchange_script(pool, action_ps)
-    if res["had_errors"] and "already exists" not in res["errors"].lower():
-        return {"success": False, "message": res["errors"]}
+    # "Bí mật" nằm ở đây: Gói chuỗi văn bản thành TaggedValue("SS", ...)
+    # pypsrp sẽ tự biết đây là SecureString và mã hóa nó trước khi gửi qua mạng!
+    secure_pwd = TaggedValue("SS", password)
 
-    # Chờ hệ thống nhận diện (Retry 3 lần, mỗi lần 2s)
-    verify_ps = f"Get-Mailbox -Identity '{email}' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty UserPrincipalName"
-    for i in range(3):
+    _, errors, had_errors = run_cmdlet(pool, "New-Mailbox", {
+        "UserPrincipalName": email, 
+        "Name": name, 
+        "Password": secure_pwd,
+    })
+    
+    if had_errors:
+        err_msg = str(errors[0]) if errors else "Unknown error"
+        if "already exists" in err_msg.lower():
+            return {"success": True, "message": f"already_exists:{email}"}
+        return {"success": False, "message": err_msg}
+
+    for _ in range(3):
         time.sleep(2)
-        v_res = run_exchange_script(pool, verify_ps)
-        if not v_res["had_errors"] and email.lower() in v_res["output"].lower():
+        verify_output, _, _ = run_cmdlet(pool, "Get-Mailbox", {
+            "Identity": email, "ErrorAction": "SilentlyContinue",
+        })
+        if verify_output:
             return {"success": True, "message": f"created:{email}"}
-
+            
     return {"success": True, "message": f"created_with_delay:{email}"}
 
 def handle_update(pool, data):
-    email = data.get("email", "").replace("'", "''")
+    email = data.get("email", "")
     old_email = data.get("oldEmail", "")
     name = data.get("name", "")
     is_active = data.get("isActive")
 
-    commands = []
     if old_email and old_email != email:
-        safe_old = old_email.replace("'", "''")
-        commands.append(f"Set-Mailbox -Identity '{safe_old}' -PrimarySmtpAddress '{email}'")
+        _, errors, had_errors = run_cmdlet(pool, "Set-Mailbox", {
+            "Identity": old_email, "PrimarySmtpAddress": email,
+        })
+        if had_errors:
+            return {"success": False, "message": str(errors[0]) if errors else "Unknown"}
+            
     if name:
-        safe_name = name.replace("'", "''")
-        commands.append(f"Set-Mailbox -Identity '{email}' -DisplayName '{safe_name}'")
+        _, errors, had_errors = run_cmdlet(pool, "Set-Mailbox", {
+            "Identity": email, "DisplayName": name,
+        })
+        if had_errors:
+            return {"success": False, "message": str(errors[0]) if errors else "Unknown"}
+            
     if is_active is not None:
+        cmdlet = "Enable-Mailbox" if is_active else "Disable-Mailbox"
+        params = {"Identity": email}
         if not is_active:
-            commands.append(f"Disable-Mailbox -Identity '{email}' -Confirm:$false")
-        else:
-            commands.append(f"Enable-Mailbox -Identity '{email}' -Confirm:$false")
-
-    if not commands:
-        return {"success": True, "message": f"updated:{email}"}
-
-    result = run_exchange_script(pool, "; ".join(commands))
-    if not result["had_errors"]:
-        return {"success": True, "message": f"updated:{email}"}
-    else:
-        return {"success": False, "message": result["errors"]}
+            params["Confirm"] = False
+        _, errors, had_errors = run_cmdlet(pool, cmdlet, params)
+        if had_errors:
+            return {"success": False, "message": str(errors[0]) if errors else "Unknown"}
+            
+    return {"success": True, "message": f"updated:{email}"}
 
 def handle_disable(pool, data):
-    email = data.get("email", "").replace("'", "''")
-    result = run_exchange_script(pool, f"Disable-Mailbox -Identity '{email}' -Confirm:$false")
-    if not result["had_errors"]:
-        return {"success": True, "message": f"successfully_disabled:{email}"}
-    else:
-        return {"success": False, "message": result["errors"]}
+    email = data.get("email", "")
+    _, errors, had_errors = run_cmdlet(pool, "Disable-Mailbox", {
+        "Identity": email, "Confirm": False,
+    })
+    if had_errors:
+        return {"success": False, "message": str(errors[0]) if errors else "Unknown"}
+    return {"success": True, "message": f"successfully_disabled:{email}"}
 
 def handle_restore(pool, data):
-    email = data.get("email", "").replace("'", "''")
-    result = run_exchange_script(pool, f"Enable-Mailbox -Identity '{email}' -Confirm:$false")
-    if not result["had_errors"]:
-        return {"success": True, "message": f"successfully_restored:{email}"}
-    else:
-        return {"success": False, "message": result["errors"]}
+    email = data.get("email", "")
+    _, errors, had_errors = run_cmdlet(pool, "Enable-Mailbox", {
+        "Identity": email, "Confirm": False,
+    })
+    if had_errors:
+        return {"success": False, "message": str(errors[0]) if errors else "Unknown"}
+    return {"success": True, "message": f"successfully_restored:{email}"}
 
 def handle_delete(pool, data):
-    email = data.get("email", "").replace("'", "''")
-    result = run_exchange_script(pool, f"Remove-Mailbox -Identity '{email}' -Permanent $true -Confirm:$false")
-    if not result["had_errors"]:
-        return {"success": True, "message": f"successfully_deleted:{email}"}
-    else:
-        return {"success": False, "message": result["errors"]}
-
-HANDLERS = {
-    "create": handle_create,
-    "update": handle_update,
-    "disable": handle_disable,
-    "restore": handle_restore,
-    "delete": handle_delete,
-}
+    email = data.get("email", "")
+    _, errors, had_errors = run_cmdlet(pool, "Remove-Mailbox", {
+        "Identity": email, "Permanent": True, "Confirm": False,
+    })
+    if had_errors:
+        return {"success": False, "message": str(errors[0]) if errors else "Unknown"}
+    return {"success": True, "message": f"successfully_deleted:{email}"}
 
 def main():
     pool = None
     for line in sys.stdin:
         line = line.strip()
-        if not line: continue
+        if not line:
+            continue
         try:
             data = json.loads(line)
-        except: continue
+        except Exception:
+            continue
 
         action = data.get("action", "")
+
         if pool is None:
             exchange_server = data.get("ExchangeServer", "mail-ex.mailex.local")
             user_admin = data.get("UserAdmin", "mailex\\Administrator")
@@ -169,17 +180,28 @@ def main():
                 print(json.dumps({"success": False, "message": f"PSRP connection failed: {str(e)}"}), flush=True)
                 continue
 
-        handler = HANDLERS.get(action)
+        handlers = {
+            "create": handle_create,
+            "update": handle_update,
+            "disable": handle_disable,
+            "restore": handle_restore,
+            "delete": handle_delete,
+        }
+
+        handler = handlers.get(action)
         if handler:
             try:
                 response = handler(pool, data)
             except Exception as e:
-                try: pool.close()
-                except: pass
+                try:
+                    pool.close()
+                except Exception:
+                    pass
                 pool = None
                 response = {"success": False, "message": f"Error: {str(e)}"}
         else:
             response = {"success": False, "message": f"Unknown action: {action}"}
+
         print(json.dumps(response), flush=True)
 
 if __name__ == "__main__":

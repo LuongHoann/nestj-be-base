@@ -56,6 +56,40 @@ export class ExchangeErrorInterceptor implements NestInterceptor {
           );
         }
 
+        // Lỗi Postfix reject do Rspamd nhận diện là Spam
+        if (
+          msg.includes('rejected as spam') ||
+          msg.includes('Message rejected') ||
+          msg.includes('5.7.1') ||
+          msg.includes('Policy Rejection') ||
+          msg.includes('spam score')
+        ) {
+          return throwError(
+            () =>
+              new HttpException(
+                'Email bị từ chối do bị nhận diện là Spam. Vui lòng kiểm tra lại nội dung.',
+                451,
+              ),
+          );
+        }
+
+        // Lỗi Postfix reject do ClamAV phát hiện Virus trong attachment
+        if (
+          msg.includes('infected') ||
+          msg.toLowerCase().includes('virus') ||
+          msg.includes('malware') ||
+          msg.includes('5.7.0') ||
+          msg.includes('content rejected')
+        ) {
+          return throwError(
+            () =>
+              new HttpException(
+                'Email bị từ chối do file đính kèm chứa mã độc (Virus). Vui lòng kiểm tra lại file.',
+                422,
+              ),
+          );
+        }
+
         // Default
         Logger.error(`EWS Error: ${msg}`, err.stack);
         return throwError(

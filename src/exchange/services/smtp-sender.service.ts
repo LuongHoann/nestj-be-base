@@ -106,6 +106,16 @@ export class SmtpSenderService implements OnModuleDestroy {
       1000,
     );
 
+    console.log('SMTP config:', {
+      host,
+      port,
+      secure,
+      maxConnections,
+      maxMessages,
+      rateLimit,
+      rateDelta,
+    });
+
     return {
       host,
       port,
@@ -124,7 +134,7 @@ export class SmtpSenderService implements OnModuleDestroy {
       socketTimeout: 30000,    // 30 giây idle socket timeout
       idleTimeout: 300000,      // 5 phút thì đóng connection nhàn rỗi
       debug: false,
-      logger: true,
+      logger: false,
       pool: true,
       maxConnections,
       maxMessages,

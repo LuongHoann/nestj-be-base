@@ -205,10 +205,13 @@ export class MailService {
       this.provider.sendMessage(dto),
     );
 
+    // Xóa cache song song (fire-and-forget) để không block response trả về client
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
-      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
-      await this.dragonfly.del(`exchange:count:${email}:INBOX`);
+      Promise.all([
+        this.dragonfly.del(`exchange:count:${email}:Sent Items`),
+        this.dragonfly.del(`exchange:count:${email}:INBOX`),
+      ]).catch(() => {}); // Bỏ qua lỗi cache, không ảnh hưởng kết quả gửi mail
     }
 
     return result;
@@ -521,10 +524,10 @@ export class MailService {
       }),
     );
 
-    // Xóa cache Sent Items để cập nhật số lượng mới
+    // Xóa cache Sent Items (fire-and-forget, không block response)
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
-      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
+      this.dragonfly.del(`exchange:count:${email}:Sent Items`).catch(() => {});
     }
 
     return result;
@@ -552,10 +555,10 @@ export class MailService {
       }),
     );
 
-    // Xóa cache Sent Items để cập nhận số lượng mới
+    // Xóa cache Sent Items (fire-and-forget, không block response)
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
-      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
+      this.dragonfly.del(`exchange:count:${email}:Sent Items`).catch(() => {});
     }
 
     return result;
