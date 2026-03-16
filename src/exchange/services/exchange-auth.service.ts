@@ -134,9 +134,6 @@ export class ExchangeAuthService {
       await this.verifyExchangeCredentialsBasic(email, password);
     }
 
-    // 2. Ensure mailbox folders are initialized once per account
-    await this.initializeMailboxIfNeeded(email, password);
-
     // 3. Issue tokens
     return this.issueTokens(email, password);
   }
@@ -254,34 +251,6 @@ export class ExchangeAuthService {
     }
   }
 
-  private async initializeMailboxIfNeeded(
-    email: string,
-    password: string,
-  ): Promise<void> {
-    const user = await this.em.findOne(User, { email });
-
-    if (!user) {
-      throw new UnauthorizedException('Tài khoản không tồn tại trên hệ thống');
-    }
-
-    if (user.mailboxInitialized) {
-      return;
-    }
-
-    try {
-      const service = await this.createEwsService(email, password);
-      await this.ensureSystemFolders(service);
-      user.mailboxInitialized = true;
-    } catch (error) {
-      this.logger.warn(
-        `Failed to verify default folders for ${email}: ${error.message}`,
-      );
-      user.mailboxInitialized = false;
-    }
-
-    await this.em.persistAndFlush(user);
-  }
-
   async createSessionFromCredentials(
     email: string,
     password: string,
@@ -389,37 +358,6 @@ export class ExchangeAuthService {
     }
   }
 
-  private async ensureSystemFolders(service: ExchangeService): Promise<void> {
-    const targetFolders = [
-      WellKnownFolderName.Inbox,
-      WellKnownFolderName.SentItems,
-      WellKnownFolderName.Drafts,
-      WellKnownFolderName.DeletedItems,
-      WellKnownFolderName.JunkEmail,
-    ];
-
-    const view = new FolderView(200);
-    view.PropertySet = new PropertySet(
-      BasePropertySet.IdOnly,
-      FolderSchema.DisplayName,
-    );
-
-    const result = await service.FindFolders(
-      WellKnownFolderName.MsgFolderRoot,
-      view,
-    );
-
-    const existing = new Set(
-      result.Folders.map((folder) => folder.DisplayName?.toLowerCase() || ''),
-    );
-
-    for (const name of targetFolders) {
-      if (!existing.has(String(name).toLowerCase())) {
-        // Attempt to bind to ensure system folders exist; Exchange normally creates them.
-        await Folder.Bind(service, name);
-      }
-    }
-  }
 
   /**
    * Get credentials by session token

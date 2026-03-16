@@ -4,6 +4,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsArray,
+  MaxLength,
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
@@ -70,6 +71,7 @@ export class SendMailDto {
   @ApiProperty({ example: 'Tiêu đề email' })
   @IsString()
   @IsOptional()
+  @MaxLength(255, { message: 'Tiêu đề quá dài không được vượt quá 255 ký tự !' })
   subject?: string;
 
   @ApiProperty({ example: 'Nội dung text', required: false })
@@ -86,42 +88,38 @@ export class SendMailDto {
   @IsArray()
   @IsOptional()
   attachments?: AttachmentDto[];
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
 }
 
 export class SaveDraftDto {
   @ApiProperty({ example: ['to@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail(
-    {},
-    {
-      each: true,
-      message: 'Thông tin người nhận không hợp lệ!',
-    },
-  )
   to?: string[];
 
   @ApiProperty({ example: ['cc@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thông tin CC không hợp lệ!' })
   cc?: string[];
 
   @ApiProperty({ example: ['bcc@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thông tin BCC không hợp lệ!' })
   bcc?: string[];
 
   @ApiProperty({ example: ['reply@example.com'], required: false })
   @IsArray()
   @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thông tin Reply-To không hợp lệ!' })
   replyTo?: string[];
 
   @ApiProperty({ example: 'Tiêu đề email', required: false })
   @IsString()
   @IsOptional()
+  @MaxLength(255, { message: 'Tiêu đề quá dài không được vượt quá 255 ký tự !' })
   subject?: string;
 
   @ApiProperty({ example: 'Nội dung text', required: false })
@@ -138,6 +136,11 @@ export class SaveDraftDto {
   @IsArray()
   @IsOptional()
   attachments?: AttachmentDto[];
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
 }
 
 export class MoveMailDto {
@@ -150,6 +153,11 @@ export class MoveMailDto {
   @IsString()
   @IsNotEmpty()
   targetFolder!: string;
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
 }
 
 export class MarkReadDto {
@@ -171,6 +179,11 @@ export class MarkReadDto {
   @IsString()
   @IsOptional()
   folder?: string;
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
 }
 
 export class MoveBatchDto {
@@ -193,6 +206,11 @@ export class MoveBatchDto {
   @IsString()
   @IsNotEmpty()
   targetFolder!: string;
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
 }
 
 export class PermanentDeleteMailDto {
@@ -215,6 +233,11 @@ export class PermanentDeleteMailDto {
   @IsString()
   @IsOptional()
   sourceFolder?: string;
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
 }
 
 export class StarMailDto {
@@ -232,6 +255,11 @@ export class StarMailDto {
   @IsString()
   @IsOptional()
   folder?: string;
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
 }
 
 /** DTO dùng cho API trả lời thư (Reply / Reply All) */
@@ -266,6 +294,11 @@ export class ReplyMailDto {
   @IsArray()
   @IsOptional()
   attachments?: AttachmentDto[];
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
 }
 
 /** DTO dùng cho API chuyển tiếp thư (Forward) */
@@ -315,4 +348,9 @@ export class ForwardMailDto {
   @IsArray()
   @IsOptional()
   attachments?: AttachmentDto[];
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
 }

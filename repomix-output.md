@@ -39,6 +39,7 @@ The content is organized as follows:
 .gitignore
 .prettierrc
 audit_log_implementation_notes.md
+docker-compose.yml
 dockerfile
 docs/BATCH_MAIL_APIS.md
 docs/contacts-api.md
@@ -52,10 +53,22 @@ MOVE_MAIL_API.md
 nest-cli.json
 package.json
 scripts/mailbox/create-mailbox.ps1
+scripts/mailbox/create-mailbox.py
 scripts/mailbox/delete-mailbox.ps1
+scripts/mailbox/delete-mailbox.py
 scripts/mailbox/disable-mailbox.ps1
+scripts/mailbox/disable-mailbox.py
+scripts/mailbox/exchange-worker.py
 scripts/mailbox/restore-mailbox.ps1
+scripts/mailbox/restore-mailbox.py
 scripts/mailbox/update-mailbox.ps1
+scripts/mailbox/update-mailbox.py
+scripts/shared-mailbox/add-mailbox-permission.ps1
+scripts/shared-mailbox/create-shared-mailbox.ps1
+scripts/shared-mailbox/delete-shared-mailbox.ps1
+scripts/shared-mailbox/disable-shared-mailbox.ps1
+scripts/shared-mailbox/remove-mailbox-permission.ps1
+scripts/shared-mailbox/update-shared-mailbox.ps1
 src/app.controller.spec.ts
 src/app.controller.ts
 src/app.module.ts
@@ -91,10 +104,13 @@ src/database/entities/audit-log.entity.ts
 src/database/entities/file.entity.ts
 src/database/entities/permission.entity.ts
 src/database/entities/role.entity.ts
+src/database/entities/shared-mailbox-member.entity.ts
+src/database/entities/shared-mailbox.entity.ts
 src/database/entities/user.entity.ts
 src/database/migrations/.snapshot-postgres.json
 src/database/migrations/Migration20260204095049.ts
 src/database/migrations/Migration20260223120000.ts
+src/database/migrations/Migration20260312044513.ts
 src/dto/post/create-post.dto.ts
 src/dto/post/update-post.dto.ts
 src/exchange/constants/mail-folders.constant.ts
@@ -131,6 +147,11 @@ src/main.ts
 src/meta/entity-registry.service.ts
 src/meta/meta.module.ts
 src/meta/metadata-reader.service.ts
+src/shared-mailbox/shared-mailbox.controller.ts
+src/shared-mailbox/shared-mailbox.dto.ts
+src/shared-mailbox/shared-mailbox.module.ts
+src/shared-mailbox/shared-mailbox.runner.ts
+src/shared-mailbox/shared-mailbox.service.ts
 src/storage/local-storage.adapter.ts
 src/storage/storage.interface.ts
 src/storage/storage.service.ts
@@ -146,10 +167,1013 @@ test/webmail-send-receive.e2e-spec.ts
 test/webmail-sent-append.spec.ts
 tsconfig.build.json
 tsconfig.json
-web_mail_server.tar
 ```
 
 # Files
+
+## File: scripts/shared-mailbox/add-mailbox-permission.ps1
+````powershell
+param (
+    [Parameter(Mandatory=$true)]
+    [string]$InputJson
+)
+
+$ErrorActionPreference = "Stop"
+$progressPreference = 'silentlyContinue'
+
+try {
+    # 1. Parse Input
+    $data = $InputJson | ConvertFrom-Json
+
+    # 2. Add Exchange Snapin if needed
+    if (-not (Get-PSSnapin -Name Microsoft.Exchange.Management.PowerShell.SnapIn -ErrorAction SilentlyContinue)) {
+        Add-PSSnapin Microsoft.Exchange.Management.PowerShell.SnapIn
+    }
+
+    # 3. Add Permissions
+    $mailboxIdentity = $data.mailboxEmail
+    $userIdentity = $data.userEmail
+    $role = $data.role # "OWNER" or "MEMBER"
+    
+    # Always grant FullAccess
+    Add-MailboxPermission -Identity $mailboxIdentity -User $userIdentity -AccessRights FullAccess -InheritanceType All -AutoMapping $true -Confirm:$false
+    
+    # If Owner, grant SendAs
+    if ($role -eq "OWNER") {
+        Add-RecipientPermission -Identity $mailboxIdentity -Trustee $userIdentity -AccessRights SendAs -Confirm:$false
+    }
+    
+    $result = @{
+        Success = $true
+        Action = "AddMailboxPermission"
+        Message = "Permissions granted successfully for $userIdentity on $mailboxIdentity"
+    }
+    
+    $result | ConvertTo-Json -Depth 5 -Compress
+    exit 0
+} catch {
+    $errorResult = @{
+        Success = $false
+        Action = "AddMailboxPermission"
+        Error = $_.Exception.Message
+    }
+    $errorResult | ConvertTo-Json -Depth 5 -Compress
+    
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+````
+
+## File: scripts/shared-mailbox/create-shared-mailbox.ps1
+````powershell
+param (
+    [Parameter(Mandatory=$true)]
+    [string]$InputJson
+)
+
+$ErrorActionPreference = "Stop"
+$progressPreference = 'silentlyContinue'
+
+try {
+    # 1. Parse Input
+    $data = $InputJson | ConvertFrom-Json
+
+    # 2. Add Exchange Snapin if needed
+    if (-not (Get-PSSnapin -Name Microsoft.Exchange.Management.PowerShell.SnapIn -ErrorAction SilentlyContinue)) {
+        Add-PSSnapin Microsoft.Exchange.Management.PowerShell.SnapIn
+    }
+
+    # 3. Create Shared Mailbox
+    # Note: Exchange on-premise requires Name and Alias
+    $alias = $data.email.Split('@')[0]
+    
+    $mailbox = New-Mailbox -Shared -Name $data.name -Alias $alias -PrimarySmtpAddress $data.email -DisplayName $data.displayName
+    
+    # Wait for propagation just to be safe
+    Start-Sleep -Seconds 2
+    
+    $result = @{
+        Success = $true
+        Action = "CreateSharedMailbox"
+        Mailbox = @{
+            Name = $mailbox.Name
+            Alias = $mailbox.Alias
+            PrimarySmtpAddress = $mailbox.PrimarySmtpAddress.ToString()
+            ExchangeGuid = $mailbox.ExchangeGuid.ToString()
+        }
+    }
+    
+    $result | ConvertTo-Json -Depth 5 -Compress
+    exit 0
+} catch {
+    $errorResult = @{
+        Success = $false
+        Action = "CreateSharedMailbox"
+        Error = $_.Exception.Message
+    }
+    $errorResult | ConvertTo-Json -Depth 5 -Compress
+    
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+````
+
+## File: scripts/shared-mailbox/delete-shared-mailbox.ps1
+````powershell
+param (
+    [string]$InputJson
+)
+
+$ErrorActionPreference = "Stop"
+
+try {
+    $params = $InputJson | ConvertFrom-Json
+    $identity = $params.exchangeGuid
+    if (-not $identity) { $identity = $params.email }
+
+    if (-not (Get-PSSnapin -Name Microsoft.Exchange.Management.PowerShell.E2010 -ErrorAction SilentlyContinue)) {
+        Add-PSSnapin Microsoft.Exchange.Management.PowerShell.E2010
+    }
+
+    # Remove-Mailbox
+    Remove-Mailbox -Identity $identity -Confirm:$false
+
+    $result = @{
+        Success = $true
+        Message = "Shared mailbox deleted successfully"
+    }
+} catch {
+    $result = @{
+        Success = $false
+        Error = $_.Exception.Message
+    }
+}
+
+$result | ConvertTo-Json
+````
+
+## File: scripts/shared-mailbox/disable-shared-mailbox.ps1
+````powershell
+param (
+    [Parameter(Mandatory=$true)]
+    [string]$InputJson
+)
+
+$ErrorActionPreference = "Stop"
+$progressPreference = 'silentlyContinue'
+
+try {
+    # 1. Parse Input
+    $data = $InputJson | ConvertFrom-Json
+
+    # 2. Add Exchange Snapin if needed
+    if (-not (Get-PSSnapin -Name Microsoft.Exchange.Management.PowerShell.SnapIn -ErrorAction SilentlyContinue)) {
+        Add-PSSnapin Microsoft.Exchange.Management.PowerShell.SnapIn
+    }
+
+    # 3. Disable Shared Mailbox
+    $identity = $data.exchangeGuid
+    if (-not $identity) {
+        $identity = $data.email
+    }
+
+    Disable-Mailbox -Identity $identity -Confirm:$false
+    
+    $result = @{
+        Success = $true
+        Action = "DisableSharedMailbox"
+        Message = "Shared Mailbox disabled successfully"
+    }
+    
+    $result | ConvertTo-Json -Depth 5 -Compress
+    exit 0
+} catch {
+    $errorResult = @{
+        Success = $false
+        Action = "DisableSharedMailbox"
+        Error = $_.Exception.Message
+    }
+    $errorResult | ConvertTo-Json -Depth 5 -Compress
+    
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+````
+
+## File: scripts/shared-mailbox/remove-mailbox-permission.ps1
+````powershell
+param (
+    [Parameter(Mandatory=$true)]
+    [string]$InputJson
+)
+
+$ErrorActionPreference = "Stop"
+# For Remove-RecipientPermission, errors can happen if the permission doesn't exist
+# We capture them manually
+$progressPreference = 'silentlyContinue'
+
+try {
+    # 1. Parse Input
+    $data = $InputJson | ConvertFrom-Json
+
+    # 2. Add Exchange Snapin if needed
+    if (-not (Get-PSSnapin -Name Microsoft.Exchange.Management.PowerShell.SnapIn -ErrorAction SilentlyContinue)) {
+        Add-PSSnapin Microsoft.Exchange.Management.PowerShell.SnapIn
+    }
+
+    # 3. Remove Permissions
+    $mailboxIdentity = $data.mailboxEmail
+    $userIdentity = $data.userEmail
+    
+    # Revoke FullAccess
+    Remove-MailboxPermission -Identity $mailboxIdentity -User $userIdentity -AccessRights FullAccess -InheritanceType All -Confirm:$false -ErrorAction SilentlyContinue
+    
+    # Revoke SendAs
+    Remove-RecipientPermission -Identity $mailboxIdentity -Trustee $userIdentity -AccessRights SendAs -Confirm:$false -ErrorAction SilentlyContinue
+    
+    $result = @{
+        Success = $true
+        Action = "RemoveMailboxPermission"
+        Message = "Permissions revoked successfully for $userIdentity on $mailboxIdentity"
+    }
+    
+    $result | ConvertTo-Json -Depth 5 -Compress
+    exit 0
+} catch {
+    $errorResult = @{
+        Success = $false
+        Action = "RemoveMailboxPermission"
+        Error = $_.Exception.Message
+    }
+    $errorResult | ConvertTo-Json -Depth 5 -Compress
+    
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+````
+
+## File: scripts/shared-mailbox/update-shared-mailbox.ps1
+````powershell
+param (
+    [Parameter(Mandatory=$true)]
+    [string]$InputJson
+)
+
+$ErrorActionPreference = "Stop"
+$progressPreference = 'silentlyContinue'
+
+try {
+    # 1. Parse Input
+    $data = $InputJson | ConvertFrom-Json
+
+    # 2. Add Exchange Snapin if needed
+    if (-not (Get-PSSnapin -Name Microsoft.Exchange.Management.PowerShell.SnapIn -ErrorAction SilentlyContinue)) {
+        Add-PSSnapin Microsoft.Exchange.Management.PowerShell.SnapIn
+    }
+
+    # 3. Update Shared Mailbox
+    # Note: ExchangeGuid is the most reliable identifier, fallback to oldEmail
+    $identity = $data.exchangeGuid
+    if (-not $identity) {
+        $identity = $data.oldEmail
+    }
+
+    $mailbox = Set-Mailbox -Identity $identity -PrimarySmtpAddress $data.email -DisplayName $data.displayName
+    
+    $result = @{
+        Success = $true
+        Action = "UpdateSharedMailbox"
+        Message = "Shared Mailbox updated successfully"
+    }
+    
+    $result | ConvertTo-Json -Depth 5 -Compress
+    exit 0
+} catch {
+    $errorResult = @{
+        Success = $false
+        Action = "UpdateSharedMailbox"
+        Error = $_.Exception.Message
+    }
+    $errorResult | ConvertTo-Json -Depth 5 -Compress
+    
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+````
+
+## File: src/database/entities/shared-mailbox-member.entity.ts
+````typescript
+import { Entity, PrimaryKey, Property, ManyToOne, Unique } from '@mikro-orm/core';
+import { ulid } from 'ulid';
+import { SharedMailbox } from './shared-mailbox.entity';
+
+export enum SharedMailboxRole {
+  OWNER = 'OWNER', // FullAccess + SendAs
+  MEMBER = 'MEMBER', // FullAccess
+}
+
+@Entity({ tableName: 'shared_mailbox_members' })
+@Unique({ properties: ['mailbox', 'userId'] }) // Ngăn chặn duplicate membership
+export class SharedMailboxMember {
+  @PrimaryKey()
+  id: string = ulid();
+
+  @ManyToOne(() => SharedMailbox)
+  mailbox!: SharedMailbox;
+
+  @Property()
+  userId!: string; // Reference to User ID
+
+  @Property({ type: 'string' })
+  role: SharedMailboxRole = SharedMailboxRole.MEMBER;
+
+  @Property({ nullable: true })
+  addedBy?: string; // Reference to Admin User ID
+
+  @Property({ onCreate: () => new Date() })
+  createdAt: Date = new Date();
+
+  @Property({ onUpdate: () => new Date() })
+  updatedAt: Date = new Date();
+}
+````
+
+## File: src/database/entities/shared-mailbox.entity.ts
+````typescript
+import { Entity, PrimaryKey, Property, ManyToOne } from '@mikro-orm/core';
+import { ulid } from 'ulid';
+
+@Entity({ tableName: 'shared_mailboxes' })
+export class SharedMailbox {
+  @PrimaryKey()
+  id: string = ulid();
+
+  @Property()
+  name!: string;
+
+  @Property({ unique: true })
+  email!: string;
+
+  @Property()
+  displayName!: string;
+
+  @Property({ nullable: true })
+  exchangeGuid?: string;
+
+  @Property({ default: true })
+  isActive: boolean = true;
+
+  @Property({ nullable: true })
+  createdBy?: string;
+
+  @Property({ onCreate: () => new Date() })
+  createdAt = new Date();
+
+  @Property({ onUpdate: () => new Date() })
+  updatedAt = new Date();
+}
+````
+
+## File: src/database/migrations/Migration20260312044513.ts
+````typescript
+import { Migration } from '@mikro-orm/migrations';
+
+export class Migration20260312044513 extends Migration {
+
+  override async up(): Promise<void> {
+    this.addSql(`create table "permissions" ("id" serial primary key, "collection" varchar(255) not null, "action" varchar(255) not null, "description" varchar(255) null);`);
+    this.addSql(`create index "permissions_collection_action_index" on "permissions" ("collection", "action");`);
+
+    this.addSql(`create table "roles" ("id" serial primary key, "name" varchar(255) not null, "description" varchar(255) null);`);
+    this.addSql(`alter table "roles" add constraint "roles_name_unique" unique ("name");`);
+
+    this.addSql(`create table "roles_permissions" ("role_id" int not null, "permission_id" int not null, constraint "roles_permissions_pkey" primary key ("role_id", "permission_id"));`);
+
+    this.addSql(`create table "user_roles" ("user_id" varchar(255) not null, "role_id" int not null, constraint "user_roles_pkey" primary key ("user_id", "role_id"));`);
+
+    this.addSql(`alter table "roles_permissions" add constraint "roles_permissions_role_id_foreign" foreign key ("role_id") references "roles" ("id") on update cascade on delete cascade;`);
+    this.addSql(`alter table "roles_permissions" add constraint "roles_permissions_permission_id_foreign" foreign key ("permission_id") references "permissions" ("id") on update cascade on delete cascade;`);
+
+    this.addSql(`alter table "user_roles" add constraint "user_roles_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade on delete cascade;`);
+    this.addSql(`alter table "user_roles" add constraint "user_roles_role_id_foreign" foreign key ("role_id") references "roles" ("id") on update cascade on delete cascade;`);
+
+    this.addSql(`alter table "users" add column "name" varchar(255) null, add column "password" varchar(255) null;`);
+  }
+
+  override async down(): Promise<void> {
+    this.addSql(`alter table "roles_permissions" drop constraint "roles_permissions_permission_id_foreign";`);
+
+    this.addSql(`alter table "roles_permissions" drop constraint "roles_permissions_role_id_foreign";`);
+
+    this.addSql(`alter table "user_roles" drop constraint "user_roles_role_id_foreign";`);
+
+    this.addSql(`drop table if exists "permissions" cascade;`);
+
+    this.addSql(`drop table if exists "roles" cascade;`);
+
+    this.addSql(`drop table if exists "roles_permissions" cascade;`);
+
+    this.addSql(`drop table if exists "user_roles" cascade;`);
+
+    this.addSql(`alter table "users" drop column "name", drop column "password";`);
+  }
+
+}
+````
+
+## File: src/shared-mailbox/shared-mailbox.controller.ts
+````typescript
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  Req,
+} from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { SharedMailboxService } from './shared-mailbox.service';
+import {
+  CreateSharedMailboxDto,
+  UpdateSharedMailboxDto,
+  AddSharedMailboxMemberDto,
+} from './shared-mailbox.dto';
+import { SharedMailbox } from 'src/database/entities/shared-mailbox.entity';
+import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
+
+@ApiTags('Shared Mailbox')
+@Controller('shared-mailbox')
+@UseGuards(ExchangeAuthGuard)
+@ApiBearerAuth()
+export class SharedMailboxController {
+  constructor(private readonly sharedMailboxService: SharedMailboxService) {}
+
+  @Get()
+  @ApiOperation({ summary: 'Lấy danh sách Shared Mailbox (Admin)' })
+  async list(
+    @Query('page') page = 1,
+    @Query('pageSize') pageSize = 10,
+    @Query('search') search?: string,
+  ) {
+    return this.sharedMailboxService.list(Number(page), Number(pageSize), search);
+  }
+
+  @Get('me')
+  @ApiOperation({ summary: 'Lấy danh sách các Shared Mailbox mà user hiện tại được quyền truy cập' })
+  async getMe(@Req() req: any): Promise<SharedMailbox[]> {
+    return this.sharedMailboxService.getForUser(req.user.id);
+  }
+
+  @Post()
+  @ApiOperation({ summary: 'Tạo Shared Mailbox mới' })
+  async create(@Body() dto: CreateSharedMailboxDto, @Req() req: any) {
+    return this.sharedMailboxService.create(dto, req.user.id);
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Lấy chi tiết Shared Mailbox' })
+  async get(@Param('id') id: string) {
+    return this.sharedMailboxService.get(id);
+  }
+
+  @Put(':id')
+  @ApiOperation({ summary: 'Cập nhật thông tin Shared Mailbox' })
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateSharedMailboxDto,
+    @Req() req: any,
+  ) {
+    return this.sharedMailboxService.update(id, dto, req.user.id);
+  }
+
+  @Delete(':id')
+  @ApiOperation({ summary: 'Vô hiệu hóa Shared Mailbox' })
+  async disable(@Param('id') id: string, @Req() req: any) {
+    return this.sharedMailboxService.disable(id, req.user.id);
+  }
+
+  @Post(':id/restore')
+  @ApiOperation({ summary: 'Khôi phục Shared Mailbox' })
+  async restore(@Param('id') id: string, @Req() req: any) {
+    return this.sharedMailboxService.restore(id, req.user.id);
+  }
+
+  @Delete(':id/permanent')
+  @ApiOperation({ summary: 'Xóa vĩnh viễn Shared Mailbox' })
+  async permanentDelete(@Param('id') id: string, @Req() req: any) {
+    return this.sharedMailboxService.permanentDelete(id, req.user.id);
+  }
+
+  @Post(':id/members')
+  @ApiOperation({ summary: 'Thêm thành viên vào Shared Mailbox' })
+  async addMember(
+    @Param('id') id: string,
+    @Body() dto: AddSharedMailboxMemberDto,
+    @Req() req: any,
+  ) {
+    return this.sharedMailboxService.addMember(id, dto, req.user.id);
+  }
+
+  @Delete(':id/members/:userId')
+  @ApiOperation({ summary: 'Xóa thành viên khỏi Shared Mailbox' })
+  async removeMember(
+    @Param('id') id: string,
+    @Param('userId') userId: string,
+    @Req() req: any,
+  ) {
+    return this.sharedMailboxService.removeMember(id, userId, req.user.id);
+  }
+}
+````
+
+## File: src/shared-mailbox/shared-mailbox.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+import {
+  IsEmail,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsEnum,
+} from 'class-validator';
+import { SharedMailboxRole } from '../database/entities/shared-mailbox-member.entity';
+
+export class CreateSharedMailboxDto {
+  @ApiProperty({ example: 'support@domain.local' })
+  @IsEmail()
+  email!: string;
+
+  @ApiProperty({ example: 'support' })
+  @IsString()
+  @IsNotEmpty()
+  name!: string;
+
+  @ApiProperty({ example: 'Support Mailbox' })
+  @IsString()
+  @IsNotEmpty()
+  displayName!: string;
+}
+
+export class UpdateSharedMailboxDto {
+  @ApiProperty({ example: 'Support Mailbox 2', required: false })
+  @IsString()
+  @IsOptional()
+  displayName?: string;
+
+  @ApiProperty({ example: 'support2@domain.local', required: false })
+  @IsEmail()
+  @IsOptional()
+  email?: string;
+}
+
+export class AddSharedMailboxMemberDto {
+  @ApiProperty({ example: 'userA@domain.local', description: 'User email' })
+  @IsEmail()
+  @IsNotEmpty()
+  userEmail!: string;
+
+  @ApiProperty({ example: 'MEMBER', enum: SharedMailboxRole })
+  @IsEnum(SharedMailboxRole)
+  role: SharedMailboxRole = SharedMailboxRole.MEMBER;
+}
+````
+
+## File: src/shared-mailbox/shared-mailbox.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
+import { SharedMailbox } from '../database/entities/shared-mailbox.entity';
+import { SharedMailboxMember } from '../database/entities/shared-mailbox-member.entity';
+import { User } from '../database/entities/user.entity';
+import { AuditLog } from '../database/entities/audit-log.entity';
+import { SharedMailboxScriptRunner } from './shared-mailbox.runner';
+import { ExchangeModule } from '../exchange/exchange.module';
+import { SharedMailboxService } from './shared-mailbox.service';
+import { SharedMailboxController } from './shared-mailbox.controller';
+
+@Module({
+  imports: [
+    MikroOrmModule.forFeature([
+      SharedMailbox,
+      SharedMailboxMember,
+      User,
+      AuditLog,
+    ]),
+    ExchangeModule,
+  ],
+  controllers: [SharedMailboxController],
+  providers: [SharedMailboxService, SharedMailboxScriptRunner],
+  exports: [SharedMailboxService],
+})
+export class SharedMailboxModule {}
+````
+
+## File: src/shared-mailbox/shared-mailbox.runner.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import * as path from 'path';
+
+const execAsync = promisify(exec);
+
+export type SharedMailboxAction =
+  | 'create'
+  | 'update'
+  | 'disable'
+  | 'restore'
+  | 'delete'
+  | 'add-permission'
+  | 'remove-permission';
+
+@Injectable()
+export class SharedMailboxScriptRunner {
+  private readonly logger = new Logger(SharedMailboxScriptRunner.name);
+  private readonly timeoutMs: number;
+  private readonly scriptsPath: string;
+
+  constructor(private readonly configService: ConfigService) {
+    this.timeoutMs = this.configService.get<number>('MAILBOX_SCRIPT_TIMEOUT_MS', 120000);
+    this.scriptsPath = path.resolve('./scripts/shared-mailbox');
+  }
+
+  async run(action: SharedMailboxAction, payload: Record<string, any>): Promise<any> {
+    const scriptMap: Record<SharedMailboxAction, string> = {
+      'create': 'create-shared-mailbox.ps1',
+      'update': 'update-shared-mailbox.ps1',
+      'disable': 'disable-shared-mailbox.ps1',
+      'restore': 'update-shared-mailbox.ps1', // Reuse update or create restore script if needed, here just set active
+      'delete': 'delete-shared-mailbox.ps1',
+      'add-permission': 'add-mailbox-permission.ps1',
+      'remove-permission': 'remove-mailbox-permission.ps1',
+    };
+
+    const scriptName = scriptMap[action];
+    if (!scriptName) {
+      throw new Error(`Unsupported action: ${action}`);
+    }
+
+    const scriptPath = path.join(this.scriptsPath, scriptName);
+    
+    // Convert payload to JSON string and escape quotes for PowerShell
+    const jsonPayload = JSON.stringify(payload).replace(/"/g, '\\"');
+    
+    // Command to execute PowerShell script (use pwsh on Linux/Standard, powershell.exe as fallback on Win)
+    const isWin = process.platform === 'win32';
+    const shellCommand = isWin ? 'powershell.exe' : 'pwsh';
+    const command = `${shellCommand} -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}" -InputJson "${jsonPayload}"`;
+
+    this.logger.debug(`Executing PowerShell script via ${shellCommand}: ${scriptName}`);
+
+    try {
+      const { stdout, stderr } = await execAsync(command, { timeout: this.timeoutMs });
+
+      if (stderr) {
+        this.logger.warn(`PowerShell Stderr (${scriptName}): ${stderr}`);
+      }
+
+      // Try to parse JSON output
+      try {
+        const result = JSON.parse(stdout.trim());
+        if (!result.Success && result.Success !== true) {
+           throw new Error(result.Error || 'Unknown error occurred in Script');
+        }
+        return result;
+      } catch (parseError) {
+        this.logger.error(`Failed to parse PowerShell JSON Output: ${stdout}`);
+        throw new Error(`Invalid JSON response from Exchange script: ${parseError.message}`);
+      }
+
+    } catch (error) {
+       this.logger.error(`Execution failed for ${scriptName}: ${error.message}`);
+       throw error;
+    }
+  }
+}
+````
+
+## File: src/shared-mailbox/shared-mailbox.service.ts
+````typescript
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+  BadRequestException,
+  Logger,
+} from '@nestjs/common';
+import { EntityManager, QueryOrder } from '@mikro-orm/core';
+import { SharedMailbox } from '../database/entities/shared-mailbox.entity';
+import { SharedMailboxMember, SharedMailboxRole } from '../database/entities/shared-mailbox-member.entity';
+import { User } from '../database/entities/user.entity';
+import { AuditLog } from '../database/entities/audit-log.entity';
+import { SharedMailboxScriptRunner } from './shared-mailbox.runner';
+import {
+  CreateSharedMailboxDto,
+  UpdateSharedMailboxDto,
+  AddSharedMailboxMemberDto,
+} from './shared-mailbox.dto';
+
+@Injectable()
+export class SharedMailboxService {
+  private readonly logger = new Logger(SharedMailboxService.name);
+
+  constructor(
+    private readonly em: EntityManager,
+    private readonly scriptRunner: SharedMailboxScriptRunner,
+  ) {}
+
+  async list(page: number, pageSize: number, search?: string) {
+    const limit = Math.max(1, Math.min(pageSize || 20, 100));
+    const offset = Math.max(0, (page - 1) * limit);
+
+    const where: any = {};
+    if (search?.trim()) {
+      where.$or = [
+        { email: { $ilike: `%${search}%` } },
+        { name: { $ilike: `%${search}%` } },
+        { displayName: { $ilike: `%${search}%` } },
+      ];
+    }
+
+    const [items, total] = await this.em.findAndCount(SharedMailbox, where, {
+      limit,
+      offset,
+      orderBy: { createdAt: QueryOrder.DESC },
+    });
+
+    return { items, total, page, pageSize: limit };
+  }
+
+  async create(dto: CreateSharedMailboxDto, adminUserId: string) {
+    const existing = await this.em.findOne(SharedMailbox, { email: dto.email });
+    if (existing) {
+      throw new ConflictException('Email already exists');
+    }
+
+    // Transactional Workflow: Run PS Script first, then save to DB
+    const scriptResult = await this.scriptRunner.run('create', {
+      name: dto.name,
+      email: dto.email,
+      displayName: dto.displayName,
+    });
+
+    const exchangeGuid = scriptResult.Mailbox?.ExchangeGuid;
+
+    const mailbox = this.em.create(SharedMailbox, {
+      name: dto.name,
+      email: dto.email,
+      displayName: dto.displayName,
+      exchangeGuid,
+      createdBy: adminUserId,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'shared_mailbox',
+      targetId: mailbox.id,
+      action: 'CREATE',
+      user: { id: adminUserId } as any,
+      details: { email: dto.email, displayName: dto.displayName },
+      timestamp: new Date(),
+    });
+
+    // Commit to DB after Script is successful
+    await this.em.begin();
+    try {
+      await this.em.persistAndFlush([mailbox, audit]);
+      await this.em.commit();
+      return mailbox;
+    } catch (e) {
+      await this.em.rollback();
+      this.logger.error(`DB Save Failed after PS Create: ${e.message}`, e.stack);
+      throw new BadRequestException('Exchange mailbox created but DB failed to save.');
+    }
+  }
+
+  async addMember(mailboxId: string, dto: AddSharedMailboxMemberDto, adminUserId: string) {
+    const mailbox = await this.em.findOne(SharedMailbox, { id: mailboxId });
+    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
+
+    const targetUser = await this.em.findOne(User, { email: dto.userEmail });
+    if (!targetUser) throw new NotFoundException('Target User not found');
+
+    const existingMember = await this.em.findOne(SharedMailboxMember, {
+      mailbox,
+      userId: targetUser.id,
+    });
+    if (existingMember) {
+      throw new ConflictException('User is already a member of this Shared Mailbox');
+    }
+
+    // Call PowerShell
+    await this.scriptRunner.run('add-permission', {
+      mailboxEmail: mailbox.email,
+      userEmail: targetUser.email,
+      role: dto.role, // 'OWNER' or 'MEMBER'
+    });
+
+    const member = this.em.create(SharedMailboxMember, {
+      mailbox,
+      userId: targetUser.id,
+      role: dto.role,
+      addedBy: adminUserId,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'shared_mailbox',
+      targetId: mailbox.id,
+      action: 'ADD_MEMBER',
+      user: { id: adminUserId } as any,
+      details: { targetUserId: targetUser.id, targetUserEmail: targetUser.email, role: dto.role },
+      timestamp: new Date(),
+    });
+
+    await this.em.begin();
+    try {
+      await this.em.persistAndFlush([member, audit]);
+      await this.em.commit();
+      return member;
+    } catch (e) {
+      await this.em.rollback();
+      throw new BadRequestException('Failed to save to Database');
+    }
+  }
+
+  async removeMember(mailboxId: string, targetUserId: string, adminUserId: string) {
+    const mailbox = await this.em.findOne(SharedMailbox, { id: mailboxId });
+    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
+
+    const targetUser = await this.em.findOne(User, { id: targetUserId });
+    if (!targetUser) throw new NotFoundException('Target User not found');
+
+    const member = await this.em.findOne(SharedMailboxMember, {
+      mailbox: mailbox.id,
+      userId: targetUser.id,
+    });
+
+    if (!member) throw new NotFoundException('User is not a member of this Shared Mailbox');
+
+    // Call PowerShell to remove both FullAccess and SendAs
+    await this.scriptRunner.run('remove-permission', {
+      mailboxEmail: mailbox.email,
+      userEmail: targetUser.email,
+    });
+
+    const audit = this.em.create(AuditLog, {
+       collection: 'shared_mailbox',
+       targetId: mailbox.id,
+       action: 'REMOVE_MEMBER',
+       user: { id: adminUserId } as any,
+       details: { targetUserId: targetUser.id, targetUserEmail: targetUser.email, previousRole: member.role },
+       timestamp: new Date(),
+    });
+
+    await this.em.begin();
+    try {
+       this.em.remove(member);
+       await this.em.persistAndFlush(audit);
+       await this.em.commit();
+       return { success: true };
+    } catch(e) {
+       await this.em.rollback();
+       throw new BadRequestException('Failed to remove member record from Database');
+    }
+  }
+
+  async get(id: string) {
+    const mailbox = await this.em.findOne(SharedMailbox, { id }, { populate: ['members' as any] });
+    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
+    return mailbox;
+  }
+
+  async update(id: string, dto: UpdateSharedMailboxDto, adminUserId: string) {
+    const mailbox = await this.em.findOne(SharedMailbox, { id });
+    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
+
+    const oldEmail = mailbox.email;
+    const nextEmail = dto.email ?? mailbox.email;
+    const nextDisplayName = dto.displayName ?? mailbox.displayName;
+
+    if (dto.email && dto.email !== oldEmail) {
+      const existing = await this.em.findOne(SharedMailbox, { email: dto.email });
+      if (existing) throw new ConflictException('Email already exists');
+    }
+
+    await this.scriptRunner.run('update', {
+      exchangeGuid: mailbox.exchangeGuid,
+      oldEmail,
+      email: nextEmail,
+      displayName: nextDisplayName,
+    });
+
+    mailbox.email = nextEmail;
+    mailbox.displayName = nextDisplayName;
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'shared_mailbox',
+      targetId: mailbox.id,
+      action: 'UPDATE',
+      user: { id: adminUserId } as any,
+      details: { email: nextEmail, displayName: nextDisplayName },
+      timestamp: new Date(),
+    });
+
+    await this.em.persistAndFlush([mailbox, audit]);
+    return mailbox;
+  }
+
+  async disable(id: string, adminUserId: string) {
+    const mailbox = await this.em.findOne(SharedMailbox, { id });
+    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
+
+    await this.scriptRunner.run('disable', {
+      exchangeGuid: mailbox.exchangeGuid,
+      email: mailbox.email,
+    });
+
+    mailbox.isActive = false;
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'shared_mailbox',
+      targetId: mailbox.id,
+      action: 'DISABLE',
+      user: { id: adminUserId } as any,
+      timestamp: new Date(),
+    });
+
+    await this.em.persistAndFlush([mailbox, audit]);
+    return { success: true };
+  }
+
+  async getForUser(userId: string): Promise<SharedMailbox[]> {
+    const memberships = await this.em.find(SharedMailboxMember, { userId }, { populate: ['mailbox'] as any });
+    return memberships.map(m => m.mailbox) as SharedMailbox[];
+  }
+
+  async restore(id: string, adminUserId: string) {
+    const mailbox = await this.em.findOne(SharedMailbox, { id });
+    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
+
+    await this.scriptRunner.run('restore', {
+      exchangeGuid: mailbox.exchangeGuid,
+      email: mailbox.email,
+    });
+
+    mailbox.isActive = true;
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'shared_mailbox',
+      targetId: mailbox.id,
+      action: 'RESTORE',
+      user: { id: adminUserId } as any,
+      timestamp: new Date(),
+    });
+
+    await this.em.persistAndFlush([mailbox, audit]);
+    return { success: true };
+  }
+
+  async permanentDelete(id: string, adminUserId: string) {
+    const mailbox = await this.em.findOne(SharedMailbox, { id });
+    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
+
+    await this.scriptRunner.run('delete', {
+      exchangeGuid: mailbox.exchangeGuid,
+      email: mailbox.email,
+    });
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'shared_mailbox',
+      targetId: mailbox.id,
+      action: 'PERMANENT_DELETE',
+      user: { id: adminUserId } as any,
+      timestamp: new Date(),
+    });
+
+    await this.em.begin();
+    try {
+      // Remove all members first due to FK or orphan removal
+      await this.em.nativeDelete(SharedMailboxMember, { mailbox: mailbox.id });
+      this.em.remove(mailbox);
+      await this.em.persistAndFlush(audit);
+      await this.em.commit();
+      return { success: true };
+    } catch (e) {
+      await this.em.rollback();
+      throw new BadRequestException('Failed to delete from Database');
+    }
+  }
+}
+````
 
 ## File: .dockerignore
 ````
@@ -205,86 +1229,60 @@ This approach ensures:
 In conclusion, while `JwtStrategy` and `RequestContextInterceptor` correctly prepare the user context, the most robust and idiomatic way for a singleton service to access this request-specific information is to have it explicitly passed down from a request-scoped component like a controller.
 ````
 
-## File: dockerfile
-````dockerfile
-# ----------------------------------------------------------------
-# Stage 1: Base Image & Dependencies (deps)
-# Cài đặt dependencies để tận dụng Docker layer caching
-# ----------------------------------------------------------------
-FROM node:22-alpine AS base
-FROM base AS deps
+## File: docker-compose.yml
+````yaml
+version: '3.8'
 
-# Cần libc6-compat cho một số package Node.js trên Alpine
-RUN apk add --no-cache libc6-compat
-WORKDIR /app
+services:
+  webmail_be:
+    image: web_mail_be:latest
+    container_name: web_mail_be
+    restart: always
+    ports:
+      - '3001:3001'
+    environment:
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
+      - REDIS_URL=redis://redis-service:6379
+      - JWT_SECRET=123
+      - DB_HOST=10.10.20.109
+      - DB_PORT=5555
+      - DB_USER=postgres
+      - DB_PASSWORD=123
+      - DB_NAME=postgres
+      - DB_ALLOW_GLOBAL_CONTEXT=false
+      - RUN_SEEDING=false
+      - JWT_EXPIRES_IN=15m
+      - AUTH_MAX_FAILED_REFRESH=5
+      - REFRESH_EXPIRES_IN=7d
+      - DRAGONFLY_ENABLED=true
+      - DRAGONFLY_HOST=10.10.20.70
+      - DRAGONFLY_PORT=6379
+      - DRAGONFLY_TTL=300
+      - EXCHANGE_CRED_SECRET=123456
+      - EWS_URL=https://10.10.20.179/EWS/Exchange.asmx
+      - EWS_VERSION=Exchange2019
+      - EWS_IMPERSONATE=true
+      - EWS_VALIDATE_ON_LOGIN=false
+      - EWS_SSO_ENABLED=false
+      - EWS_TLS_REJECT_UNAUTHORIZED=false
+      - SMTP_HOST=10.10.20.179
+      - SMTP_PORT=587
+      - SMTP_SECURE=false
+      - SMTP_POOL_IDLE_TTL_MS=1800000
+      - SMTP_POOL_MAX_CONNECTIONS=2
+      - SMTP_POOL_MAX_MESSAGES=100
+      - SMTP_RATE_LIMIT=3
+      - SMTP_RATE_DELTA_MS=1000
+      - MAILBOX_SCRIPT_CREATE=./scripts/mailbox/create-mailbox.py
+      - MAILBOX_SCRIPT_UPDATE=./scripts/mailbox/update-mailbox.py
+      - MAILBOX_SCRIPT_DISABLE=./scripts/mailbox/disable-mailbox.py
+      - MAILBOX_SCRIPT_RESTORE=./scripts/mailbox/restore-mailbox.py
+      - MAILBOX_SCRIPT_DELETE=./scripts/mailbox/delete-mailbox.py
+      - MAILBOX_SCRIPT_TIMEOUT_MS=60000
 
-# Sao chép các file quản lý dependency
-COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* .npmrc* ./
-
-# Cài đặt dependencies dựa trên lockfile được tìm thấy
-RUN \
-  if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
-  elif [ -f package-lock.json ]; then npm ci; \
-  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm i --frozen-lockfile; \
-  else echo "Lockfile not found." && exit 1; \
-  fi
-
-# ----------------------------------------------------------------
-# Stage 2: Builder
-# Thực hiện quá trình build (tsc)
-# ----------------------------------------------------------------
-FROM base AS builder
-WORKDIR /app
-
-# Sao chép node_modules từ stage deps
-COPY --from=deps /app/node_modules ./node_modules
-# Sao chép source code
-COPY . .
-
-# Thực hiện build NestJS (chuyển TypeScript sang JavaScript)
-# Lệnh 'build' thường được định nghĩa trong package.json
-# Ví dụ: "build": "nest build"
-RUN \
-  if [ -f yarn.lock ]; then yarn run build; \
-  elif [ -f package-lock.json ]; then npm run build; \
-  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm run build; \
-  else echo "Build command not found." && exit 1; \
-  fi
-
-# ----------------------------------------------------------------
-# Stage 3: Runner (Final Image)
-# Image cuối cùng, nhỏ nhất, chỉ chứa code đã build và dependencies cần thiết
-# ----------------------------------------------------------------
-FROM base AS runner
-WORKDIR /app
-
-ENV NODE_ENV=production
-
-# Tạo user và group không phải root để tăng cường bảo mật
-# UID/GID tùy ý, miễn là không phải 0 (root)
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nestjs
-
-# Sao chép node_modules cần thiết cho môi trường production
-# (Chỉ bao gồm production dependencies)
-COPY --from=deps /app/node_modules ./node_modules
-
-# Sao chép thư mục dist đã build từ stage builder (đầu ra của 'nest build')
-COPY --from=builder --chown=nestjs:nodejs /app/dist ./dist
-# Sao chép package.json (cần cho lệnh 'node dist/main')
-COPY package.json .
-
-# Chuyển sang user không phải root
-USER nestjs
-
-# Thiết lập cổng và export
-EXPOSE 3001
-ENV PORT=3001
-ENV HOSTNAME="0.0.0.0"
-
-# Chạy ứng dụng đã được build
-# Giả định file khởi chạy là 'main.js' trong thư mục 'dist'
-CMD ["node", "dist/main.js"]
+    # Bỏ comment cục dưới nếu Server VPS KHÔNG TỰ PHÂN GIẢI được tên miền mail.exchange.local
+    # extra_hosts:
+    #   - "mail.exchange.local:192.168.1.50" # Thay domain và IP bằng IP của máy chủ Exchange
 ````
 
 ## File: docs/BATCH_MAIL_APIS.md
@@ -1217,278 +2215,199 @@ export default tseslint.config(
 }
 ````
 
-## File: scripts/mailbox/create-mailbox.ps1
-````powershell
-param()
+## File: scripts/mailbox/create-mailbox.py
+````python
+#!/usr/bin/env python3
+"""
+Fallback script tạo Mailbox — dùng pypsrp kết nối trực tiếp /PowerShell/ endpoint.
+"""
+import sys
+import json
+from pypsrp.powershell import PowerShell, RunspacePool
+from pypsrp.wsman import WSMan
 
-# 1. Đọc dữ liệu từ NestJS
-$inputJson = [Console]::In.ReadToEnd()
-if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
-$data = $inputJson | ConvertFrom-Json
+def main():
+    input_data = sys.stdin.read()
+    if not input_data:
+        print("No input provided", file=sys.stderr)
+        sys.exit(1)
 
-if (-not $data.email -or -not $data.name -or -not $data.password) {
-  Write-Error 'Missing email, name, or password'
-  exit 1
-}
+    data = json.loads(input_data)
+    email = data.get("email", "").replace("'", "''")
+    name = data.get("name", "").replace("'", "''")
+    password = data.get("password", "").replace("'", "''")
 
-# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
-$ExchangeServer = $data.ExchangeServer
-$UserAdmin = $data.UserAdmin
-$Password = $data.Password | ConvertTo-SecureString -AsPlainText -Force
-$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
+    if not email or not name or not password:
+        print("Missing email, name, or password", file=sys.stderr)
+        sys.exit(1)
 
-try {
-    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
-    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
+    exchange_server = data.get("ExchangeServer", "mail-ex.mailex.local")
+    user_admin = data.get("UserAdmin", "mailex\\Administrator")
+    admin_password = data.get("AdminPassword", "123456a@")
 
-    $Session = New-PSSession `
-        -ConfigurationName Microsoft.Exchange `
-        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
-        -Authentication Basic `
-        -Credential $Credential `
-        -SessionOption $SessionOption `
-        -AllowRedirection `
-        -ErrorAction Stop
+    wsman = WSMan(
+        server=exchange_server, port=443, path="/PowerShell/",
+        auth="negotiate", username=user_admin, password=admin_password,
+        ssl=True, cert_validation=False,
+        resource_uri="http://schemas.microsoft.com/powershell/Microsoft.Exchange"
+    )
+    with RunspacePool(wsman, configuration_name="Microsoft.Exchange") as pool:
+        ps = PowerShell(pool)
+        ps.add_script(f"""
+            $secure = ConvertTo-SecureString '{password}' -AsPlainText -Force
+            New-Mailbox -UserPrincipalName '{email}' -Name '{name}' -Password $secure
+        """)
+        ps.invoke()
 
-    # 3. Chạy lệnh New-Mailbox trực tiếp trên Session đó bằng Invoke-Command
-    Invoke-Command -Session $Session -ScriptBlock {
-        param($email, $name, $password)
-        $secure = ConvertTo-SecureString $password -AsPlainText -Force
-        New-Mailbox -UserPrincipalName $email -Name $name -Password $secure
-    } -ArgumentList $data.email, $data.name, $data.password
+        if ps.had_errors:
+            errors = "\n".join(str(e) for e in ps.streams.error)
+            print(f"Lỗi: {errors}", file=sys.stderr)
+            sys.exit(1)
+        else:
+            print(f"created:{data['email']}")
 
-    Write-Output "created:$($data.email)"
-
-    # 4. Dọn dẹp session
-    Remove-PSSession $Session
-    exit 0
-
-} catch {
-    Write-Error "Lỗi: $($_.Exception.Message)"
-    if ($Session) { Remove-PSSession $Session }
-    exit 1
-}
+if __name__ == "__main__":
+    main()
 ````
 
-## File: scripts/mailbox/delete-mailbox.ps1
-````powershell
-param()
+## File: scripts/mailbox/delete-mailbox.py
+````python
+#!/usr/bin/env python3
+"""Fallback script xóa Mailbox — dùng pypsrp."""
+import sys, json
+from pypsrp.powershell import PowerShell, RunspacePool
+from pypsrp.wsman import WSMan
 
-# 1. Đọc dữ liệu từ NestJS
-$inputJson = [Console]::In.ReadToEnd()
-if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
-$data = $inputJson | ConvertFrom-Json
+def main():
+    data = json.loads(sys.stdin.read())
+    email = data.get("email", "").replace("'", "''")
+    if not email: print("Missing email", file=sys.stderr); sys.exit(1)
 
-if (-not $data.email) {
-    Write-Error 'Missing email'
-    exit 1
-}
+    wsman = WSMan(
+        server=data.get("ExchangeServer", "mail-ex.mailex.local"), port=443, path="/PowerShell/",
+        auth="negotiate", username=data.get("UserAdmin", "mailex\\Administrator"),
+        password=data.get("AdminPassword", "123456a@"),
+        ssl=True, cert_validation=False,
+        resource_uri="http://schemas.microsoft.com/powershell/Microsoft.Exchange"
+    )
+    with RunspacePool(wsman, configuration_name="Microsoft.Exchange") as pool:
+        ps = PowerShell(pool)
+        ps.add_script(f"Remove-Mailbox -Identity '{email}' -Permanent $true -Confirm:$false")
+        ps.invoke()
+        if ps.had_errors:
+            print(f"Lỗi: {'; '.join(str(e) for e in ps.streams.error)}", file=sys.stderr); sys.exit(1)
+        else:
+            print(f"successfully_deleted:{data['email']}")
 
-# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
-$ExchangeServer = $data.ExchangeServer
-$UserAdmin = $data.UserAdmin
-$Password = $data.Password | ConvertTo-SecureString -AsPlainText -Force
-$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
-
-try {
-    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
-    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
-
-    $Session = New-PSSession `
-        -ConfigurationName Microsoft.Exchange `
-        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
-        -Authentication Basic `
-        -Credential $Credential `
-        -SessionOption $SessionOption `
-        -AllowRedirection `
-        -ErrorAction Stop
-
-    # 3. Chạy lệnh Remove-Mailbox vĩnh viễn
-    Invoke-Command -Session $Session -ScriptBlock {
-        param($email)
-        Remove-Mailbox -Identity $email -Permanent $true -Confirm:$false
-    } -ArgumentList $data.email
-
-    Write-Output "successfully_deleted:$($data.email)"
-
-    # 4. Dọn dẹp session
-    Remove-PSSession $Session
-    exit 0
-
-} catch {
-    Write-Error "Lỗi: $($_.Exception.Message)"
-    if ($Session) { Remove-PSSession $Session }
-    exit 1
-}
+if __name__ == "__main__": main()
 ````
 
-## File: scripts/mailbox/disable-mailbox.ps1
-````powershell
-param()
+## File: scripts/mailbox/disable-mailbox.py
+````python
+#!/usr/bin/env python3
+"""Fallback script vô hiệu hóa Mailbox — dùng pypsrp."""
+import sys, json
+from pypsrp.powershell import PowerShell, RunspacePool
+from pypsrp.wsman import WSMan
 
-# 1. Đọc dữ liệu từ NestJS
-$inputJson = [Console]::In.ReadToEnd()
-if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
-$data = $inputJson | ConvertFrom-Json
+def main():
+    data = json.loads(sys.stdin.read())
+    email = data.get("email", "").replace("'", "''")
+    if not email: print("Missing email", file=sys.stderr); sys.exit(1)
 
-if (-not $data.email) {
-    Write-Error 'Missing email'
-    exit 1
-}
+    wsman = WSMan(
+        server=data.get("ExchangeServer", "mail-ex.mailex.local"), port=443, path="/PowerShell/",
+        auth="negotiate", username=data.get("UserAdmin", "mailex\\Administrator"),
+        password=data.get("AdminPassword", "123456a@"),
+        ssl=True, cert_validation=False,
+        resource_uri="http://schemas.microsoft.com/powershell/Microsoft.Exchange"
+    )
+    with RunspacePool(wsman, configuration_name="Microsoft.Exchange") as pool:
+        ps = PowerShell(pool)
+        ps.add_script(f"Disable-Mailbox -Identity '{email}' -Confirm:$false")
+        ps.invoke()
+        if ps.had_errors:
+            print(f"Lỗi: {'; '.join(str(e) for e in ps.streams.error)}", file=sys.stderr); sys.exit(1)
+        else:
+            print(f"successfully_disabled:{data['email']}")
 
-# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
-$ExchangeServer = $data.ExchangeServer
-$UserAdmin = $data.UserAdmin
-$Password = $data.Password | ConvertTo-SecureString -AsPlainText -Force
-$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
-
-try {
-    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
-    # Sử dụng Kerberos authentication cho môi trường Domain
-    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
-
-    $Session = New-PSSession `
-        -ConfigurationName Microsoft.Exchange `
-        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
-        -Authentication Basic `
-        -Credential $Credential `
-        -SessionOption $SessionOption `
-        -AllowRedirection `
-        -ErrorAction Stop
-
-    # 3. Chạy lệnh Disable-Mailbox trực tiếp trên Session đó bằng Invoke-Command
-    Invoke-Command -Session $Session -ScriptBlock {
-        param($email)
-        # Load module Exchange nếu cần (trong session thường đã có sẵn)
-        Disable-Mailbox -Identity $email -Confirm:$false
-    } -ArgumentList $data.email
-
-    Write-Output "successfully_disabled:$($data.email)"
-
-    # 4. Dọn dẹp session
-    Remove-PSSession $Session
-    exit 0
-
-} catch {
-    Write-Error "Lỗi: $($_.Exception.Message)"
-    if ($Session) { Remove-PSSession $Session }
-    exit 1
-}
+if __name__ == "__main__": main()
 ````
 
-## File: scripts/mailbox/restore-mailbox.ps1
-````powershell
-param()
+## File: scripts/mailbox/restore-mailbox.py
+````python
+#!/usr/bin/env python3
+"""Fallback script khôi phục Mailbox — dùng pypsrp."""
+import sys, json
+from pypsrp.powershell import PowerShell, RunspacePool
+from pypsrp.wsman import WSMan
 
-# 1. Đọc dữ liệu từ NestJS
-$inputJson = [Console]::In.ReadToEnd()
-if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
-$data = $inputJson | ConvertFrom-Json
+def main():
+    data = json.loads(sys.stdin.read())
+    email = data.get("email", "").replace("'", "''")
+    if not email: print("Missing email", file=sys.stderr); sys.exit(1)
 
-if (-not $data.email) {
-    Write-Error 'Missing email'
-    exit 1
-}
+    wsman = WSMan(
+        server=data.get("ExchangeServer", "mail-ex.mailex.local"), port=443, path="/PowerShell/",
+        auth="negotiate", username=data.get("UserAdmin", "mailex\\Administrator"),
+        password=data.get("AdminPassword", "123456a@"),
+        ssl=True, cert_validation=False,
+        resource_uri="http://schemas.microsoft.com/powershell/Microsoft.Exchange"
+    )
+    with RunspacePool(wsman, configuration_name="Microsoft.Exchange") as pool:
+        ps = PowerShell(pool)
+        ps.add_script(f"Enable-Mailbox -Identity '{email}' -Confirm:$false")
+        ps.invoke()
+        if ps.had_errors:
+            print(f"Lỗi: {'; '.join(str(e) for e in ps.streams.error)}", file=sys.stderr); sys.exit(1)
+        else:
+            print(f"successfully_restored:{data['email']}")
 
-# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
-$ExchangeServer = $data.ExchangeServer
-$UserAdmin = $data.UserAdmin
-$Password = $data.Password | ConvertTo-SecureString -AsPlainText -Force
-$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
-
-try {
-    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
-    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
-
-    $Session = New-PSSession `
-        -ConfigurationName Microsoft.Exchange `
-        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
-        -Authentication Basic `
-        -Credential $Credential `
-        -SessionOption $SessionOption `
-        -AllowRedirection `
-        -ErrorAction Stop
-
-    # 3. Chạy lệnh Enable-Mailbox trực tiếp trên Session đó bằng Invoke-Command
-    Invoke-Command -Session $Session -ScriptBlock {
-        param($email)
-        Enable-Mailbox -Identity $email -Confirm:$false
-    } -ArgumentList $data.email
-
-    Write-Output "successfully_restored:$($data.email)"
-
-    # 4. Dọn dẹp session
-    Remove-PSSession $Session
-    exit 0
-
-} catch {
-    Write-Error "Lỗi: $($_.Exception.Message)"
-    if ($Session) { Remove-PSSession $Session }
-    exit 1
-}
+if __name__ == "__main__": main()
 ````
 
-## File: scripts/mailbox/update-mailbox.ps1
-````powershell
-param()
+## File: scripts/mailbox/update-mailbox.py
+````python
+#!/usr/bin/env python3
+"""Fallback script cập nhật Mailbox — dùng pypsrp."""
+import sys, json
+from pypsrp.powershell import PowerShell, RunspacePool
+from pypsrp.wsman import WSMan
 
-# 1. Đọc dữ liệu từ NestJS
-$inputJson = [Console]::In.ReadToEnd()
-if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
-$data = $inputJson | ConvertFrom-Json
+def main():
+    data = json.loads(sys.stdin.read())
+    email = data.get("email", "").replace("'", "''")
+    if not email: print("Missing email", file=sys.stderr); sys.exit(1)
 
-if (-not $data.email) {
-  Write-Error 'Missing email'
-  exit 1
-}
+    wsman = WSMan(
+        server=data.get("ExchangeServer", "mail-ex.mailex.local"), port=443, path="/PowerShell/",
+        auth="negotiate", username=data.get("UserAdmin", "mailex\\Administrator"),
+        password=data.get("AdminPassword", "123456a@"),
+        ssl=True, cert_validation=False,
+        resource_uri="http://schemas.microsoft.com/powershell/Microsoft.Exchange"
+    )
+    cmds = []
+    old_email = data.get("oldEmail", "")
+    name = data.get("name", "")
+    is_active = data.get("isActive")
+    if old_email and old_email != email:
+        cmds.append(f"Set-Mailbox -Identity '{old_email.replace(chr(39), chr(39)*2)}' -PrimarySmtpAddress '{email}'")
+    if name:
+        cmds.append(f"Set-Mailbox -Identity '{email}' -DisplayName '{name.replace(chr(39), chr(39)*2)}'")
+    if is_active is not None and not is_active:
+        cmds.append(f"Disable-Mailbox -Identity '{email}' -Confirm:$false")
+    if not cmds: print(f"updated:{data['email']}"); return
 
-# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
-$ExchangeServer = $data.ExchangeServer
-$UserAdmin = $data.UserAdmin
-$Password = $data.Password | ConvertTo-SecureString -AsPlainText -Force
-$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
+    with RunspacePool(wsman, configuration_name="Microsoft.Exchange") as pool:
+        ps = PowerShell(pool)
+        ps.add_script("; ".join(cmds))
+        ps.invoke()
+        if ps.had_errors:
+            print(f"Lỗi: {'; '.join(str(e) for e in ps.streams.error)}", file=sys.stderr); sys.exit(1)
+        else:
+            print(f"updated:{data['email']}")
 
-try {
-    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
-    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck
-
-    $Session = New-PSSession `
-        -ConfigurationName Microsoft.Exchange `
-        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
-        -Authentication Basic `
-        -Credential $Credential `
-        -SessionOption $SessionOption `
-        -AllowRedirection `
-        -ErrorAction Stop
-
-    # 3. Chạy lệnh Update trực tiếp trên Session đó bằng Invoke-Command
-    Invoke-Command -Session $Session -ScriptBlock {
-        param($email, $oldEmail, $name, $isActive)
-        
-        if ($oldEmail -and $oldEmail -ne $email) {
-            Set-Mailbox -Identity $oldEmail -PrimarySmtpAddress $email
-        }
-
-        if ($name) {
-            Set-Mailbox -Identity $email -DisplayName $name
-        }
-
-        if ($null -ne $isActive -and -not $isActive) {
-            Disable-Mailbox -Identity $email -Confirm:$false
-        }
-    } -ArgumentList $data.email, $data.oldEmail, $data.name, $data.isActive
-
-    Write-Output "updated:$($data.email)"
-
-    # 4. Dọn dẹp session
-    Remove-PSSession $Session
-    exit 0
-
-} catch {
-    Write-Error "Lỗi: $($_.Exception.Message)"
-    if ($Session) { Remove-PSSession $Session }
-    exit 1
-}
+if __name__ == "__main__": main()
 ````
 
 ## File: src/app.controller.spec.ts
@@ -1706,92 +2625,6 @@ import { PartialType } from '@nestjs/mapped-types';
 import { CreatePostDto } from './create-post.dto';
 
 export class UpdatePostDto extends PartialType(CreatePostDto) {}
-````
-
-## File: src/exchange/dto/calendar.dto.ts
-````typescript
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsBoolean, IsNumber } from 'class-validator';
-
-export class CreateEventDto {
-  @ApiProperty()
-  @IsString()
-  subject: string;
-
-  @ApiProperty({ description: 'Nội dung sự kiện' })
-  @IsString()
-  body: string;
-
-  @ApiProperty({ description: 'ISO 8601 Datetime string' })
-  @IsString()
-  start: string;
-
-  @ApiProperty({ description: 'ISO 8601 Datetime string' })
-  @IsString()
-  end: string;
-
-  @ApiPropertyOptional()
-  @IsString()
-  @IsOptional()
-  location?: string;
-
-  @ApiPropertyOptional()
-  @IsBoolean()
-  @IsOptional()
-  isAllDayEvent?: boolean;
-
-  @ApiPropertyOptional()
-  @IsBoolean()
-  @IsOptional()
-  isReminderSet?: boolean;
-
-  @ApiPropertyOptional()
-  @IsNumber()
-  @IsOptional()
-  reminderMinutesBeforeStart?: number;
-}
-
-export class UpdateEventDto {
-  @ApiPropertyOptional()
-  @IsString()
-  @IsOptional()
-  subject?: string;
-
-  @ApiPropertyOptional()
-  @IsString()
-  @IsOptional()
-  body?: string;
-
-  @ApiPropertyOptional()
-  @IsString()
-  @IsOptional()
-  start?: string;
-
-  @ApiPropertyOptional()
-  @IsString()
-  @IsOptional()
-  end?: string;
-
-  @ApiPropertyOptional()
-  @IsString()
-  @IsOptional()
-  location?: string;
-
-  @ApiPropertyOptional()
-  @IsBoolean()
-  @IsOptional()
-  isAllDayEvent?: boolean;
-
-  @ApiPropertyOptional()
-  @IsBoolean()
-  @IsOptional()
-  isReminderSet?: boolean;
-
-  @ApiPropertyOptional()
-  @IsNumber()
-  @IsOptional()
-  reminderMinutesBeforeStart?: number;
-}
 ````
 
 ## File: src/exchange/interfaces/contact-note.interface.ts
@@ -2181,68 +3014,6 @@ describe('Webmail send/receive (e2e)', () => {
     "noFallthroughCasesInSwitch": false
   }
 }
-````
-
-## File: .gitignore
-````
-# compiled output
-/dist
-/node_modules
-/build
-
-# Logs
-logs
-*.log
-npm-debug.log*
-pnpm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
-
-# OS
-.DS_Store
-
-# Tests
-/coverage
-/.nyc_output
-
-# IDEs and editors
-/.idea
-.project
-.classpath
-.c9/
-*.launch
-.settings/
-*.sublime-workspace
-
-# IDE - VSCode
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-# dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
-
-# temp directory
-.temp
-.tmp
-
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-
-# Diagnostic reports (https://nodejs.org/api/report.html)
-report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
-
-repomix-output.md
 ````
 
 ## File: docs/EXCHANGE_API_DOCUMENTATION.md
@@ -3864,6 +4635,504 @@ curl -X POST http://localhost:3000/webmail/mail/move \
 - IMAP connection error
 ````
 
+## File: scripts/mailbox/create-mailbox.ps1
+````powershell
+param()
+
+# 1. Đọc dữ liệu từ NestJS
+$inputJson = [Console]::In.ReadToEnd()
+if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
+$data = $inputJson | ConvertFrom-Json
+
+if (-not $data.email -or -not $data.name -or -not $data.password) {
+  Write-Error 'Missing email, name, or password'
+  exit 1
+}
+
+# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
+$ExchangeServer = $data.ExchangeServer
+# Giữ nguyên định dạng domain\user cho Negotiate/NTLM auth
+$UserAdmin = $data.UserAdmin
+$Password = $data.AdminPassword | ConvertTo-SecureString -AsPlainText -Force
+$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
+
+try {
+    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
+    # Sử dụng Negotiate (NTLM) qua HTTP — đây là cách Exchange mặc định chấp nhận
+    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck
+
+    $Session = New-PSSession `
+        -ConfigurationName Microsoft.Exchange `
+        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
+        -Authentication Negotiate `
+        -Credential $Credential `
+        -SessionOption $SessionOption `
+        -AllowRedirection `
+        -ErrorAction Stop
+
+    # 3. Chạy lệnh New-Mailbox trực tiếp trên Session đó bằng Invoke-Command
+    Invoke-Command -Session $Session -ScriptBlock {
+        param($email, $name, $password)
+        $secure = ConvertTo-SecureString $password -AsPlainText -Force
+        New-Mailbox -UserPrincipalName $email -Name $name -Password $secure
+    } -ArgumentList $data.email, $data.name, $data.password
+
+    Write-Output "created:$($data.email)"
+
+    # 4. Dọn dẹp session
+    Remove-PSSession $Session
+    exit 0
+
+} catch {
+    Write-Error "Lỗi: $($_.Exception.Message)"
+    if ($Session) { Remove-PSSession $Session }
+    exit 1
+}
+````
+
+## File: scripts/mailbox/delete-mailbox.ps1
+````powershell
+param()
+
+# 1. Đọc dữ liệu từ NestJS
+$inputJson = [Console]::In.ReadToEnd()
+if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
+$data = $inputJson | ConvertFrom-Json
+
+if (-not $data.email) {
+    Write-Error 'Missing email'
+    exit 1
+}
+
+# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
+$ExchangeServer = $data.ExchangeServer
+# Giữ nguyên định dạng domain\user cho Negotiate/NTLM auth
+$UserAdmin = $data.UserAdmin
+$Password = $data.AdminPassword | ConvertTo-SecureString -AsPlainText -Force
+$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
+
+try {
+    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
+    # Sử dụng Negotiate (NTLM) qua HTTP
+    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck
+
+    $Session = New-PSSession `
+        -ConfigurationName Microsoft.Exchange `
+        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
+        -Authentication Negotiate `
+        -Credential $Credential `
+        -SessionOption $SessionOption `
+        -AllowRedirection `
+        -ErrorAction Stop
+
+    # 3. Chạy lệnh Remove-Mailbox vĩnh viễn
+    Invoke-Command -Session $Session -ScriptBlock {
+        param($email)
+        Remove-Mailbox -Identity $email -Permanent $true -Confirm:$false
+    } -ArgumentList $data.email
+
+    Write-Output "successfully_deleted:$($data.email)"
+
+    # 4. Dọn dẹp session
+    Remove-PSSession $Session
+    exit 0
+
+} catch {
+    Write-Error "Lỗi: $($_.Exception.Message)"
+    if ($Session) { Remove-PSSession $Session }
+    exit 1
+}
+````
+
+## File: scripts/mailbox/disable-mailbox.ps1
+````powershell
+param()
+
+# 1. Đọc dữ liệu từ NestJS
+$inputJson = [Console]::In.ReadToEnd()
+if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
+$data = $inputJson | ConvertFrom-Json
+
+if (-not $data.email) {
+    Write-Error 'Missing email'
+    exit 1
+}
+
+# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
+$ExchangeServer = $data.ExchangeServer
+# Giữ nguyên định dạng domain\user cho Negotiate/NTLM auth
+$UserAdmin = $data.UserAdmin
+$Password = $data.AdminPassword | ConvertTo-SecureString -AsPlainText -Force
+$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
+
+try {
+    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
+    # Sử dụng Negotiate (NTLM) qua HTTP
+    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck
+
+    $Session = New-PSSession `
+        -ConfigurationName Microsoft.Exchange `
+        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
+        -Authentication Negotiate `
+        -Credential $Credential `
+        -SessionOption $SessionOption `
+        -AllowRedirection `
+        -ErrorAction Stop
+
+    # 3. Chạy lệnh Disable-Mailbox trực tiếp trên Session đó bằng Invoke-Command
+    Invoke-Command -Session $Session -ScriptBlock {
+        param($email)
+        Disable-Mailbox -Identity $email -Confirm:$false
+    } -ArgumentList $data.email
+
+    Write-Output "successfully_disabled:$($data.email)"
+
+    # 4. Dọn dẹp session
+    Remove-PSSession $Session
+    exit 0
+
+} catch {
+    Write-Error "Lỗi: $($_.Exception.Message)"
+    if ($Session) { Remove-PSSession $Session }
+    exit 1
+}
+````
+
+## File: scripts/mailbox/exchange-worker.py
+````python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Exchange Worker - Ket noi PSRP/WinRM toi Exchange Server.
+Tuong thich hoan hao voi pypsrp 0.9.0 stable.
+
+SU DUNG BÍ QUYẾT: TaggedValue("SS", password)
+pypsrp 0.9.0 khong co PSSecureString ngoai mat, nhung thuc chat loi Serializer
+cua no ho tro the <SS> (SecureString) bang cach dung TaggedValue(). 
+Cach nay ma hoa mat khau truc tiep bang AES/PKCS7 qua SessionKey cua RunspacePool 
+phia client (Python) roi gui thang vao Exchange ma khong can bat ky cmdlet nao
+thuoc Microsoft.PowerShell.Security nhu ConvertTo-SecureString xep hang tren server.
+"""
+import sys
+import json
+import time
+from pypsrp.powershell import PowerShell, RunspacePool
+from pypsrp.wsman import WSMan
+from pypsrp.serializer import TaggedValue
+
+def create_pool(exchange_server, user_admin, admin_password):
+    """Ket noi truc tiep vao Exchange endpoint (/PowerShell/)."""
+    resource_uri = "http://schemas.microsoft.com/powershell/Microsoft.Exchange"
+    wsman = WSMan(
+        server=exchange_server,
+        port=443,
+        path="/PowerShell/",
+        auth="negotiate",
+        username=user_admin,
+        password=admin_password,
+        ssl=True,
+        cert_validation=False,
+        resource_uri=resource_uri,
+    )
+    pool = RunspacePool(wsman, configuration_name="Microsoft.Exchange")
+    pool.open()
+    # PSRP Protocol yeu cau exchange key de ma hoa SecureString phia client.
+    # Phải gọi hàm này trước khi dùng TaggedValue("SS")
+    pool.exchange_keys()
+    return pool
+
+def run_cmdlet(pool, cmdlet_name, params=None):
+    """Chay Exchange cmdlet qua pypsrp trong ConstrainedLanguage mode."""
+    ps = PowerShell(pool)
+    cmd = ps.add_cmdlet(cmdlet_name)
+    if params:
+        for key, value in params.items():
+            if value is not None:
+                cmd.add_parameter(key, value)
+    ps.invoke()
+    return ps.output, ps.streams.error, ps.had_errors
+
+def handle_create(pool, data):
+    email = data.get("email", "")
+    name = data.get("name", "")
+    password = data.get("password", "")
+
+    mb_output, _, _ = run_cmdlet(pool, "Get-Mailbox", {
+        "Identity": email, "ErrorAction": "SilentlyContinue",
+    })
+    if mb_output:
+        return {"success": True, "message": f"already_exists:{email}"}
+
+    user_output, _, _ = run_cmdlet(pool, "Get-User", {
+        "Identity": email, "ErrorAction": "SilentlyContinue",
+    })
+    if user_output:
+        _, errors, had_errors = run_cmdlet(pool, "Enable-Mailbox", {"Identity": email})
+        if had_errors:
+            err_msg = str(errors[0]) if errors else "Unknown error"
+            return {"success": False, "message": err_msg}
+        return {"success": True, "message": f"created:{email}"}
+
+    # "Bí mật" nằm ở đây: Gói chuỗi văn bản thành TaggedValue("SS", ...)
+    # pypsrp sẽ tự biết đây là SecureString và mã hóa nó trước khi gửi qua mạng!
+    secure_pwd = TaggedValue("SS", password)
+
+    _, errors, had_errors = run_cmdlet(pool, "New-Mailbox", {
+        "UserPrincipalName": email, 
+        "Name": name, 
+        "Password": secure_pwd,
+    })
+    
+    if had_errors:
+        err_msg = str(errors[0]) if errors else "Unknown error"
+        if "already exists" in err_msg.lower():
+            return {"success": True, "message": f"already_exists:{email}"}
+        return {"success": False, "message": err_msg}
+
+    for _ in range(3):
+        time.sleep(2)
+        verify_output, _, _ = run_cmdlet(pool, "Get-Mailbox", {
+            "Identity": email, "ErrorAction": "SilentlyContinue",
+        })
+        if verify_output:
+            return {"success": True, "message": f"created:{email}"}
+            
+    return {"success": True, "message": f"created_with_delay:{email}"}
+
+def handle_update(pool, data):
+    email = data.get("email", "")
+    old_email = data.get("oldEmail", "")
+    name = data.get("name", "")
+    is_active = data.get("isActive")
+
+    if old_email and old_email != email:
+        _, errors, had_errors = run_cmdlet(pool, "Set-Mailbox", {
+            "Identity": old_email, "PrimarySmtpAddress": email,
+        })
+        if had_errors:
+            return {"success": False, "message": str(errors[0]) if errors else "Unknown"}
+            
+    if name:
+        _, errors, had_errors = run_cmdlet(pool, "Set-Mailbox", {
+            "Identity": email, "DisplayName": name,
+        })
+        if had_errors:
+            return {"success": False, "message": str(errors[0]) if errors else "Unknown"}
+            
+    if is_active is not None:
+        cmdlet = "Enable-Mailbox" if is_active else "Disable-Mailbox"
+        params = {"Identity": email}
+        if not is_active:
+            params["Confirm"] = False
+        _, errors, had_errors = run_cmdlet(pool, cmdlet, params)
+        if had_errors:
+            return {"success": False, "message": str(errors[0]) if errors else "Unknown"}
+            
+    return {"success": True, "message": f"updated:{email}"}
+
+def handle_disable(pool, data):
+    email = data.get("email", "")
+    _, errors, had_errors = run_cmdlet(pool, "Disable-Mailbox", {
+        "Identity": email, "Confirm": False,
+    })
+    if had_errors:
+        return {"success": False, "message": str(errors[0]) if errors else "Unknown"}
+    return {"success": True, "message": f"successfully_disabled:{email}"}
+
+def handle_restore(pool, data):
+    email = data.get("email", "")
+    _, errors, had_errors = run_cmdlet(pool, "Enable-Mailbox", {
+        "Identity": email, "Confirm": False,
+    })
+    if had_errors:
+        return {"success": False, "message": str(errors[0]) if errors else "Unknown"}
+    return {"success": True, "message": f"successfully_restored:{email}"}
+
+def handle_delete(pool, data):
+    email = data.get("email", "")
+    # Remove-Mailbox -Identity ... -Confirm:$false se xoa ca Mailbox va User AD.
+    # Tham so -Permanent chi dung cho Soft-Deleted mailbox, dung cho mailbox active se gay loi binding.
+    _, errors, had_errors = run_cmdlet(pool, "Remove-Mailbox", {
+        "Identity": email, "Confirm": False,
+    })
+    if had_errors:
+        err_msg = str(errors[0]) if errors else "Unknown error"
+        # Neu mailbox khong ton tai tren Exchange, chung ta van coi nhu thanh cong de xoa DB
+        if "wasn't found" in err_msg.lower() or "không tìm thấy" in err_msg.lower():
+             return {"success": True, "message": f"not_found_on_exchange_but_proceed:{email}"}
+        return {"success": False, "message": err_msg}
+    return {"success": True, "message": f"successfully_deleted:{email}"}
+
+def main():
+    pool = None
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except Exception:
+            continue
+
+        action = data.get("action", "")
+
+        if pool is None:
+            exchange_server = data.get("ExchangeServer", "mail-ex.mailex.local")
+            user_admin = data.get("UserAdmin", "mailex\\Administrator")
+            admin_password = data.get("AdminPassword", "123456a@")
+            try:
+                pool = create_pool(exchange_server, user_admin, admin_password)
+            except Exception as e:
+                print(json.dumps({"success": False, "message": f"PSRP connection failed: {str(e)}"}), flush=True)
+                continue
+
+        handlers = {
+            "create": handle_create,
+            "update": handle_update,
+            "disable": handle_disable,
+            "restore": handle_restore,
+            "delete": handle_delete,
+        }
+
+        handler = handlers.get(action)
+        if handler:
+            try:
+                response = handler(pool, data)
+            except Exception as e:
+                try:
+                    pool.close()
+                except Exception:
+                    pass
+                pool = None
+                response = {"success": False, "message": f"Error: {str(e)}"}
+        else:
+            response = {"success": False, "message": f"Unknown action: {action}"}
+
+        print(json.dumps(response), flush=True)
+
+if __name__ == "__main__":
+    main()
+````
+
+## File: scripts/mailbox/restore-mailbox.ps1
+````powershell
+param()
+
+# 1. Đọc dữ liệu từ NestJS
+$inputJson = [Console]::In.ReadToEnd()
+if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
+$data = $inputJson | ConvertFrom-Json
+
+if (-not $data.email) {
+    Write-Error 'Missing email'
+    exit 1
+}
+
+# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
+$ExchangeServer = $data.ExchangeServer
+# Giữ nguyên định dạng domain\user cho Negotiate/NTLM auth
+$UserAdmin = $data.UserAdmin
+$Password = $data.AdminPassword | ConvertTo-SecureString -AsPlainText -Force
+$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
+
+try {
+    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
+    # Sử dụng Negotiate (NTLM) qua HTTP
+    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck
+
+    $Session = New-PSSession `
+        -ConfigurationName Microsoft.Exchange `
+        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
+        -Authentication Negotiate `
+        -Credential $Credential `
+        -SessionOption $SessionOption `
+        -AllowRedirection `
+        -ErrorAction Stop
+
+    # 3. Chạy lệnh Enable-Mailbox trực tiếp trên Session đó bằng Invoke-Command
+    Invoke-Command -Session $Session -ScriptBlock {
+        param($email)
+        Enable-Mailbox -Identity $email -Confirm:$false
+    } -ArgumentList $data.email
+
+    Write-Output "successfully_restored:$($data.email)"
+
+    # 4. Dọn dẹp session
+    Remove-PSSession $Session
+    exit 0
+
+} catch {
+    Write-Error "Lỗi: $($_.Exception.Message)"
+    if ($Session) { Remove-PSSession $Session }
+    exit 1
+}
+````
+
+## File: scripts/mailbox/update-mailbox.ps1
+````powershell
+param()
+
+# 1. Đọc dữ liệu từ NestJS
+$inputJson = [Console]::In.ReadToEnd()
+if (-not $inputJson) { Write-Error 'No input provided'; exit 1 }
+$data = $inputJson | ConvertFrom-Json
+
+if (-not $data.email) {
+  Write-Error 'Missing email'
+  exit 1
+}
+
+# --- CẤU HÌNH KẾT NỐI EXCHANGE ON-PREM ---
+$ExchangeServer = $data.ExchangeServer
+# Giữ nguyên định dạng domain\user cho Negotiate/NTLM auth
+$UserAdmin = $data.UserAdmin
+$Password = $data.AdminPassword | ConvertTo-SecureString -AsPlainText -Force
+$Credential = New-Object System.Management.Automation.PSCredential($UserAdmin, $Password)
+
+try {
+    # 2. Tạo Session tới thư mục ảo PowerShell của Exchange trên IIS
+    # Sử dụng Negotiate (NTLM) qua HTTP
+    $SessionOption = New-PSSessionOption -SkipCACheck -SkipCNCheck
+
+    $Session = New-PSSession `
+        -ConfigurationName Microsoft.Exchange `
+        -ConnectionUri "http://$ExchangeServer/PowerShell/" `
+        -Authentication Negotiate `
+        -Credential $Credential `
+        -SessionOption $SessionOption `
+        -AllowRedirection `
+        -ErrorAction Stop
+
+    # 3. Chạy lệnh Update trực tiếp trên Session đó bằng Invoke-Command
+    Invoke-Command -Session $Session -ScriptBlock {
+        param($email, $oldEmail, $name, $isActive)
+        
+        if ($oldEmail -and $oldEmail -ne $email) {
+            Set-Mailbox -Identity $oldEmail -PrimarySmtpAddress $email
+        }
+
+        if ($name) {
+            Set-Mailbox -Identity $email -DisplayName $name
+        }
+
+        if ($null -ne $isActive -and -not $isActive) {
+            Disable-Mailbox -Identity $email -Confirm:$false
+        }
+    } -ArgumentList $data.email, $data.oldEmail, $data.name, $data.isActive
+
+    Write-Output "updated:$($data.email)"
+
+    # 4. Dọn dẹp session
+    Remove-PSSession $Session
+    exit 0
+
+} catch {
+    Write-Error "Lỗi: $($_.Exception.Message)"
+    if ($Session) { Remove-PSSession $Session }
+    exit 1
+}
+````
+
 ## File: src/audit/audit.module.ts
 ````typescript
 import { Module } from '@nestjs/common';
@@ -4237,28 +5506,6 @@ export class Migration20260223120000 extends Migration {
 }
 ````
 
-## File: src/dto/post/create-post.dto.ts
-````typescript
-import {
-  IsString,
-  IsNotEmpty,
-  IsOptional,
-} from 'class-validator';
-
-export class CreatePostDto {
-  @IsString({ message: 'Tiêu đề phải là chuỗi' })
-  @IsOptional()
-  title?: string;
-
-  @IsString({ message: 'Nội dung phải là chuỗi' })
-  @IsOptional()
-  content?: string;
-
-  @IsNotEmpty({ message: 'Tác giả không được để trống' })
-  author: number;
-}
-````
-
 ## File: src/exchange/constants/mail-folders.constant.ts
 ````typescript
 export type MailFolderType =
@@ -4267,7 +5514,8 @@ export type MailFolderType =
   | 'starred'
   | 'drafts'
   | 'spam'
-  | 'trash';
+  | 'trash'
+  | 'outbox';
 
 export type MailFolderDefinition = {
   id: string;
@@ -4282,6 +5530,12 @@ export const MAIL_FOLDERS: MailFolderDefinition[] = [
     type: 'inbox',
     name: 'Hộp thư đến',
     aliases: ['INBOX'],
+  },
+  {
+    id: 'Outbox',
+    type: 'outbox',
+    name: 'Thư chờ gửi',
+    aliases: ['Outbox'],
   },
   {
     id: 'Sent Items',
@@ -4337,7 +5591,7 @@ export function resolveFolderId(
     }
   }
 
-  return fallback;
+  return input;
 }
 
 export function resolveFolderType(input: string): string {
@@ -4426,11 +5680,14 @@ export class ContactsController {
     return this.contactNoteService.getContactByEmail(email);
   }
 
-  @Get('count')
+  @Get(['count', 'counts'])
   @ApiBearerAuth('exchange_cookie')
   @ApiOperation({ summary: 'Get contacts count' })
   async getContactsCount() {
-    return this.contactNoteService.getContactsCount();
+    console.log('[ContactsController] Getting contacts count...');
+    const result = await this.contactNoteService.getContactsCount();
+    console.log('[ContactsController] Count result:', result);
+    return result;
   }
 
   @Get(':id')
@@ -4528,6 +5785,137 @@ export class NotesController {
 }
 ````
 
+## File: src/exchange/dto/calendar.dto.ts
+````typescript
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsString,
+  IsOptional,
+  IsBoolean,
+  IsNumber,
+  IsISO8601,
+  ValidateIf,
+  registerDecorator,
+  ValidationOptions,
+  ValidationArguments,
+} from 'class-validator';
+
+/**
+ * Custom decorator: kiểm tra field hiện tại (end) phải sau field tham chiếu (start).
+ * Dùng để đảm bảo end > start trước khi tạo / cập nhật sự kiện.
+ */
+function IsDateAfter(
+  property: string,
+  validationOptions?: ValidationOptions,
+) {
+  return function (object: object, propertyName: string) {
+    registerDecorator({
+      name: 'isDateAfter',
+      target: (object as any).constructor,
+      propertyName,
+      constraints: [property],
+      options: validationOptions,
+      validator: {
+        validate(value: any, args: ValidationArguments) {
+          const [relatedPropertyName] = args.constraints;
+          const relatedValue = (args.object as any)[relatedPropertyName];
+          if (!value || !relatedValue) return true; // bỏ qua nếu một trong hai rỗng
+          // Cho phép end = start (event cả ngày trùng ngày), chỉ từ chối khi end < start
+          return new Date(value).getTime() >= new Date(relatedValue).getTime();
+        },
+        defaultMessage(args: ValidationArguments) {
+          return `${args.property} phải sau ${args.constraints[0]}`;
+        },
+      },
+    });
+  };
+}
+
+export class CreateEventDto {
+  @ApiProperty()
+  @IsString()
+  subject: string;
+
+  @ApiProperty({ description: 'Nội dung sự kiện' })
+  @IsString()
+  body: string;
+
+  @ApiProperty({ description: 'ISO 8601 Datetime string' })
+  @IsISO8601({}, { message: 'start phải là ISO 8601 hợp lệ (VD: 2026-03-04T10:00:00.000Z)' })
+  start: string;
+
+  @ApiProperty({ description: 'ISO 8601 Datetime string' })
+  @IsISO8601({}, { message: 'end phải là ISO 8601 hợp lệ' })
+  @IsDateAfter('start', { message: 'Thời gian kết thúc phải sau thời gian bắt đầu' })
+  end: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  location?: string;
+
+  @ApiPropertyOptional()
+  @IsBoolean()
+  @IsOptional()
+  isAllDayEvent?: boolean;
+
+  @ApiPropertyOptional()
+  @IsBoolean()
+  @IsOptional()
+  isReminderSet?: boolean;
+
+  @ApiPropertyOptional()
+  @IsNumber()
+  @IsOptional()
+  reminderMinutesBeforeStart?: number;
+}
+
+export class UpdateEventDto {
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  subject?: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  body?: string;
+
+  @ApiPropertyOptional()
+  @IsISO8601({}, { message: 'start phải là ISO 8601 hợp lệ' })
+  @IsOptional()
+  start?: string;
+
+  @ApiPropertyOptional()
+  @IsISO8601({}, { message: 'end phải là ISO 8601 hợp lệ' })
+  @IsOptional()
+  // Chỉ validate end > start khi cả hai đều được truyền vào
+  @ValidateIf((o) => !!o.start && !!o.end)
+  @IsDateAfter('start', { message: 'Thời gian kết thúc phải sau thời gian bắt đầu' })
+  end?: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  location?: string;
+
+  @ApiPropertyOptional()
+  @IsBoolean()
+  @IsOptional()
+  isAllDayEvent?: boolean;
+
+  @ApiPropertyOptional()
+  @IsBoolean()
+  @IsOptional()
+  isReminderSet?: boolean;
+
+  @ApiPropertyOptional()
+  @IsNumber()
+  @IsOptional()
+  reminderMinutesBeforeStart?: number;
+}
+````
+
 ## File: src/exchange/dto/contact-note.dto.ts
 ````typescript
 import { ApiProperty } from '@nestjs/swagger';
@@ -4536,6 +5924,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  MaxLength,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -4575,6 +5964,7 @@ export class CreateContactDto {
   @ApiProperty({ example: 'User Name' })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(255)
   displayName!: string;
 
   @ApiProperty({ required: false })
@@ -4613,6 +6003,7 @@ export class UpdateContactDto {
   @ApiProperty({ required: false })
   @IsString()
   @IsOptional()
+  @MaxLength(255)
   displayName?: string;
 
   @ApiProperty({ required: false })
@@ -4830,11 +6221,12 @@ export class ContactNoteService {
 
   async getContactsCount(): Promise<{ total: number }> {
     const email = await this.getEmailFromSession();
+    console.log('email', email);  
     if (email && this.dragonfly.enabled) {
       const key = this.getContactsCountCacheKey(email);
       const cached = await this.dragonfly.get<number>(key);
       if (cached !== null) {
-        return { total: cached };
+        return { total: Math.max(0, cached) };
       }
 
       const total = await this.withProvider(() =>
@@ -5733,6 +7125,92 @@ describe('ImapMailProvider sent append', () => {
 });
 ````
 
+## File: dockerfile
+````dockerfile
+# ----------------------------------------------------------------
+# Stage 1: Base Image & Dependencies (deps)
+# Cài đặt dependencies để tận dụng Docker layer caching
+# ----------------------------------------------------------------
+FROM node:22-alpine AS base
+FROM base AS deps
+
+# Cần libc6-compat cho một số package Node.js trên Alpine
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+
+# Sao chép các file quản lý dependency
+COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* .npmrc* ./
+
+# Cài đặt dependencies dựa trên lockfile được tìm thấy
+RUN \
+  if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
+  elif [ -f package-lock.json ]; then npm ci; \
+  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm i --frozen-lockfile; \
+  else echo "Lockfile not found." && exit 1; \
+  fi
+
+# ----------------------------------------------------------------
+# Stage 2: Builder
+# Thực hiện quá trình build (tsc)
+# ----------------------------------------------------------------
+FROM base AS builder
+WORKDIR /app
+
+# Sao chép node_modules từ stage deps
+COPY --from=deps /app/node_modules ./node_modules
+# Sao chép source code
+COPY . .
+
+# Thực hiện build NestJS (chuyển TypeScript sang JavaScript)
+RUN \
+  if [ -f yarn.lock ]; then yarn run build; \
+  elif [ -f package-lock.json ]; then npm run build; \
+  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm run build; \
+  else echo "Build command not found." && exit 1; \
+  fi
+
+# ----------------------------------------------------------------
+# Stage 3: Runner (Final Image)
+# Sử dụng Debian-slim + Python3 + pywinrm thay vì PowerShell.
+# pywinrm kết nối trực tiếp tới WinRM (NTLM) trên Exchange Server,
+# không cần pwsh/PSWSMan/OMI — loại bỏ hoàn toàn lỗi MI_RESULT_FAILED.
+# ----------------------------------------------------------------
+FROM node:22-slim AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+# Cài đặt Python3 + pip + pywinrm cho xác thực WinRM/NTLM tới Exchange
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    python3 \
+    python3-pip \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# pypsrp 0.9.0 stable: ket noi WinRM toi Exchange Server
+RUN pip3 install --no-cache-dir --break-system-packages "pypsrp==0.9.0"
+
+# Tạo user bảo mật
+RUN groupadd --system --gid 1001 nodejs
+RUN useradd --system --uid 1001 --gid nodejs --no-create-home nestjs
+
+# CHỈ copy những thứ cần thiết
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder --chown=nestjs:nodejs /app/dist ./dist
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder --chown=nestjs:nodejs /app/scripts ./scripts
+
+# Chuyển sang user nestjs
+USER nestjs
+
+EXPOSE 3001
+ENV PORT=3001
+
+# Chạy trực tiếp file đã build bằng node
+CMD ["node", "dist/src/main.js"]
+````
+
 ## File: src/audit/audit-log.interceptor.ts
 ````typescript
 import {
@@ -6402,6 +7880,204 @@ export default registerAs('database', () => ({
       "columns": {
         "id": {
           "name": "id",
+          "type": "serial",
+          "unsigned": false,
+          "autoincrement": true,
+          "primary": true,
+          "nullable": false,
+          "mappedType": "integer"
+        },
+        "collection": {
+          "name": "collection",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "action": {
+          "name": "action",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "description": {
+          "name": "description",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "length": 255,
+          "mappedType": "string"
+        }
+      },
+      "name": "permissions",
+      "schema": "public",
+      "indexes": [
+        {
+          "keyName": "permissions_collection_action_index",
+          "columnNames": [
+            "collection",
+            "action"
+          ],
+          "composite": true,
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "keyName": "permissions_pkey",
+          "columnNames": [
+            "id"
+          ],
+          "composite": false,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {},
+      "nativeEnums": {}
+    },
+    {
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "serial",
+          "unsigned": false,
+          "autoincrement": true,
+          "primary": true,
+          "nullable": false,
+          "mappedType": "integer"
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "description": {
+          "name": "description",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "length": 255,
+          "mappedType": "string"
+        }
+      },
+      "name": "roles",
+      "schema": "public",
+      "indexes": [
+        {
+          "columnNames": [
+            "name"
+          ],
+          "composite": false,
+          "keyName": "roles_name_unique",
+          "constraint": true,
+          "primary": false,
+          "unique": true
+        },
+        {
+          "keyName": "roles_pkey",
+          "columnNames": [
+            "id"
+          ],
+          "composite": false,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {},
+      "nativeEnums": {}
+    },
+    {
+      "columns": {
+        "role_id": {
+          "name": "role_id",
+          "type": "int",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "mappedType": "integer"
+        },
+        "permission_id": {
+          "name": "permission_id",
+          "type": "int",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "mappedType": "integer"
+        }
+      },
+      "name": "roles_permissions",
+      "schema": "public",
+      "indexes": [
+        {
+          "keyName": "roles_permissions_pkey",
+          "columnNames": [
+            "role_id",
+            "permission_id"
+          ],
+          "composite": true,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {
+        "roles_permissions_role_id_foreign": {
+          "constraintName": "roles_permissions_role_id_foreign",
+          "columnNames": [
+            "role_id"
+          ],
+          "localTableName": "public.roles_permissions",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "referencedTableName": "public.roles",
+          "deleteRule": "cascade",
+          "updateRule": "cascade"
+        },
+        "roles_permissions_permission_id_foreign": {
+          "constraintName": "roles_permissions_permission_id_foreign",
+          "columnNames": [
+            "permission_id"
+          ],
+          "localTableName": "public.roles_permissions",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "referencedTableName": "public.permissions",
+          "deleteRule": "cascade",
+          "updateRule": "cascade"
+        }
+      },
+      "nativeEnums": {}
+    },
+    {
+      "columns": {
+        "id": {
+          "name": "id",
           "type": "varchar(255)",
           "unsigned": false,
           "autoincrement": false,
@@ -6417,6 +8093,26 @@ export default registerAs('database', () => ({
           "autoincrement": false,
           "primary": false,
           "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "password": {
+          "name": "password",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
           "length": 255,
           "mappedType": "string"
         },
@@ -6632,233 +8328,99 @@ export default registerAs('database', () => ({
         }
       },
       "nativeEnums": {}
+    },
+    {
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "role_id": {
+          "name": "role_id",
+          "type": "int",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "mappedType": "integer"
+        }
+      },
+      "name": "user_roles",
+      "schema": "public",
+      "indexes": [
+        {
+          "keyName": "user_roles_pkey",
+          "columnNames": [
+            "user_id",
+            "role_id"
+          ],
+          "composite": true,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {
+        "user_roles_user_id_foreign": {
+          "constraintName": "user_roles_user_id_foreign",
+          "columnNames": [
+            "user_id"
+          ],
+          "localTableName": "public.user_roles",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "referencedTableName": "public.users",
+          "deleteRule": "cascade",
+          "updateRule": "cascade"
+        },
+        "user_roles_role_id_foreign": {
+          "constraintName": "user_roles_role_id_foreign",
+          "columnNames": [
+            "role_id"
+          ],
+          "localTableName": "public.user_roles",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "referencedTableName": "public.roles",
+          "deleteRule": "cascade",
+          "updateRule": "cascade"
+        }
+      },
+      "nativeEnums": {}
     }
   ],
   "nativeEnums": {}
 }
 ````
 
-## File: src/exchange/interceptors/exchange-error.interceptor.ts
+## File: src/dto/post/create-post.dto.ts
 ````typescript
 import {
-  Injectable,
-  NestInterceptor,
-  ExecutionContext,
-  CallHandler,
-  HttpException,
-  Logger,
-} from '@nestjs/common';
-import { Observable, throwError } from 'rxjs';
-import { catchError } from 'rxjs/operators';
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+} from 'class-validator';
 
-@Injectable()
-export class ExchangeErrorInterceptor implements NestInterceptor {
-  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
-    return next.handle().pipe(
-      catchError((err) => {
-        if (err instanceof HttpException) {
-          return throwError(() => err);
-        }
+export class CreatePostDto {
+  @IsString({ message: 'Tiêu đề phải là chuỗi' })
+  @IsOptional()
+  title?: string;
 
-        // Map EWS errors to HTTP Status
-        // err.name or err.message often contains the code
-        const msg = err.message || '';
+  @IsString({ message: 'Nội dung phải là chuỗi' })
+  @IsOptional()
+  content?: string;
 
-        if (
-          msg.includes('ErrorInvalidCredentials') ||
-          msg.includes('401') ||
-          msg.includes('No session token') ||
-          msg.includes('Session expired or invalid')
-        ) {
-          return throwError(
-            () => new HttpException('Sai thông tin đăng nhập Exchange', 401),
-          );
-        }
-        if (
-          msg.includes('AccountIsLocked') ||
-          msg.includes('ErrorImpersonationDenied')
-        ) {
-          return throwError(
-            () =>
-              new HttpException(
-                'Tài khoản bị khóa hoặc không có quyền truy cập',
-                403,
-              ),
-          );
-        }
-        if (msg.includes('ErrorServerBusy')) {
-          return throwError(
-            () =>
-              new HttpException('Máy chủ đang bận, vui lòng thử lại sau', 429),
-          );
-        }
-        if (msg.includes('ETIMEDOUT') || msg.includes('timeout')) {
-          return throwError(
-            () => new HttpException('Mất kết nối đến Exchange Server', 504),
-          );
-        }
-
-        // Default
-        Logger.error(`EWS Error: ${msg}`, err.stack);
-        return throwError(
-          () => new HttpException('Lỗi kết nối Exchange Webmail', 500),
-        );
-      }),
-    );
-  }
-}
-````
-
-## File: src/exchange/services/smtp-sender.service.ts
-````typescript
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import * as nodemailer from 'nodemailer';
-
-type SmtpCredentials = {
-  email: string;
-  password: string;
-};
-
-type MailboxTransporter = {
-  transporter: nodemailer.Transporter;
-  password: string;
-  lastUsedAt: number;
-};
-
-@Injectable()
-export class SmtpSenderService implements OnModuleDestroy {
-  private readonly logger = new Logger(SmtpSenderService.name);
-  private readonly transporters = new Map<string, MailboxTransporter>();
-  private readonly idleTtlMs: number;
-
-  constructor(private readonly configService: ConfigService) {
-    this.idleTtlMs = this.configService.get<number>(
-      'SMTP_POOL_IDLE_TTL_MS',
-      30 * 60 * 1000,
-    );
-  }
-
-  async sendMail(
-    credentials: SmtpCredentials,
-    options: nodemailer.SendMailOptions,
-  ): Promise<nodemailer.SentMessageInfo> {
-    this.cleanupIdleTransporters();
-    const entry = await this.getOrCreateTransporter(credentials);
-    entry.lastUsedAt = Date.now();
-    return entry.transporter.sendMail(options);
-  }
-
-  async onModuleDestroy(): Promise<void> {
-    for (const [email, entry] of this.transporters.entries()) {
-      try {
-        entry.transporter.close();
-      } catch (error) {
-        this.logger.warn(
-          `Failed to close SMTP transporter for ${email}: ${error.message}`,
-        );
-      }
-    }
-    this.transporters.clear();
-  }
-
-  private async getOrCreateTransporter(
-    credentials: SmtpCredentials,
-  ): Promise<MailboxTransporter> {
-    const existing = this.transporters.get(credentials.email);
-
-    if (existing && existing.password === credentials.password) {
-      return existing;
-    }
-
-    if (existing) {
-      try {
-        existing.transporter.close();
-      } catch (error) {
-        this.logger.warn(
-          `Failed to close old SMTP transporter for ${credentials.email}: ${error.message}`,
-        );
-      }
-    }
-
-    const transporter = nodemailer.createTransport(
-      this.buildSmtpConfig(credentials) as any,
-    );
-
-    const entry: MailboxTransporter = {
-      transporter,
-      password: credentials.password,
-      lastUsedAt: Date.now(),
-    };
-
-    this.transporters.set(credentials.email, entry);
-    this.logger.log(`Initialized SMTP pool for ${credentials.email}`);
-    return entry;
-  }
-
-  private buildSmtpConfig(credentials: SmtpCredentials) {
-    const host = this.configService.get<string>(
-      'SMTP_HOST',
-      'smtp.office365.com',
-    );
-    const port = this.configService.get<number>('SMTP_PORT', 587);
-    const secure =
-      this.configService.get<string>('SMTP_SECURE', 'false') === 'true';
-    const maxConnections = this.configService.get<number>(
-      'SMTP_POOL_MAX_CONNECTIONS',
-      2,
-    );
-    const maxMessages = this.configService.get<number>(
-      'SMTP_POOL_MAX_MESSAGES',
-      100,
-    );
-    const rateLimit = this.configService.get<number>('SMTP_RATE_LIMIT', 3);
-    const rateDelta = this.configService.get<number>(
-      'SMTP_RATE_DELTA_MS',
-      1000,
-    );
-
-    return {
-      host,
-      port,
-      secure,
-      requireTLS: true,
-      auth: {
-        user: credentials.email,
-        pass: credentials.password,
-      },
-      tls: {
-        minVersion: 'TLSv1.2',
-        rejectUnauthorized: false,
-      },
-      debug: true,
-      logger: true,
-      pool: true,
-      maxConnections,
-      maxMessages,
-      rateLimit,
-      rateDelta,
-    };
-  }
-
-  private cleanupIdleTransporters(): void {
-    const now = Date.now();
-
-    for (const [email, entry] of this.transporters.entries()) {
-      if (now - entry.lastUsedAt < this.idleTtlMs) {
-        continue;
-      }
-
-      try {
-        entry.transporter.close();
-      } catch (error) {
-        this.logger.warn(
-          `Failed to close idle SMTP transporter for ${email}: ${error.message}`,
-        );
-      }
-      this.transporters.delete(email);
-    }
-  }
+  @IsNotEmpty({ message: 'Tác giả không được để trống' })
+  author: number;
 }
 ````
 
@@ -7401,125 +8963,6 @@ export class MailboxService {
 }
 ````
 
-## File: src/mailbox/script-runner.service.ts
-````typescript
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { spawn } from 'child_process';
-
-export type ScriptAction =
-  | 'create'
-  | 'update'
-  | 'disable'
-  | 'restore'
-  | 'delete';
-
-@Injectable()
-export class ScriptRunnerService {
-  private readonly logger = new Logger(ScriptRunnerService.name);
-  private readonly timeoutMs: number;
-
-  constructor(private readonly configService: ConfigService) {
-    this.timeoutMs = this.configService.get<number>(
-      'MAILBOX_SCRIPT_TIMEOUT_MS',
-      60000,
-    );
-  }
-
-  async run(
-    action: ScriptAction,
-    payload: Record<string, any>,
-  ): Promise<{ stdout: string; stderr: string }> {
-    const scriptPath = this.getScriptPath(action);
-    if (!scriptPath) {
-      throw new Error(`Script path not configured for action ${action}`);
-    }
-
-    return new Promise((resolve, reject) => {
-      const { command, args } = this.buildCommand(scriptPath);
-      const child = spawn(command, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true,
-      });
-
-      let stdout = '';
-      let stderr = '';
-      const timer = setTimeout(() => {
-        child.kill();
-        reject(new Error(`Script timeout after ${this.timeoutMs}ms`));
-      }, this.timeoutMs);
-
-      child.stdout.on('data', (chunk) => {
-        stdout += chunk.toString();
-      });
-      child.stderr.on('data', (chunk) => {
-        stderr += chunk.toString();
-      });
-      child.on('error', (err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-      child.on('close', (code) => {
-        clearTimeout(timer);
-        if (code !== 0) {
-          const message = stderr || stdout || `Script exited with code ${code}`;
-          return reject(new Error(message));
-        }
-        resolve({ stdout, stderr });
-      });
-
-      try {
-        const enrichedPayload = {
-          ...payload,
-          ExchangeServer:
-            this.configService.get<string>('EXCHANGE_SERVER') ||
-            'mail-ex.mailex.local',
-          UserAdmin:
-            this.configService.get<string>('EXCHANGE_USER_ADMIN') ||
-            'mailex\\Administrator',
-          Password:
-            this.configService.get<string>('EXCHANGE_PASSWORD') || '123456a@',
-        };
-        child.stdin.write(JSON.stringify(enrichedPayload));
-        child.stdin.end();
-      } catch (error) {
-        this.logger.warn(`Failed to write to script stdin: ${error.message}`);
-      }
-    });
-  }
-
-  private getScriptPath(action: ScriptAction): string | undefined {
-    switch (action) {
-      case 'create':
-        return this.configService.get<string>('MAILBOX_SCRIPT_CREATE');
-      case 'update':
-        return this.configService.get<string>('MAILBOX_SCRIPT_UPDATE');
-      case 'disable':
-        return this.configService.get<string>('MAILBOX_SCRIPT_DISABLE');
-      case 'restore':
-        return this.configService.get<string>('MAILBOX_SCRIPT_RESTORE');
-      case 'delete':
-        return this.configService.get<string>('MAILBOX_SCRIPT_DELETE');
-      default:
-        return undefined;
-    }
-  }
-
-  private buildCommand(scriptPath: string): {
-    command: string;
-    args: string[];
-  } {
-    if (scriptPath.toLowerCase().endsWith('.ps1')) {
-      return {
-        command: 'powershell',
-        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
-      };
-    }
-    return { command: scriptPath, args: [] };
-  }
-}
-````
-
 ## File: src/meta/entity-registry.service.ts
 ````typescript
 import {
@@ -7724,6 +9167,70 @@ export class LocalStorageAdapter implements IStorageAdapter {
     }
   }
 }
+````
+
+## File: .gitignore
+````
+# compiled output
+/dist
+/node_modules
+/build
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+
+# Tests
+/coverage
+/.nyc_output
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# temp directory
+.temp
+.tmp
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Diagnostic reports (https://nodejs.org/api/report.html)
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+*.tar*
+*.venv*
+*repomix-output.md*
 ````
 
 ## File: src/auth/strategies/jwt.strategy.ts
@@ -7980,6 +9487,302 @@ export class RequestContext {
 
   set tenantId(id: string | null) {
     this._tenantId = id;
+  }
+}
+````
+
+## File: src/exchange/interceptors/exchange-error.interceptor.ts
+````typescript
+import {
+  Injectable,
+  NestInterceptor,
+  ExecutionContext,
+  CallHandler,
+  HttpException,
+  Logger,
+} from '@nestjs/common';
+import { Observable, throwError } from 'rxjs';
+import { catchError } from 'rxjs/operators';
+
+@Injectable()
+export class ExchangeErrorInterceptor implements NestInterceptor {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+    return next.handle().pipe(
+      catchError((err) => {
+        if (err instanceof HttpException) {
+          return throwError(() => err);
+        }
+
+        // Map EWS errors to HTTP Status
+        // err.name or err.message often contains the code
+        const msg = err.message || '';
+
+        if (
+          msg.includes('ErrorInvalidCredentials') ||
+          msg.includes('401') ||
+          msg.includes('No session token') ||
+          msg.includes('Session expired or invalid')
+        ) {
+          return throwError(
+            () => new HttpException('Sai thông tin đăng nhập Exchange', 401),
+          );
+        }
+        if (
+          msg.includes('AccountIsLocked') ||
+          msg.includes('ErrorImpersonationDenied')
+        ) {
+          return throwError(
+            () =>
+              new HttpException(
+                'Tài khoản bị khóa hoặc không có quyền truy cập',
+                403,
+              ),
+          );
+        }
+        if (msg.includes('ErrorServerBusy')) {
+          return throwError(
+            () =>
+              new HttpException('Máy chủ đang bận, vui lòng thử lại sau', 429),
+          );
+        }
+        if (msg.includes('ETIMEDOUT') || msg.includes('timeout')) {
+          return throwError(
+            () => new HttpException('Mất kết nối đến Exchange Server', 504),
+          );
+        }
+
+        // Lỗi Postfix reject do Rspamd nhận diện là Spam
+        if (
+          msg.includes('rejected as spam') ||
+          msg.includes('Message rejected') ||
+          msg.includes('5.7.1') ||
+          msg.includes('Policy Rejection') ||
+          msg.includes('spam score')
+        ) {
+          return throwError(
+            () =>
+              new HttpException(
+                'Email bị từ chối do bị nhận diện là Spam. Vui lòng kiểm tra lại nội dung.',
+                451,
+              ),
+          );
+        }
+
+        // Lỗi Postfix reject do ClamAV phát hiện Virus trong attachment
+        if (
+          msg.includes('infected') ||
+          msg.toLowerCase().includes('virus') ||
+          msg.includes('malware') ||
+          msg.includes('5.7.0') ||
+          msg.includes('content rejected')
+        ) {
+          return throwError(
+            () =>
+              new HttpException(
+                'Email bị từ chối do file đính kèm chứa mã độc (Virus). Vui lòng kiểm tra lại file.',
+                422,
+              ),
+          );
+        }
+
+        // Default
+        Logger.error(`EWS Error: ${msg}`, err.stack);
+        return throwError(
+          () => new HttpException('Lỗi kết nối Exchange Webmail', 500),
+        );
+      }),
+    );
+  }
+}
+````
+
+## File: src/mailbox/script-runner.service.ts
+````typescript
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config'; // Updated scripts
+import { spawn, ChildProcess } from 'child_process';
+import * as readline from 'readline';
+import * as path from 'path';
+
+export type ScriptAction =
+  | 'create'
+  | 'update'
+  | 'disable'
+  | 'restore'
+  | 'delete';
+
+@Injectable()
+export class ScriptRunnerService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(ScriptRunnerService.name);
+  private readonly timeoutMs: number;
+
+  private workerProcess: ChildProcess | null = null;
+  private responseReader: readline.Interface | null = null;
+  private pendingRequests: Map<
+    number,
+    { resolve: (value: any) => void; reject: (reason: any) => void; timer: NodeJS.Timeout }
+  > = new Map();
+  private requestCounter = 0;
+  private isWorkerReady = false;
+
+  constructor(private readonly configService: ConfigService) {
+    this.timeoutMs = this.configService.get<number>(
+      'MAILBOX_SCRIPT_TIMEOUT_MS',
+      120000,
+    );
+  }
+
+  onModuleInit() {
+    this.startWorker();
+  }
+
+  onModuleDestroy() {
+    this.stopWorker();
+  }
+
+  private startWorker() {
+    const workerPath = path.resolve('./scripts/mailbox/exchange-worker.py');
+    const isWin = process.platform === 'win32';
+    // Thử lần lượt các lệnh Python phổ biến
+    const commandsToTry = isWin ? ['python', 'py', 'python3'] : ['python3', 'python'];
+    
+    this.trySpawnWorker(commandsToTry, workerPath);
+  }
+
+  private trySpawnWorker(cmds: string[], workerPath: string) {
+    if (cmds.length === 0) {
+      this.isWorkerReady = false;
+      this.logger.error('❌ FATAL: Không tìm thấy lệnh Python nào (python, py, python3) trên hệ thống!');
+      return;
+    }
+
+    const currentCmd = cmds[0];
+    this.logger.log(`🚀 Đang khởi động Exchange Worker với: ${currentCmd}`);
+
+    try {
+      const child = spawn(currentCmd, [workerPath], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+
+      child.on('error', (err: any) => {
+        if (err.code === 'ENOENT') {
+          // Lệnh không tồn tại, thử lệnh tiếp theo trong danh sách
+          this.trySpawnWorker(cmds.slice(1), workerPath);
+        } else {
+          this.logger.error(`❌ Worker process error (${currentCmd}): ${err.message}`);
+          this.isWorkerReady = false;
+        }
+      });
+
+      child.on('spawn', () => {
+        this.workerProcess = child;
+        this.isWorkerReady = true;
+        this.logger.log(`✅ Exchange Worker đã khởi động thành công với: ${currentCmd}`);
+        this.setupWorkerCommunication();
+      });
+
+      child.on('close', (code) => {
+        if (this.isWorkerReady) {
+          this.logger.warn(`⚠️ Exchange Worker đã thoát (code: ${code}). Tự khởi động lại sau 5s...`);
+          this.isWorkerReady = false;
+          this.cleanupWorker();
+          setTimeout(() => this.startWorker(), 5000);
+        }
+      });
+    } catch (error) {
+      this.logger.error(`❌ Lỗi khi spawn worker: ${error.message}`);
+      this.trySpawnWorker(cmds.slice(1), workerPath);
+    }
+  }
+
+  private setupWorkerCommunication() {
+    if (!this.workerProcess) return;
+
+    this.responseReader = readline.createInterface({
+      input: this.workerProcess.stdout!,
+    });
+
+    this.responseReader.on('line', (line) => {
+      try {
+        const response = JSON.parse(line);
+        const firstKey = this.pendingRequests.keys().next().value;
+        if (firstKey !== undefined) {
+          const pending = this.pendingRequests.get(firstKey);
+          if (pending) {
+            clearTimeout(pending.timer);
+            this.pendingRequests.delete(firstKey);
+            if (response.success) {
+              pending.resolve({ stdout: response.message, stderr: '' });
+            } else {
+              pending.reject(new Error(response.message));
+            }
+          }
+        }
+      } catch (e) {
+        this.logger.warn(`Lỗi phân giải kết quả worker: ${e.message}`);
+      }
+    });
+
+    this.workerProcess.stderr?.on('data', (chunk) => {
+      const msg = chunk.toString().trim();
+      if (msg) this.logger.debug(`[Worker Debug]: ${msg}`);
+    });
+  }
+
+  private cleanupWorker() {
+    if (this.responseReader) {
+      this.responseReader.close();
+      this.responseReader = null;
+    }
+    // Reject all pending
+    for (const [id, pending] of this.pendingRequests) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error('Worker connection closed'));
+    }
+    this.pendingRequests.clear();
+  }
+
+  private stopWorker() {
+    this.isWorkerReady = false;
+    if (this.workerProcess) {
+      this.workerProcess.stdin?.end();
+      this.workerProcess.kill();
+      this.workerProcess = null;
+    }
+    this.cleanupWorker();
+  }
+
+  async run(action: ScriptAction, payload: Record<string, any>): Promise<{ stdout: string; stderr: string }> {
+    if (!this.isWorkerReady || !this.workerProcess) {
+      throw new Error('Exchange Worker chưa sẵn sàng. Vui lòng đợi trong giây lát.');
+    }
+
+    return new Promise((resolve, reject) => {
+      const requestId = ++this.requestCounter;
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        reject(new Error(`Thao tác Mailbox (${action}) bị quá hạn sau ${this.timeoutMs}ms`));
+      }, this.timeoutMs);
+
+      this.pendingRequests.set(requestId, { resolve, reject, timer });
+
+      const enrichedPayload = {
+        action,
+        ...payload,
+        ExchangeServer: this.configService.get('EXCHANGE_SERVER') || 'mail-ex.mailex.local',
+        UserAdmin: this.configService.get('EXCHANGE_USER_ADMIN') || 'mailex\\Administrator',
+        AdminPassword: this.configService.get('EXCHANGE_PASSWORD') || '123456a@',
+      };
+
+      try {
+        this.workerProcess!.stdin!.write(JSON.stringify(enrichedPayload) + '\n');
+      } catch (error) {
+        clearTimeout(timer);
+        this.pendingRequests.delete(requestId);
+        reject(new Error(`Lỗi gửi lệnh tới worker: ${error.message}`));
+      }
+    });
   }
 }
 ````
@@ -8340,6 +10143,174 @@ import { ContactNoteService } from './services/contact-note.service';
 export class ExchangeModule {}
 ````
 
+## File: src/exchange/services/smtp-sender.service.ts
+````typescript
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import * as nodemailer from 'nodemailer';
+
+type SmtpCredentials = {
+  email: string;
+  password: string;
+};
+
+type MailboxTransporter = {
+  transporter: nodemailer.Transporter;
+  password: string;
+  lastUsedAt: number;
+};
+
+@Injectable()
+export class SmtpSenderService implements OnModuleDestroy {
+  private readonly logger = new Logger(SmtpSenderService.name);
+  private readonly transporters = new Map<string, MailboxTransporter>();
+  private readonly idleTtlMs: number;
+
+  constructor(private readonly configService: ConfigService) {
+    // Giảm idle TTL mặc định xuống 2 phút để Exchange dọn hết connection zombie khi app restart
+    this.idleTtlMs = this.configService.get<number>(
+      'SMTP_POOL_IDLE_TTL_MS',
+      2 * 60 * 1000,
+    );
+  }
+
+  async sendMail(
+    credentials: SmtpCredentials,
+    options: nodemailer.SendMailOptions,
+  ): Promise<nodemailer.SentMessageInfo> {
+    this.cleanupIdleTransporters();
+    const entry = await this.getOrCreateTransporter(credentials);
+    entry.lastUsedAt = Date.now();
+    return entry.transporter.sendMail(options);
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    for (const [email, entry] of this.transporters.entries()) {
+      try {
+        entry.transporter.close();
+      } catch (error) {
+        this.logger.warn(
+          `Failed to close SMTP transporter for ${email}: ${error.message}`,
+        );
+      }
+    }
+    this.transporters.clear();
+  }
+
+  private async getOrCreateTransporter(
+    credentials: SmtpCredentials,
+  ): Promise<MailboxTransporter> {
+    const existing = this.transporters.get(credentials.email);
+
+    if (existing && existing.password === credentials.password) {
+      return existing;
+    }
+
+    if (existing) {
+      try {
+        existing.transporter.close();
+      } catch (error) {
+        this.logger.warn(
+          `Failed to close old SMTP transporter for ${credentials.email}: ${error.message}`,
+        );
+      }
+    }
+
+    const transporter = nodemailer.createTransport(
+      this.buildSmtpConfig(credentials) as any,
+    );
+
+    const entry: MailboxTransporter = {
+      transporter,
+      password: credentials.password,
+      lastUsedAt: Date.now(),
+    };
+
+    this.transporters.set(credentials.email, entry);
+    this.logger.log(`Initialized SMTP pool for ${credentials.email}`);
+    return entry;
+  }
+
+  private buildSmtpConfig(credentials: SmtpCredentials) {
+    const host = this.configService.get<string>(
+      'SMTP_HOST',
+      'smtp.office365.com',
+    );
+    const port = this.configService.get<number>('SMTP_PORT', 587);
+    const secure =
+      this.configService.get<string>('SMTP_SECURE', 'false') === 'true';
+    const maxConnections = this.configService.get<number>(
+      'SMTP_POOL_MAX_CONNECTIONS',
+      2,
+    );
+    const maxMessages = this.configService.get<number>(
+      'SMTP_POOL_MAX_MESSAGES',
+      100,
+    );
+    const rateLimit = this.configService.get<number>('SMTP_RATE_LIMIT', 3);
+    const rateDelta = this.configService.get<number>(
+      'SMTP_RATE_DELTA_MS',
+      1000,
+    );
+
+    console.log('SMTP config:', {
+      host,
+      port,
+      secure,
+      maxConnections,
+      maxMessages,
+      rateLimit,
+      rateDelta,
+    });
+
+    return {
+      host,
+      port,
+      secure,
+      requireTLS: true,
+      auth: {
+        user: credentials.email,
+        pass: credentials.password,
+      },
+      tls: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: false,
+      },
+      // Timeout để Exchange cleanup connection đúng cách, tránh zombie PRX6
+      greetingTimeout: 15000,  // 15 giây chờ greeting SMTP
+      socketTimeout: 30000,    // 30 giây idle socket timeout
+      idleTimeout: 300000,      // 5 phút thì đóng connection nhàn rỗi
+      debug: false,
+      logger: false,
+      pool: true,
+      maxConnections,
+      maxMessages,
+      rateLimit,
+      rateDelta,
+    };
+  }
+
+  private cleanupIdleTransporters(): void {
+    const now = Date.now();
+
+    for (const [email, entry] of this.transporters.entries()) {
+      if (now - entry.lastUsedAt < this.idleTtlMs) {
+        continue;
+      }
+
+      try {
+        entry.transporter.close();
+      } catch (error) {
+        this.logger.warn(
+          `Failed to close idle SMTP transporter for ${email}: ${error.message}`,
+        );
+      }
+      this.transporters.delete(email);
+    }
+  }
+}
+````
+
 ## File: mikro-orm.config.ts
 ````typescript
 import 'dotenv/config'; // Ensure .env is loaded for CLI
@@ -8480,6 +10451,191 @@ export class PermissionService {
 }
 ````
 
+## File: src/main.ts
+````typescript
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import { BadRequestException, ValidationPipe } from '@nestjs/common';
+import cookieParser from 'cookie-parser';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { json, urlencoded } from 'express';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  // Keep request body limit fixed in code.
+  // 25MB file in base64 is larger than 25MB, so transport limit must be higher.
+  const bodyLimit = '40mb';
+
+  app.use(json({ limit: bodyLimit }));
+  app.use(urlencoded({ extended: true, limit: bodyLimit }));
+
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      stopAtFirstError: true,
+      exceptionFactory: (validationErrors) => {
+        const errors = {};
+
+        for (const err of validationErrors) {
+          const field = err.property;
+          const messages = Object.values(err.constraints || {});
+          errors[field] = messages.length === 1 ? messages[0] : messages;
+        }
+        console.log(
+          'Validation Errors:',
+          JSON.stringify(validationErrors, null, 2),
+        );
+        return new BadRequestException({
+          errors,
+        });
+      },
+    }),
+  );
+
+  app.use(cookieParser());
+
+  const config = new DocumentBuilder()
+    .setTitle('Webmail API')
+    .setDescription('API tài liệu cho frontend')
+    .setVersion('1.0')
+    .addBearerAuth(
+      { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
+      'jwt',
+    )
+    .addCookieAuth(
+      'exchange_session',
+      {
+        type: 'apiKey',
+        in: 'cookie',
+      },
+      'exchange_cookie',
+    )
+    .build();
+
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('docs', app, document);
+
+  await app.listen(process.env.PORT ?? 3000);
+}
+bootstrap();
+````
+
+## File: src/auth/auth.service.ts
+````typescript
+import {
+  Injectable,
+  UnauthorizedException,
+  Logger,
+  ConflictException,
+} from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { EntityManager } from '@mikro-orm/core';
+import { User } from '../database/entities/user.entity';
+import { AuditLogService } from '../audit/audit.service';
+import * as argon2 from 'argon2';
+import { ExchangeAuthService } from '../exchange/services/exchange-auth.service';
+
+@Injectable()
+export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly em: EntityManager,
+    private readonly auditLogService: AuditLogService,
+    private readonly exchangeAuthService: ExchangeAuthService,
+  ) {}
+
+  async login(
+    email: string,
+    password: string,
+  ): Promise<{
+    accessToken: string;
+    exchangeAccessToken: string;
+    exchangeRefreshToken: string;
+  }> {
+    const user = await this.em.findOne(User, { email });
+    if (!user || !user.password) {
+      await this.auditLogService.logAuth(null, 'login_failed', { email });
+      throw new UnauthorizedException('Thông tin đăng nhập không hợp lệ!');
+    }
+
+    if (!user.isActive) {
+      await this.auditLogService.logAuth(user.id, 'login_failed', { email });
+      throw new UnauthorizedException('Tài khoản đã bị vô hiệu hoá');
+    }
+
+    const isValid = await argon2.verify(user.password, password);
+    if (!isValid) {
+      await this.auditLogService.logAuth(user.id, 'login_failed', { email });
+      throw new UnauthorizedException('Thông tin đăng nhập không hợp lệ!');
+    }
+
+    const accessToken = await this.jwtService.signAsync({
+      sub: user.id,
+      email: user.email,
+    });
+
+    const exchangeTokens =
+      await this.exchangeAuthService.createSessionFromCredentials(
+        user.email,
+        password,
+      );
+
+    await this.auditLogService.logAuth(user.id, 'login', { email });
+
+    return {
+      accessToken,
+      exchangeAccessToken: exchangeTokens.accessToken,
+      exchangeRefreshToken: exchangeTokens.refreshToken,
+    };
+  }
+
+  async register(
+    email: string,
+    password: string,
+    name?: string,
+  ): Promise<User> {
+    const existing = await this.em.findOne(User, { email });
+    if (existing) {
+      throw new ConflictException('Email đã tồn tại!');
+    }
+
+    // Ensure mailbox exists in Exchange (EWS). This does not provision a mailbox.
+    await this.exchangeAuthService.ensureMailboxExists(email, password);
+
+    const hash = await argon2.hash(password);
+    const now = new Date();
+
+    const user = this.em.create(User, {
+      email,
+      password: hash,
+      name,
+      isActive: true,
+      mailboxInitialized: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await this.em.persistAndFlush(user);
+    await this.auditLogService.logAuth(user.id, 'login', {
+      email,
+      action: 'register',
+    });
+    return user;
+  }
+
+  async getMe(userId: string): Promise<User> {
+    const user = await this.em.findOne(User, { id: userId });
+    if (!user) {
+      throw new UnauthorizedException('Người dùng không tồn tại !');
+    }
+    return user;
+  }
+}
+````
+
 ## File: src/exchange/services/ews-mail.provider.ts
 ````typescript
 import {
@@ -8500,6 +10656,9 @@ import {
   WellKnownFolderName,
   Folder,
   FolderId,
+  FolderTraversal,
+  FolderView,
+  Mailbox,
   ItemView,
   SearchFilter,
   LogicalOperator,
@@ -8542,6 +10701,9 @@ import {
   SendInvitationsMode,
   SendInvitationsOrCancellationsMode,
   DateTime,
+  FindItemsResults,
+  ContainmentMode,
+  ComparisonMode,
 } from 'ews-javascript-api';
 
 import { XhrApi } from '@ewsjs/xhr';
@@ -8817,23 +10979,32 @@ export class EwsMailProvider implements IMailProvider {
     }
   }
 
-  private toFolderId(folder: WellKnownFolderName): FolderId {
+  private toFolderId(folder: WellKnownFolderName, mailbox?: string): FolderId {
+    if (mailbox) {
+      return new FolderId(folder, new Mailbox(mailbox));
+    }
     return new FolderId(folder);
   }
 
   // ─── ID helpers ───────────────────────────────────────────────────────────
 
-  private encodeId(folder: string, itemId: string): string {
-    return Buffer.from(`${folder}:${itemId}`).toString('base64');
+  private encodeId(folder: string, itemId: string, mailbox?: string): string {
+    const parts = [folder, itemId];
+    if (mailbox) parts.push(mailbox);
+    return Buffer.from(parts.join('::')).toString('base64');
   }
 
-  private decodeId(id: string): { folder: string; itemId: string } {
+  private decodeId(id: string): {
+    folder: string;
+    itemId: string;
+    mailbox?: string;
+  } {
     const decoded = Buffer.from(id, 'base64').toString('utf8');
-    const colonIndex = decoded.indexOf(':');
+    const parts = decoded.split('::');
     return {
-      folder: decoded.slice(0, colonIndex),
-      // Dùng indexOf tránh split sai nếu EWS UniqueId chứa ':'
-      itemId: decoded.slice(colonIndex + 1),
+      folder: parts[0],
+      itemId: parts[1],
+      mailbox: parts[2] || undefined,
     };
   }
 
@@ -9058,10 +11229,13 @@ export class EwsMailProvider implements IMailProvider {
     const items: any[] = collection?.items ?? collection?.Items ?? [];
     return items.map((a: any) => {
       const addr = a.Address ?? '';
+      const name = a.Name ?? '';
+
+      // Nếu là X500 DN mà không có name, ta vẫn giữ nguyên addr nguyên bản để không mất dữ liệu
+      // Thông thường EWS sẽ trả về cả Name (hiển thị) và Address (X500)
       return {
-        name: a.Name ?? '',
-        // Recipients thường dùng SMTP, nhưng vẫn check X500 phòng trường hợp
-        email: this.isX500Address(addr) ? '' : addr,
+        name: name,
+        email: addr,
       };
     });
   }
@@ -9138,61 +11312,135 @@ export class EwsMailProvider implements IMailProvider {
   async getFolders(): Promise<MailFolder[]> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const folders: MailFolder[] = [];
-    for (const folder of MAIL_FOLDERS) {
-      if (folder.id === 'Starred') {
-        folders.push({ id: folder.id, name: folder.name });
-        continue;
-      }
-      try {
-        await Folder.Bind(
-          this.service,
-          new FolderId(this.resolveFolderName(folder.id)),
-        );
-        folders.push({ id: folder.id, name: folder.name });
-      } catch (err) {
-        this.logger.warn(`Cannot bind folder ${folder.id}: ${err.message}`);
-      }
-    }
-    return folders;
-  }
-
-  async getFolderCounts(): Promise<
-    Record<string, { total: number; unread: number }>
-  > {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const counts: Record<string, { total: number; unread: number }> = {};
-    const countProps = new PropertySet(
+    // 1. Lấy toàn bộ folder từ MsgFolderRoot
+    const view = new FolderView(1000);
+    view.Traversal = FolderTraversal.Deep;
+    view.PropertySet = new PropertySet(
       BasePropertySet.IdOnly,
+      FolderSchema.DisplayName,
+      FolderSchema.ParentFolderId,
       FolderSchema.TotalCount,
       FolderSchema.UnreadCount,
     );
+    
+    const findResults = await this.service.FindFolders(
+      WellKnownFolderName.MsgFolderRoot,
+      view,
+    );
 
-    for (const folder of MAIL_FOLDERS) {
-      if (folder.id === 'Starred') {
-        counts[folder.id] = await this.getStarredCounts();
-        continue;
-      }
+    // 2. Map sang MailFolder phẳng
+    const flatFolders: MailFolder[] = findResults.Folders.map(f => {
+      const wellKnownName = this.getWellKnownNameFromDisplayName(f.DisplayName);
+      const isSystem = !!wellKnownName;
+      
+      let unread = 0;
+      let total = 0;
+      
       try {
-        const bound = await Folder.Bind(
-          this.service,
-          new FolderId(this.resolveFolderName(folder.id)),
-          countProps,
-        );
-        counts[folder.id] = {
-          total: bound.TotalCount ?? 0,
-          unread: bound.UnreadCount ?? 0,
-        };
-      } catch (err) {
-        this.logger.warn(`getFolderCounts ${folder.id}: ${err.message}`);
-        counts[folder.id] = { total: 0, unread: 0 };
+        unread = (f as any).UnreadCount ?? 0;
+      } catch (e) {
+        // Một số folder như Calendar/Contacts có thể không trả về UnreadCount
+      }
+      
+      try {
+        total = (f as any).TotalCount ?? 0;
+      } catch (e) {
+      }
+      
+      return {
+        // Nếu là system folder, dùng chính constant ID (inbox, sent...) để FE nhận diện được Icon/Label
+        id: isSystem ? wellKnownName : f.Id.UniqueId,
+        name: f.DisplayName,
+        type: wellKnownName || 'user_created',
+        parentId: f.ParentFolderId?.UniqueId,
+        isSystem,
+        unreadCount: unread,
+        totalCount: total,
+      };
+    });
+
+    // 3. Xây dựng cấu trúc cây
+    const uniqueIdToFolderId = new Map<string, string>();
+    findResults.Folders.forEach(f => {
+      const wellKnownName = this.getWellKnownNameFromDisplayName(f.DisplayName);
+      uniqueIdToFolderId.set(f.Id.UniqueId, wellKnownName || f.Id.UniqueId);
+    });
+
+    const tree = this.buildFolderTree(flatFolders, uniqueIdToFolderId);
+
+    // 4. Thêm folder ảo "Starred" vào đầu danh sách system (nếu không ở trong cây EWS)
+    const starredCounts = await this.getStarredCounts();
+    const starredFolder: MailFolder = {
+      id: 'Starred',
+      name: 'Có gắn dấu sao',
+      type: 'starred',
+      isSystem: true,
+      unreadCount: starredCounts.unread,
+      totalCount: starredCounts.total,
+    };
+
+    return [starredFolder, ...tree];
+  }
+
+  private getWellKnownNameFromDisplayName(displayName: string): string | null {
+    const lowerName = displayName.toLowerCase();
+    for (const folder of MAIL_FOLDERS) {
+      if (
+        folder.aliases.some(alias => alias.toLowerCase() === lowerName) ||
+        folder.name.toLowerCase() === lowerName
+      ) {
+        return folder.type;
       }
     }
+    return null;
+  }
+
+  private buildFolderTree(folders: MailFolder[], idMap: Map<string, string>): MailFolder[] {
+    const map = new Map<string, MailFolder>();
+    const roots: MailFolder[] = [];
+
+    folders.forEach(f => {
+      map.set(f.id, { ...f, children: [] });
+    });
+
+    folders.forEach(f => {
+      const node = map.get(f.id)!;
+      const mappedParentId = f.parentId ? idMap.get(f.parentId) : undefined;
+      
+      if (mappedParentId && map.has(mappedParentId)) {
+        map.get(mappedParentId)!.children!.push(node);
+      } else {
+        roots.push(node);
+      }
+    });
+
+    return roots;
+  }
+
+  async getFolderCounts(
+    mailbox?: string,
+  ): Promise<Record<string, { total: number; unread: number }>> {
+    // Với logic động, chúng ta có thể gọi getFolders hoặc tối ưu bằng cách fetch riêng
+    // Tuy nhiên để tương thích với MailService cũ, ta sẽ trả về map phẳng của các system folders
+    const folders = await this.getFolders();
+    const counts: Record<string, { total: number; unread: number }> = {};
+    
+    const flatten = (items: MailFolder[]) => {
+      items.forEach(f => {
+        if (f.isSystem) {
+          counts[f.id] = { total: f.totalCount || 0, unread: f.unreadCount || 0 };
+        }
+        if (f.children) flatten(f.children);
+      });
+    };
+    
+    flatten(folders);
     return counts;
   }
 
-  private async getStarredCounts(): Promise<{ total: number; unread: number }> {
+  private async getStarredCounts(
+    mailbox?: string,
+  ): Promise<{ total: number; unread: number }> {
     if (!this.service) throw new Error('EWS service not connected');
     try {
       const countView = new ItemView(1, 0);
@@ -9203,7 +11451,7 @@ export class EwsMailProvider implements IMailProvider {
       );
 
       const totalResult = await this.service.FindItems(
-        WellKnownFolderName.Inbox,
+        this.toFolderId(WellKnownFolderName.Inbox, mailbox),
         starredFilter,
         countView,
       );
@@ -9211,7 +11459,7 @@ export class EwsMailProvider implements IMailProvider {
       if (!totalResult.TotalCount) return { total: 0, unread: 0 };
 
       const unreadResult = await this.service.FindItems(
-        WellKnownFolderName.Inbox,
+        this.toFolderId(WellKnownFolderName.Inbox, mailbox),
         new SearchFilter.SearchFilterCollection(LogicalOperator.And, [
           starredFilter,
           new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, false),
@@ -9235,6 +11483,7 @@ export class EwsMailProvider implements IMailProvider {
     folderId: string,
     page: number,
     limit: number,
+    mailbox?: string,
   ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
     if (!this.service) throw new Error('EWS service not connected');
 
@@ -9255,7 +11504,7 @@ export class EwsMailProvider implements IMailProvider {
           FlagStatus.Flagged,
         );
         result = await this.service.FindItems(
-          WellKnownFolderName.Inbox,
+          this.toFolderId(WellKnownFolderName.Inbox, mailbox),
           filter,
           view,
         );
@@ -9264,11 +11513,14 @@ export class EwsMailProvider implements IMailProvider {
         return { items: [], total: 0 };
       }
     } else {
-      result = await this.service.FindItems(resolvedFolder, view);
+      result = await this.service.FindItems(
+        this.toFolderId(resolvedFolder, mailbox),
+        view,
+      );
     }
 
     const items: Partial<MailMessage>[] = result.Items.map((item: any) => ({
-      id: this.encodeId(resolvedId, item.Id?.UniqueId ?? ''),
+      id: this.encodeId(resolvedId, item.Id?.UniqueId ?? '', mailbox),
       subject: item.Subject ?? '(không có chủ đề)',
       from: this.getFrom(item),
       receivedAt: this.toJsDate(item.DateTimeReceived),
@@ -9320,7 +11572,9 @@ export class EwsMailProvider implements IMailProvider {
     const bodyText = message.Body?.Text ?? '';
     const attachments = this.extractAttachmentMetas(message);
 
-    this.logger.log(`[getMessage] bodyText length: ${bodyText.length}, sample: ${bodyText.substring(0, 50).trim()}`);
+    this.logger.log(
+      `[getMessage] bodyText length: ${bodyText.length}, sample: ${bodyText.substring(0, 50).trim()}`,
+    );
 
     // Đọc ConversationId nếu có — dùng để fetch toàn bộ luồng thư hội thoại
     const rawConvId = (message as any).ConversationId?.UniqueId as
@@ -9336,6 +11590,7 @@ export class EwsMailProvider implements IMailProvider {
       },
       to: this.getRecipients(message.ToRecipients),
       cc: this.getRecipients(message.CcRecipients),
+      bcc: this.getRecipients(message.BccRecipients),
       receivedAt: this.toJsDate(message.DateTimeReceived),
       body: bodyText,
       isHtml: message.Body?.BodyType === BodyType.HTML,
@@ -9582,18 +11837,20 @@ export class EwsMailProvider implements IMailProvider {
   ): Promise<{ success: boolean; messageId?: string }> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    this.logger.debug(`[SaveDraft] Payload: ${JSON.stringify({
-      subject: options.subject,
-      htmlLen: options.html?.length,
-      textLen: options.text?.length,
-      htmlSample: options.html?.substring(0, 50),
-    })}`);
+    this.logger.debug(
+      `[SaveDraft] Payload: ${JSON.stringify({
+        subject: options.subject,
+        htmlLen: options.html?.length,
+        textLen: options.text?.length,
+        htmlSample: options.html?.substring(0, 50),
+      })}`,
+    );
 
     const message = new EmailMessage(this.service);
     message.Subject = options.subject ?? '';
     const bodyString = options.html ?? options.text ?? '';
     const encodedBody = this.xmlEncodeForSoap(bodyString);
-    
+
     message.Body = new MessageBody(
       options.html ? BodyType.HTML : BodyType.Text,
       encodedBody,
@@ -9988,11 +12245,150 @@ export class EwsMailProvider implements IMailProvider {
     return { success: true };
   }
 
+  // Thêm interface để trả về cả query lẫn size filter
+  private parseSizeFromQuery(query: string): {
+    cleanQuery: string;
+    sizeFilter: SearchFilter | null;
+  } {
+    let sizeFilter: SearchFilter | null = null;
+
+    // Tìm và extract "size:[<>]Value[Unit]" ra khỏi query string
+    const cleanQuery = query
+      .replace(
+        /\bsize:([<>])?(\d+)([a-zA-Z]+)?\b/gi,
+        (match, op, val, unit) => {
+          let bytes = parseInt(val, 10);
+          const u = (unit || '').toLowerCase();
+
+          if (u === 'mb') bytes *= 1024 * 1024;
+          else if (u === 'kb') bytes *= 1024;
+
+          // Tạo SearchFilter thay vì AQS string
+          if (op === '>') {
+            sizeFilter = new SearchFilter.IsGreaterThan(ItemSchema.Size, bytes);
+          } else if (op === '<') {
+            sizeFilter = new SearchFilter.IsLessThan(ItemSchema.Size, bytes);
+          } else {
+            // Không có operator -> mặc định tìm >= bytes
+            sizeFilter = new SearchFilter.IsGreaterThanOrEqualTo(
+              ItemSchema.Size,
+              bytes,
+            );
+          }
+
+          return ''; // Xoá phần size: ra khỏi AQS string
+        },
+      )
+      .trim()
+      .replace(/\s+/g, ' '); // Dọn khoảng trắng thừa
+
+    return { cleanQuery, sizeFilter };
+  }
+
+  /**
+   * Convert toàn bộ query string thành SearchFilter.
+   * Hỗ trợ: has:attachment, is:unread, is:read, from:xxx, size:[<>]NNN[kb|mb]
+   * Các từ khóa tự do còn lại (subject, body text...) dùng ContainsSubstring trên Subject.
+   */
+  private buildSearchFilter(query: string): SearchFilter | null {
+    if (!query?.trim()) return null;
+
+    const filters: SearchFilter[] = [];
+    let remaining = query;
+
+    // has:attachment
+    if (/\bhas:attachment\b/i.test(remaining)) {
+      filters.push(new SearchFilter.IsEqualTo(ItemSchema.HasAttachments, true));
+      remaining = remaining.replace(/\bhas:attachment\b/gi, '').trim();
+    }
+
+    // is:unread
+    if (/\bis:unread\b/i.test(remaining)) {
+      filters.push(
+        new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, false),
+      );
+      remaining = remaining.replace(/\bis:unread\b/gi, '').trim();
+    }
+
+    // is:read
+    if (/\bis:read\b/i.test(remaining)) {
+      filters.push(new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, true));
+      remaining = remaining.replace(/\bis:read\b/gi, '').trim();
+    }
+
+    // from:xxx hoặc from:me
+    const fromMatch = remaining.match(/\bfrom:("([^"]+)"|(\S+))/i);
+    if (fromMatch) {
+      const fromValue = fromMatch[2] ?? fromMatch[3]; // bên trong quotes hoặc không quotes
+      const resolvedFrom =
+        fromValue.toLowerCase() === 'me' ? this.email : fromValue;
+      if (resolvedFrom) {
+        filters.push(
+          new SearchFilter.ContainsSubstring(
+            EmailMessageSchema.From,
+            resolvedFrom,
+            ContainmentMode.Substring,
+            ComparisonMode.IgnoreCase,
+          ),
+        );
+      }
+      remaining = remaining.replace(/\bfrom:("([^"]+)"|(\S+))/gi, '').trim();
+    }
+
+    // size:[<>]NNN[kb|mb]
+    const sizeMatch = remaining.match(/\bsize:([<>])?(\d+)(kb|mb)?\b/i);
+    if (sizeMatch) {
+      const op = sizeMatch[1]; // '<' | '>' | undefined
+      let bytes = parseInt(sizeMatch[2], 10);
+      const unit = (sizeMatch[3] ?? '').toLowerCase();
+
+      if (unit === 'mb') bytes *= 1024 * 1024;
+      else if (unit === 'kb') bytes *= 1024;
+
+      if (op === '>') {
+        filters.push(new SearchFilter.IsGreaterThan(ItemSchema.Size, bytes));
+      } else if (op === '<') {
+        filters.push(new SearchFilter.IsLessThan(ItemSchema.Size, bytes));
+      } else {
+        filters.push(
+          new SearchFilter.IsGreaterThanOrEqualTo(ItemSchema.Size, bytes),
+        );
+      }
+      remaining = remaining
+        .replace(/\bsize:([<>])?(\d+)(kb|mb)?\b/gi, '')
+        .trim();
+    }
+
+    // Phần text tự do còn lại -> tìm trong Subject
+    const freeText = remaining.replace(/\s+/g, ' ').trim();
+    if (freeText) {
+      filters.push(
+        new SearchFilter.ContainsSubstring(
+          ItemSchema.Subject,
+          freeText,
+          ContainmentMode.Substring,
+          ComparisonMode.IgnoreCase,
+        ),
+      );
+    }
+
+    if (filters.length === 0) return null;
+    if (filters.length === 1) return filters[0];
+
+    // Gộp tất cả bằng AND
+    const collection = new SearchFilter.SearchFilterCollection(
+      LogicalOperator.And,
+    );
+    filters.forEach((f) => collection.Add(f));
+    return collection;
+  }
+
   async search(
     query: string,
     page: number,
     limit: number,
     folder: string = 'inbox',
+    mailbox?: string,
   ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
     if (!this.service) throw new Error('EWS service not connected');
 
@@ -10000,28 +12396,24 @@ export class EwsMailProvider implements IMailProvider {
     view.OrderBy.Add(ItemSchema.DateTimeReceived, SortDirection.Descending);
     view.PropertySet = LIST_PROPS;
 
-    // Xác định thư mục cần tìm kiếm (hỗ trợ inbox, sent, trash, v.v.)
-    let resolveFolder: FolderId | WellKnownFolderName;
-    if (folder.toLowerCase() === 'all') {
-      // EWS AQS không hỗ trợ Deep Traversal ở MsgFolderRoot
-      // Tạm thời fallback về Inbox hoặc AllItems nếu hệ thống map được
-      // Theo mặc định với EWS, nếu muốn tìm toàn mailbox thường dùng Inbox làm chính
-      // Hoặc sử dụng tìm kiếm nhiều thư mục nhưng ews-javascript-api không hỗ trợ truy vấn mảng FolderId dễ dàng
-      resolveFolder = WellKnownFolderName.Inbox;
-    } else {
-      resolveFolder = this.resolveFolderName(folder);
-    }
+    const resolveFolder =
+      folder.toLowerCase() === 'all'
+        ? this.toFolderId(WellKnownFolderName.Inbox, mailbox)
+        : this.toFolderId(this.resolveFolderName(folder), mailbox);
 
     try {
-      // Dùng queryString (tham số thứ 2 là string) để bật AQS (Advanced Query Syntax)
-      // Điều này tự động hỗ trợ lọc: has:attachment, subject:"...", from:"..."
-      // Không cần dùng SearchFilter thủ công cho từng field.
-      const result = await this.service.FindItems(resolveFolder, query, view);
+      // Ưu tiên SearchFilter nếu query có bất kỳ keyword nào
+      const searchFilter = this.buildSearchFilter(query);
+
+      const result = searchFilter
+        ? await this.service.FindItems(resolveFolder, searchFilter, view)
+        : await this.service.FindItems(resolveFolder, query ?? '', view);
 
       const items: Partial<MailMessage>[] = result.Items.map((item: any) => ({
         id: this.encodeId(
           folder.toLowerCase() === 'all' ? 'INBOX' : folder.toUpperCase(),
           item.Id?.UniqueId ?? '',
+          mailbox,
         ),
         subject: item.Subject ?? '(không có chủ đề)',
         from: this.getFrom(item),
@@ -10030,6 +12422,7 @@ export class EwsMailProvider implements IMailProvider {
         hasAttachments: item.HasAttachments ?? false,
         isStarred: this.isItemStarred(item),
       }));
+
       return { items, total: result.TotalCount ?? 0 };
     } catch (err) {
       this.logger.error(`Search error: ${err.message}`);
@@ -10045,10 +12438,10 @@ export class EwsMailProvider implements IMailProvider {
   ): Promise<{ success: boolean }> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const { itemId } = this.decodeId(messageId);
+    const { itemId, mailbox } = this.decodeId(messageId);
     await this.service.MoveItems(
       [new ItemId(itemId)],
-      this.toFolderId(this.resolveFolderName(targetFolder)),
+      this.toFolderId(this.resolveFolderName(targetFolder), mailbox),
     );
     return { success: true };
   }
@@ -10056,19 +12449,26 @@ export class EwsMailProvider implements IMailProvider {
   async moveMessagesBatch(ids: string[], targetFolder: string): Promise<void> {
     if (!this.service) throw new Error('EWS service not connected');
 
+    const decoded = this.decodeId(ids[0]);
+    const mailbox = decoded.mailbox;
+
     await this.service.MoveItems(
       ids.map((id) => new ItemId(this.decodeId(id).itemId)),
-      this.toFolderId(this.resolveFolderName(targetFolder)),
+      this.toFolderId(this.resolveFolderName(targetFolder), mailbox),
     );
   }
 
   async moveAllMessages(
     sourceFolder: string,
     targetFolder: string,
+    mailbox?: string,
   ): Promise<void> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const source = this.resolveFolderName(sourceFolder);
+    const source = this.toFolderId(
+      this.resolveFolderName(sourceFolder),
+      mailbox,
+    );
     const target = this.resolveFolderName(targetFolder);
     let more = true;
 
@@ -10082,7 +12482,7 @@ export class EwsMailProvider implements IMailProvider {
 
       await this.service.MoveItems(
         result.Items.map((item) => new ItemId(item.Id.UniqueId)),
-        this.toFolderId(target),
+        this.toFolderId(target, mailbox),
       );
       more = result.MoreAvailable ?? false;
     }
@@ -10111,10 +12511,14 @@ export class EwsMailProvider implements IMailProvider {
     }
   }
 
-  async markAllMessages(folder: string, isRead: boolean): Promise<void> {
+  async markAllMessages(
+    folder: string,
+    isRead: boolean,
+    mailbox?: string,
+  ): Promise<void> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const resolved = this.resolveFolderName(folder);
+    const resolved = this.toFolderId(this.resolveFolderName(folder), mailbox);
     const props = new PropertySet(
       BasePropertySet.IdOnly,
       EmailMessageSchema.IsRead,
@@ -10258,10 +12662,14 @@ export class EwsMailProvider implements IMailProvider {
     }
   }
 
-  async markAllMessagesStar(folder: string, starred: boolean): Promise<void> {
+  async markAllMessagesStar(
+    folder: string,
+    starred: boolean,
+    mailbox?: string,
+  ): Promise<void> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const resolved = this.resolveFolderName(folder);
+    const resolved = this.toFolderId(this.resolveFolderName(folder), mailbox);
     let offset = 0;
     let more = true;
 
@@ -10300,10 +12708,13 @@ export class EwsMailProvider implements IMailProvider {
     ).length;
   }
 
-  async permanentlyDeleteAllMessages(folder: string): Promise<number> {
+  async permanentlyDeleteAllMessages(
+    folder: string,
+    mailbox?: string,
+  ): Promise<number> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const resolved = this.resolveFolderName(folder);
+    const resolved = this.toFolderId(this.resolveFolderName(folder), mailbox);
     let offset = 0;
     let more = true;
     let deleted = 0;
@@ -10634,9 +13045,11 @@ export class EwsMailProvider implements IMailProvider {
     };
 
     if (!trimmed) {
-      // Không filter — lấy toàn bộ contacts
+      // Không filter — lấy toàn bộ IPM.Contact
+      const filter = new SearchFilter.IsEqualTo(ItemSchema.ItemClass, 'IPM.Contact');
       const result = await this.service.FindItems(
         WellKnownFolderName.Contacts,
+        filter,
         view,
       );
       const items = await Promise.all(result.Items.map(mapContact));
@@ -10645,11 +13058,16 @@ export class EwsMailProvider implements IMailProvider {
 
     // Filter theo DisplayName hoặc email — dùng IndexedPropertyDefinition cho email
     // ContactSchema.EmailAddresses (complex) KHÔNG được phép trong FindItem filter.
-    const filter = new SearchFilter.SearchFilterCollection(LogicalOperator.Or, [
+    const keywordFilter = new SearchFilter.SearchFilterCollection(LogicalOperator.Or, [
       new SearchFilter.ContainsSubstring(ContactSchema.DisplayName, trimmed),
       new SearchFilter.ContainsSubstring(ContactSchema.EmailAddress1, trimmed),
       new SearchFilter.ContainsSubstring(ContactSchema.EmailAddress2, trimmed),
       new SearchFilter.ContainsSubstring(ContactSchema.EmailAddress3, trimmed),
+    ]);
+
+    const filter = new SearchFilter.SearchFilterCollection(LogicalOperator.And, [
+      new SearchFilter.IsEqualTo(ItemSchema.ItemClass, 'IPM.Contact'),
+      keywordFilter,
     ]);
 
     const result = await this.service.FindItems(
@@ -10667,12 +13085,17 @@ export class EwsMailProvider implements IMailProvider {
     const view = new ItemView(1, 0);
     view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
 
+    // Chỉ đếm các mục là IPM.Contact (loại trừ Distribution List và các loại khác)
+    const filter = new SearchFilter.IsEqualTo(ItemSchema.ItemClass, 'IPM.Contact');
+
     const result = await this.service.FindItems(
       WellKnownFolderName.Contacts,
+      filter,
       view,
     );
 
-    return result.TotalCount ?? result.Items.length ?? 0;
+    const count = result.TotalCount ?? result.Items.length ?? 0;
+    return Math.max(0, count);
   }
 
   async listNotes(
@@ -10819,6 +13242,16 @@ export class EwsMailProvider implements IMailProvider {
 
     const results = await folder.FindAppointments(view);
 
+    // FindAppointments chỉ trả về First-Class Properties, Body KHÔNG được load tự động.
+    // Cần gọi LoadPropertiesForItems để load thêm Body trước khi truy cập.
+    if (results.Items.length > 0) {
+      const propertySet = new PropertySet(
+        BasePropertySet.FirstClassProperties,
+        ItemSchema.Body,
+      );
+      await this.service.LoadPropertiesForItems(results.Items, propertySet);
+    }
+
     return results.Items.map((apt: Appointment) => ({
       id: apt.Id?.UniqueId ?? '',
       subject: apt.Subject ?? '',
@@ -10828,7 +13261,14 @@ export class EwsMailProvider implements IMailProvider {
       isAllDayEvent: apt.IsAllDayEvent ?? false,
       isReminderSet: apt.IsReminderSet ?? false,
       reminderMinutesBeforeStart: apt.ReminderMinutesBeforeStart ?? 0,
-      bodyPreview: apt.Body?.Text ?? '',
+      // Lấy text của Body, fallback về chuỗi rỗng nếu vẫn chưa được load
+      bodyPreview: (() => {
+        try {
+          return apt.Body?.Text ?? '';
+        } catch {
+          return '';
+        }
+      })(),
     }));
   }
 
@@ -10942,191 +13382,6 @@ export class EwsMailProvider implements IMailProvider {
 }
 ````
 
-## File: src/main.ts
-````typescript
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
-import { BadRequestException, ValidationPipe } from '@nestjs/common';
-import cookieParser from 'cookie-parser';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { json, urlencoded } from 'express';
-
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
-  // Keep request body limit fixed in code.
-  // 25MB file in base64 is larger than 25MB, so transport limit must be higher.
-  const bodyLimit = '40mb';
-
-  app.use(json({ limit: bodyLimit }));
-  app.use(urlencoded({ extended: true, limit: bodyLimit }));
-
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      transform: true,
-      stopAtFirstError: true,
-      exceptionFactory: (validationErrors) => {
-        const errors = {};
-
-        for (const err of validationErrors) {
-          const field = err.property;
-          const messages = Object.values(err.constraints || {});
-          errors[field] = messages.length === 1 ? messages[0] : messages;
-        }
-        console.log(
-          'Validation Errors:',
-          JSON.stringify(validationErrors, null, 2),
-        );
-        return new BadRequestException({
-          errors,
-        });
-      },
-    }),
-  );
-
-  app.use(cookieParser());
-
-  const config = new DocumentBuilder()
-    .setTitle('Webmail API')
-    .setDescription('API tài liệu cho frontend')
-    .setVersion('1.0')
-    .addBearerAuth(
-      { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
-      'jwt',
-    )
-    .addCookieAuth(
-      'exchange_session',
-      {
-        type: 'apiKey',
-        in: 'cookie',
-      },
-      'exchange_cookie',
-    )
-    .build();
-
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('docs', app, document);
-
-  await app.listen(process.env.PORT ?? 3000);
-}
-bootstrap();
-````
-
-## File: src/auth/auth.service.ts
-````typescript
-import {
-  Injectable,
-  UnauthorizedException,
-  Logger,
-  ConflictException,
-} from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
-import { EntityManager } from '@mikro-orm/core';
-import { User } from '../database/entities/user.entity';
-import { AuditLogService } from '../audit/audit.service';
-import * as argon2 from 'argon2';
-import { ExchangeAuthService } from '../exchange/services/exchange-auth.service';
-
-@Injectable()
-export class AuthService {
-  private readonly logger = new Logger(AuthService.name);
-
-  constructor(
-    private readonly jwtService: JwtService,
-    private readonly em: EntityManager,
-    private readonly auditLogService: AuditLogService,
-    private readonly exchangeAuthService: ExchangeAuthService,
-  ) {}
-
-  async login(
-    email: string,
-    password: string,
-  ): Promise<{
-    accessToken: string;
-    exchangeAccessToken: string;
-    exchangeRefreshToken: string;
-  }> {
-    const user = await this.em.findOne(User, { email });
-    if (!user || !user.password) {
-      await this.auditLogService.logAuth(null, 'login_failed', { email });
-      throw new UnauthorizedException('Thông tin đăng nhập không hợp lệ!');
-    }
-
-    if (!user.isActive) {
-      await this.auditLogService.logAuth(user.id, 'login_failed', { email });
-      throw new UnauthorizedException('Tài khoản đã bị vô hiệu hoá');
-    }
-
-    const isValid = await argon2.verify(user.password, password);
-    if (!isValid) {
-      await this.auditLogService.logAuth(user.id, 'login_failed', { email });
-      throw new UnauthorizedException('Thông tin đăng nhập không hợp lệ!');
-    }
-
-    const accessToken = await this.jwtService.signAsync({
-      sub: user.id,
-      email: user.email,
-    });
-
-    const exchangeTokens =
-      await this.exchangeAuthService.createSessionFromCredentials(
-        user.email,
-        password,
-      );
-
-    await this.auditLogService.logAuth(user.id, 'login', { email });
-
-    return {
-      accessToken,
-      exchangeAccessToken: exchangeTokens.accessToken,
-      exchangeRefreshToken: exchangeTokens.refreshToken,
-    };
-  }
-
-  async register(
-    email: string,
-    password: string,
-    name?: string,
-  ): Promise<User> {
-    const existing = await this.em.findOne(User, { email });
-    if (existing) {
-      throw new ConflictException('Email đã tồn tại!');
-    }
-
-    // Ensure mailbox exists in Exchange (EWS). This does not provision a mailbox.
-    await this.exchangeAuthService.ensureMailboxExists(email, password);
-
-    const hash = await argon2.hash(password);
-    const now = new Date();
-
-    const user = this.em.create(User, {
-      email,
-      password: hash,
-      name,
-      isActive: true,
-      mailboxInitialized: false,
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    await this.em.persistAndFlush(user);
-    await this.auditLogService.logAuth(user.id, 'login', {
-      email,
-      action: 'register',
-    });
-    return user;
-  }
-
-  async getMe(userId: string): Promise<User> {
-    const user = await this.em.findOne(User, { id: userId });
-    if (!user) {
-      throw new UnauthorizedException('Người dùng không tồn tại !');
-    }
-    return user;
-  }
-}
-````
-
 ## File: package.json
 ````json
 {
@@ -11178,6 +13433,7 @@ export class AuthService {
     "nodemailer": "^7.0.13",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
+    "pwsh": "^0.3.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "swagger-ui-express": "^5.0.1",
@@ -11250,6 +13506,7 @@ export interface MailMessage {
   from: { name: string; email: string };
   to: { name: string; email: string }[];
   cc: { name: string; email: string }[];
+  bcc: { name: string; email: string }[];
   receivedAt: Date;
   body: string;
   isHtml: boolean;
@@ -11264,8 +13521,14 @@ export interface MailMessage {
 }
 
 export interface MailFolder {
-  id: string; // e.g., 'INBOX', 'Sent Items', 'Starred', 'Drafts', 'Spam', 'Trash'
+  id: string; // e.g., 'INBOX', 'Sent Items', 'Starred', 'Drafts', 'Spam', 'Trash' hoặc FolderId từ EWS
   name: string;
+  type?: string; // e.g., 'inbox', 'sent', 'user_created'
+  parentId?: string;
+  children?: MailFolder[];
+  isSystem: boolean;
+  unreadCount?: number;
+  totalCount?: number;
 }
 
 export interface Attachment {
@@ -11298,6 +13561,24 @@ export interface SaveDraftOptions {
   attachments?: Attachment[];
 }
 
+export interface ReplyMailOptions {
+  messageId: string;
+  html?: string;
+  text?: string;
+  replyAll?: boolean;
+  attachments?: Attachment[];
+}
+
+export interface ForwardMailOptions {
+  messageId: string;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  html?: string;
+  text?: string;
+  attachments?: Attachment[];
+}
+
 export interface IMailProvider {
   /**
    * Connect to the mail server
@@ -11321,12 +13602,20 @@ export interface IMailProvider {
     folderId: string,
     page: number,
     limit: number,
+    mailbox?: string,
   ): Promise<{ items: Partial<MailMessage>[]; total: number }>;
+
+  /**
+   * Get unread/total counts for standard folders
+   */
+  getFolderCounts(mailbox?: string): Promise<Record<string, { total: number; unread: number }>>;
 
   /**
    * Get a single message by its composite ID
    */
   getMessage(id: string): Promise<MailMessage>;
+
+  downloadAttachment(messageId: string, index: number): Promise<{ filename: string; contentType: string; content: Buffer }>;
 
   /**
    * Send an email
@@ -11349,6 +13638,8 @@ export interface IMailProvider {
     query: string,
     page: number,
     limit: number,
+    folder?: string,
+    mailbox?: string,
   ): Promise<{ items: Partial<MailMessage>[]; total: number }>;
 
   /**
@@ -11358,6 +13649,32 @@ export interface IMailProvider {
     messageId: string,
     targetFolder: string,
   ): Promise<{ success: boolean }>;
+
+  markMessages(ids: string[], isRead: boolean): Promise<void>;
+  markAllMessages(folder: string, isRead: boolean, mailbox?: string): Promise<void>;
+  moveMessagesBatch(ids: string[], targetFolder: string): Promise<void>;
+  moveAllMessages(
+    sourceFolder: string,
+    targetFolder: string,
+    mailbox?: string,
+  ): Promise<void>;
+  permanentlyDeleteMessages(ids: string[]): Promise<number>;
+  permanentlyDeleteAllMessages(folder: string, mailbox?: string): Promise<number>;
+  markMessagesStar(ids: string[], starred: boolean): Promise<void>;
+  markAllMessagesStar(folder: string, starred: boolean, mailbox?: string): Promise<void>;
+
+  replyMessage(options: ReplyMailOptions): Promise<{ success: boolean; messageId?: string }>;
+  forwardMessage(options: ForwardMailOptions): Promise<{ success: boolean; messageId?: string }>;
+  getConversationMessages(messageId: string, maxItems: number): Promise<any>;
+
+  // Calendar
+  createEvent(payload: any): Promise<any>;
+  getEvents(startDate: string, endDate: string): Promise<any[]>;
+  getEventDetails(eventId: string): Promise<any>;
+  updateEvent(eventId: string, payload: any): Promise<any>;
+  deleteEvent(eventId: string): Promise<void>;
+  getActiveReminders(): Promise<any[]>;
+  dismissReminder(eventId: string): Promise<void>;
 }
 ````
 
@@ -11499,9 +13816,6 @@ export class ExchangeAuthService {
       await this.verifyExchangeCredentialsBasic(email, password);
     }
 
-    // 2. Ensure mailbox folders are initialized once per account
-    await this.initializeMailboxIfNeeded(email, password);
-
     // 3. Issue tokens
     return this.issueTokens(email, password);
   }
@@ -11619,34 +13933,6 @@ export class ExchangeAuthService {
     }
   }
 
-  private async initializeMailboxIfNeeded(
-    email: string,
-    password: string,
-  ): Promise<void> {
-    const user = await this.em.findOne(User, { email });
-
-    if (!user) {
-      throw new UnauthorizedException('Tài khoản không tồn tại trên hệ thống');
-    }
-
-    if (user.mailboxInitialized) {
-      return;
-    }
-
-    try {
-      const service = await this.createEwsService(email, password);
-      await this.ensureSystemFolders(service);
-      user.mailboxInitialized = true;
-    } catch (error) {
-      this.logger.warn(
-        `Failed to verify default folders for ${email}: ${error.message}`,
-      );
-      user.mailboxInitialized = false;
-    }
-
-    await this.em.persistAndFlush(user);
-  }
-
   async createSessionFromCredentials(
     email: string,
     password: string,
@@ -11754,37 +14040,6 @@ export class ExchangeAuthService {
     }
   }
 
-  private async ensureSystemFolders(service: ExchangeService): Promise<void> {
-    const targetFolders = [
-      WellKnownFolderName.Inbox,
-      WellKnownFolderName.SentItems,
-      WellKnownFolderName.Drafts,
-      WellKnownFolderName.DeletedItems,
-      WellKnownFolderName.JunkEmail,
-    ];
-
-    const view = new FolderView(200);
-    view.PropertySet = new PropertySet(
-      BasePropertySet.IdOnly,
-      FolderSchema.DisplayName,
-    );
-
-    const result = await service.FindFolders(
-      WellKnownFolderName.MsgFolderRoot,
-      view,
-    );
-
-    const existing = new Set(
-      result.Folders.map((folder) => folder.DisplayName?.toLowerCase() || ''),
-    );
-
-    for (const name of targetFolders) {
-      if (!existing.has(String(name).toLowerCase())) {
-        // Attempt to bind to ensure system folders exist; Exchange normally creates them.
-        await Folder.Bind(service, name);
-      }
-    }
-  }
 
   /**
    * Get credentials by session token
@@ -11874,6 +14129,9 @@ import { AuditLogModule } from './audit/audit.module';
 import { ExchangeModule } from './exchange/exchange.module';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { MailboxModule } from './mailbox/mailbox.module';
+import { SharedMailboxModule } from './shared-mailbox/shared-mailbox.module';
+import { SharedMailbox } from './database/entities/shared-mailbox.entity';
+import { SharedMailboxMember } from './database/entities/shared-mailbox-member.entity';
 
 @Module({
   imports: [
@@ -11885,7 +14143,7 @@ import { MailboxModule } from './mailbox/mailbox.module';
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
         driver: PostgreSqlDriver,
-        entities: [User, File, AuditLog, Role, Permission],
+        entities: [User, File, AuditLog, Role, Permission, SharedMailbox, SharedMailboxMember],
         dbName: configService.get<string>('database.name'),
         host: configService.get<string>('database.host'),
         port: configService.get<number>('database.port'),
@@ -11909,333 +14167,12 @@ import { MailboxModule } from './mailbox/mailbox.module';
     AuditLogModule,
     ExchangeModule,
     MailboxModule,
+    SharedMailboxModule,
   ],
   controllers: [],
   providers: [],
 })
 export class AppModule {}
-````
-
-## File: src/exchange/dto/exchange.dto.ts
-````typescript
-import {
-  IsString,
-  IsEmail,
-  IsNotEmpty,
-  IsOptional,
-  IsArray,
-} from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
-
-export class ExchangeLoginDto {
-  @ApiProperty({ example: 'user@example.com' })
-  @IsString()
-  @IsNotEmpty()
-  email!: string;
-
-  @ApiProperty({ example: 'P@ssw0rd123' })
-  @IsString()
-  @IsNotEmpty()
-  password!: string;
-}
-
-export class AttachmentDto {
-  @ApiProperty({ example: 'report.pdf' })
-  @IsString()
-  @IsNotEmpty()
-  filename!: string;
-
-  @ApiProperty({ example: 'application/pdf', required: false })
-  @IsString()
-  @IsOptional()
-  contentType?: string;
-
-  @ApiProperty({ example: 'BASE64_ENCODED_CONTENT' })
-  @IsString()
-  @IsNotEmpty()
-  content!: string; // Base64 encoded content
-}
-
-export class SendMailDto {
-  @ApiProperty({ example: ['to@example.com'] })
-  @IsArray()
-  @IsEmail(
-    {},
-    {
-      each: true,
-      message: 'Thong tin nguoi nhan khong hop le!',
-    },
-  )
-  @IsOptional()
-  to?: string[];
-
-  @ApiProperty({ example: ['cc@example.com'], required: false })
-  @IsArray()
-  @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thông tin CC không hợp lệ!' })
-  cc?: string[];
-
-  @ApiProperty({ example: ['bcc@example.com'], required: false })
-  @IsArray()
-  @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thông tin BCC không hợp lệ!' })
-  bcc?: string[];
-
-  @ApiProperty({ example: ['reply@example.com'], required: false })
-  @IsArray()
-  @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thông tin Reply-To không hợp lệ!' })
-  replyTo?: string[];
-
-  @ApiProperty({ example: 'Tiêu đề email' })
-  @IsString()
-  @IsOptional()
-  subject?: string;
-
-  @ApiProperty({ example: 'Nội dung text', required: false })
-  @IsString()
-  @IsOptional()
-  text?: string; // Plain text version
-
-  @ApiProperty({ example: '<p>Nội dung HTML</p>', required: false })
-  @IsString()
-  @IsOptional()
-  html?: string; // HTML version
-
-  @ApiProperty({ type: [AttachmentDto], required: false })
-  @IsArray()
-  @IsOptional()
-  attachments?: AttachmentDto[];
-}
-
-export class SaveDraftDto {
-  @ApiProperty({ example: ['to@example.com'], required: false })
-  @IsArray()
-  @IsOptional()
-  @IsEmail(
-    {},
-    {
-      each: true,
-      message: 'Thông tin người nhận không hợp lệ!',
-    },
-  )
-  to?: string[];
-
-  @ApiProperty({ example: ['cc@example.com'], required: false })
-  @IsArray()
-  @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thông tin CC không hợp lệ!' })
-  cc?: string[];
-
-  @ApiProperty({ example: ['bcc@example.com'], required: false })
-  @IsArray()
-  @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thông tin BCC không hợp lệ!' })
-  bcc?: string[];
-
-  @ApiProperty({ example: ['reply@example.com'], required: false })
-  @IsArray()
-  @IsOptional()
-  @IsEmail({}, { each: true, message: 'Thông tin Reply-To không hợp lệ!' })
-  replyTo?: string[];
-
-  @ApiProperty({ example: 'Tiêu đề email', required: false })
-  @IsString()
-  @IsOptional()
-  subject?: string;
-
-  @ApiProperty({ example: 'Nội dung text', required: false })
-  @IsString()
-  @IsOptional()
-  text?: string;
-
-  @ApiProperty({ example: '<p>Nội dung HTML</p>', required: false })
-  @IsString()
-  @IsOptional()
-  html?: string;
-
-  @ApiProperty({ type: [AttachmentDto], required: false })
-  @IsArray()
-  @IsOptional()
-  attachments?: AttachmentDto[];
-}
-
-export class MoveMailDto {
-  @ApiProperty({ example: 'SU5CT1g6MTIzNDU=' })
-  @IsString()
-  @IsNotEmpty()
-  messageId!: string;
-
-  @ApiProperty({ example: 'trash' })
-  @IsString()
-  @IsNotEmpty()
-  targetFolder!: string;
-}
-
-export class MarkReadDto {
-  @ApiProperty({ example: ['SU5CT1g6MTIzNDU='], required: false })
-  @IsArray()
-  @IsOptional()
-  @IsString({ each: true })
-  ids?: string[];
-
-  @ApiProperty({ example: true, required: false })
-  @IsOptional()
-  all?: boolean;
-
-  @ApiProperty({ example: true })
-  @IsNotEmpty()
-  isRead!: boolean;
-
-  @ApiProperty({ example: 'inbox', required: false })
-  @IsString()
-  @IsOptional()
-  folder?: string;
-}
-
-export class MoveBatchDto {
-  @ApiProperty({ example: ['SU5CT1g6MTIzNDU='], required: false })
-  @IsArray()
-  @IsOptional()
-  @IsString({ each: true })
-  ids?: string[];
-
-  @ApiProperty({ example: true, required: false })
-  @IsOptional()
-  all?: boolean;
-
-  @ApiProperty({ example: 'spam', required: false })
-  @IsString()
-  @IsOptional()
-  sourceFolder?: string;
-
-  @ApiProperty({ example: 'trash' })
-  @IsString()
-  @IsNotEmpty()
-  targetFolder!: string;
-}
-
-export class PermanentDeleteMailDto {
-  @ApiProperty({ example: 'SU5CT1g6MTIzNDU=', required: false })
-  @IsString()
-  @IsOptional()
-  messageId?: string;
-
-  @ApiProperty({ example: ['SU5CT1g6MTIzNDU='], required: false })
-  @IsArray()
-  @IsOptional()
-  @IsString({ each: true })
-  ids?: string[];
-
-  @ApiProperty({ example: true, required: false })
-  @IsOptional()
-  all?: boolean;
-
-  @ApiProperty({ example: 'trash', required: false })
-  @IsString()
-  @IsOptional()
-  sourceFolder?: string;
-}
-
-export class StarMailDto {
-  @ApiProperty({ example: ['SU5CT1g6MTIzNDU='], required: false })
-  @IsArray()
-  @IsOptional()
-  @IsString({ each: true })
-  ids?: string[];
-
-  @ApiProperty({ example: true, required: false })
-  @IsOptional()
-  all?: boolean;
-
-  @ApiProperty({ example: 'inbox', required: false })
-  @IsString()
-  @IsOptional()
-  folder?: string;
-}
-
-/** DTO dùng cho API trả lời thư (Reply / Reply All) */
-export class ReplyMailDto {
-  @ApiProperty({
-    example: 'SU5CT1g6MTIzNDU=',
-    description: 'ID của thư gốc cần trả lời',
-  })
-  @IsString()
-  @IsNotEmpty({ message: 'messageId không được để trống!' })
-  messageId!: string;
-
-  @ApiProperty({ example: '<p>Nội dung trả lời</p>', required: false })
-  @IsString()
-  @IsOptional()
-  html?: string;
-
-  @ApiProperty({ example: 'Nội dung trả lời dạng text', required: false })
-  @IsString()
-  @IsOptional()
-  text?: string;
-
-  @ApiProperty({
-    example: true,
-    required: false,
-    description: 'true = reply all, false = reply to sender only',
-  })
-  @IsOptional()
-  replyAll?: boolean;
-
-  @ApiProperty({ type: [AttachmentDto], required: false })
-  @IsArray()
-  @IsOptional()
-  attachments?: AttachmentDto[];
-}
-
-/** DTO dùng cho API chuyển tiếp thư (Forward) */
-export class ForwardMailDto {
-  @ApiProperty({
-    example: 'SU5CT1g6MTIzNDU=',
-    description: 'ID của thư gốc cần chuyển tiếp',
-  })
-  @IsString()
-  @IsNotEmpty({ message: 'messageId không được để trống!' })
-  messageId!: string;
-
-  @ApiProperty({
-    example: ['forwardto@example.com'],
-    description: 'Danh sách người nhận chuyển tiếp',
-  })
-  @IsArray()
-  @IsEmail({}, { each: true, message: 'Thông tin người nhận không hợp lệ!' })
-  to!: string[];
-
-  @ApiProperty({ example: ['cc@example.com'], required: false })
-  @IsArray()
-  @IsOptional()
-  @IsEmail({}, { each: true })
-  cc?: string[];
-
-  @ApiProperty({ example: ['bcc@example.com'], required: false })
-  @IsArray()
-  @IsOptional()
-  @IsEmail({}, { each: true })
-  bcc?: string[];
-
-  @ApiProperty({
-    example: '<p>Nội dung ghi thêm khi forward</p>',
-    required: false,
-  })
-  @IsString()
-  @IsOptional()
-  html?: string;
-
-  @ApiProperty({ example: 'Nội dung ghi thêm dạng text', required: false })
-  @IsString()
-  @IsOptional()
-  text?: string;
-
-  @ApiProperty({ type: [AttachmentDto], required: false })
-  @IsArray()
-  @IsOptional()
-  attachments?: AttachmentDto[];
-}
 ````
 
 ## File: src/exchange/services/imap-mail.provider.ts
@@ -12330,6 +14267,13 @@ export class ImapMailProvider implements IMailProvider {
     this.client = new ImapFlow(this.getImapConfig() as any);
     await this.client.connect();
     this.logger.log(`IMAP connected for ${this.credentials.email}`);
+  }
+
+  async downloadAttachment(
+    messageId: string,
+    index: number,
+  ): Promise<{ filename: string; contentType: string; content: Buffer }> {
+    throw new Error('downloadAttachment not implemented for IMAP');
   }
 
   async disconnect(): Promise<void> {
@@ -12482,39 +14426,100 @@ export class ImapMailProvider implements IMailProvider {
     }
 
     const mailboxList = await this.client.list();
-    const mailboxMap = new Map<string, string>();
-    for (const mailbox of mailboxList) {
-      mailboxMap.set(this.normalizeFolderName(mailbox.path), mailbox.path);
-    }
-
     const folders: MailFolder[] = [];
 
-    for (const folder of MAIL_FOLDERS) {
-      // Starred is virtual (Flagged in INBOX), show only when INBOX exists.
-      if (folder.id === 'Starred') {
-        if (mailboxMap.has('inbox')) {
-          folders.push({ id: folder.id, name: folder.name });
-        }
-        continue;
-      }
-
-      const exists = !!this.resolveMailboxPathFromMap(
-        folder.id,
-        mailboxMap,
-        mailboxList,
-      );
-
-      if (exists) {
-        folders.push({ id: folder.id, name: folder.name });
+    // 1. Map all mailboxes with status counts
+    for (const mailbox of mailboxList) {
+      const lock = await this.client.getMailboxLock(mailbox.path);
+      try {
+        const stats = await this.client.status(mailbox.path, { messages: true, unseen: true });
+        const wellKnownType = this.getWellKnownNameFromPath(mailbox.path, mailbox);
+        
+        folders.push({
+          id: mailbox.path,
+          name: mailbox.name,
+          type: wellKnownType || 'user_created',
+          parentId: this.getParentPath(mailbox.path),
+          isSystem: !!wellKnownType,
+          unreadCount: stats.unseen || 0,
+          totalCount: stats.messages || 0,
+        });
+      } finally {
+        lock.release();
       }
     }
 
-    return folders;
+    // 2. Build Tree
+    const tree = this.buildFolderTree(folders);
+
+    // 3. Add Starred virtual folder
+    const starred = await this.getStarredCounts();
+    const starredFolder: MailFolder = {
+      id: 'Starred',
+      name: 'Có gắn dấu sao',
+      type: 'starred',
+      isSystem: true,
+      unreadCount: starred.unread,
+      totalCount: starred.total,
+    };
+
+    return [starredFolder, ...tree];
   }
 
-  async getFolderCounts(): Promise<
-    Record<string, { total: number; unread: number }>
-  > {
+  private getWellKnownNameFromPath(path: string, mailbox: any): string | null {
+    const specialUse = mailbox?.specialUse;
+    const flags = mailbox?.flags;
+    
+    // Check IMAP Special Use flags if available
+    if (specialUse === '\\Inbox' || (flags && typeof flags.has === 'function' && flags.has('\\Inbox'))) return 'inbox';
+    if (specialUse === '\\Sent' || (flags && typeof flags.has === 'function' && flags.has('\\Sent'))) return 'sent';
+    if (specialUse === '\\Drafts' || (flags && typeof flags.has === 'function' && flags.has('\\Drafts'))) return 'drafts';
+    if (specialUse === '\\Junk' || (flags && typeof flags.has === 'function' && flags.has('\\Junk'))) return 'spam';
+    if (specialUse === '\\Trash' || (flags && typeof flags.has === 'function' && flags.has('\\Trash'))) return 'trash';
+
+    // Fallback to name-based matching
+    const lowerPath = path.toLowerCase();
+    for (const folder of MAIL_FOLDERS) {
+      if (getFolderAliases(folder.id).some(alias => alias.toLowerCase() === lowerPath)) {
+        return folder.type;
+      }
+    }
+    return null;
+  }
+
+  private getParentPath(path: string): string | undefined {
+    // IMAP folders typically use '/' or '.' as separator. imapflow provides 'delimiter'.
+    // For simplicity, we handle common cases or just return undefined if root.
+    const parts = path.split('/');
+    if (parts.length > 1) {
+      return parts.slice(0, -1).join('/');
+    }
+    return undefined;
+  }
+
+  private buildFolderTree(folders: MailFolder[]): MailFolder[] {
+    const map = new Map<string, MailFolder>();
+    const roots: MailFolder[] = [];
+
+    folders.forEach(f => {
+      map.set(f.id, { ...f, children: [] });
+    });
+
+    folders.forEach(f => {
+      const node = map.get(f.id)!;
+      if (f.parentId && map.has(f.parentId)) {
+        map.get(f.parentId)!.children!.push(node);
+      } else {
+        roots.push(node);
+      }
+    });
+
+    return roots;
+  }
+
+  async getFolderCounts(
+    mailbox?: string,
+  ): Promise<Record<string, { total: number; unread: number }>> {
     if (!this.client) {
       throw new Error('Client not connected. Call connect() first.');
     }
@@ -12571,6 +14576,8 @@ export class ImapMailProvider implements IMailProvider {
     folderId: string,
     page: number,
     limit: number,
+    folder?: string,
+    mailbox?: string,
   ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
     if (!this.client) {
       throw new Error('Client not connected. Call connect() first.');
@@ -12921,6 +14928,7 @@ export class ImapMailProvider implements IMailProvider {
         from,
         to: this.parseAddressList(parsed.to),
         cc: this.parseAddressList(parsed.cc),
+        bcc: this.parseAddressList(parsed.bcc),
         receivedAt: parsed.date || new Date(),
         body: parsed.html || parsed.textAsHtml || parsed.text || '',
         isHtml: !!parsed.html,
@@ -13351,7 +15359,11 @@ export class ImapMailProvider implements IMailProvider {
     }
   }
 
-  async markAllMessages(folder: string, isRead: boolean): Promise<void> {
+  async markAllMessages(
+    folder: string,
+    isRead: boolean,
+    mailbox?: string,
+  ): Promise<void> {
     if (!this.client) {
       throw new Error('Client not connected. Call connect() first.');
     }
@@ -13416,6 +15428,7 @@ export class ImapMailProvider implements IMailProvider {
   async moveAllMessages(
     sourceFolder: string,
     targetFolder: string,
+    mailbox?: string,
   ): Promise<void> {
     if (!this.client) {
       throw new Error('Client not connected. Call connect() first.');
@@ -13477,7 +15490,10 @@ export class ImapMailProvider implements IMailProvider {
     return deletedCount;
   }
 
-  async permanentlyDeleteAllMessages(folder: string): Promise<number> {
+  async permanentlyDeleteAllMessages(
+    folder: string,
+    mailbox?: string,
+  ): Promise<number> {
     if (!this.client) {
       throw new Error('Client not connected. Call connect() first.');
     }
@@ -13537,623 +15553,54 @@ export class ImapMailProvider implements IMailProvider {
       lock.release();
     }
   }
-}
-````
-
-## File: src/exchange/services/mail.service.ts
-````typescript
-import {
-  BadRequestException,
-  Inject,
-  Injectable,
-  Logger,
-  Scope,
-} from '@nestjs/common';
-import { REQUEST } from '@nestjs/core';
-import { EwsMailProvider } from './ews-mail.provider';
-import { MailMessage } from '../interfaces/mail-provider.interface';
-import {
-  SendMailDto,
-  SaveDraftDto,
-  MarkReadDto,
-  MoveBatchDto,
-  PermanentDeleteMailDto,
-  StarMailDto,
-  ReplyMailDto,
-  ForwardMailDto,
-} from '../dto/exchange.dto';
-
-import { DragonflyService } from '../../common/cache/dragonfly.service';
-import { ExchangeAuthService } from './exchange-auth.service';
-import {
-  DEFAULT_FOLDER_ID,
-  MAIL_FOLDERS,
-  resolveFolderId,
-  resolveFolderType,
-} from '../constants/mail-folders.constant';
-
-@Injectable({ scope: Scope.REQUEST })
-export class MailService {
-  private readonly logger = new Logger(MailService.name);
-  private static readonly MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024; // 25MB/file
-
-  constructor(
-    private readonly provider: EwsMailProvider,
-    private readonly dragonfly: DragonflyService,
-    private readonly authService: ExchangeAuthService,
-    @Inject(REQUEST) private readonly request: any,
-  ) {}
-
-  private async withProvider<T>(operation: () => Promise<T>): Promise<T> {
-    try {
-      await this.provider.connect();
-      return await operation();
-    } catch (error) {
-      this.logger.error(`Mail operation failed: ${error.message}`, error.stack);
-      throw error;
-    } finally {
-      await this.provider.disconnect();
-    }
+  async markMessagesStar(ids: string[], starred: boolean): Promise<void> {
+    throw new Error('markMessagesStar not implemented for IMAP');
   }
 
-  private async getEmailFromSession(): Promise<string | null> {
-    const token = this.request.cookies?.['exchange_session'];
-    if (!token) return null;
-    const creds = await this.authService.getCredentials(token);
-    return creds?.email || null;
+  async markAllMessagesStar(
+    folder: string,
+    starred: boolean,
+    mailbox?: string,
+  ): Promise<void> {
+    throw new Error('markAllMessagesStar not implemented for IMAP');
   }
 
-  private mapFolderTypeToId(type: string, defaultValue?: string): string {
-    return resolveFolderId(type, defaultValue ?? DEFAULT_FOLDER_ID);
+  async replyMessage(options: any): Promise<any> {
+    throw new Error('replyMessage not implemented for IMAP');
   }
 
-  private mapIdToFolderType(id: string): string {
-    return resolveFolderType(id);
+  async forwardMessage(options: any): Promise<any> {
+    throw new Error('forwardMessage not implemented for IMAP');
   }
 
-  private getBase64SizeInBytes(base64Content: string): number {
-    if (!base64Content) return 0;
-    const normalized = base64Content.includes(',')
-      ? base64Content.split(',').pop() || ''
-      : base64Content;
-    const sanitized = normalized.replace(/\s/g, '');
-    const padding = sanitized.endsWith('==')
-      ? 2
-      : sanitized.endsWith('=')
-        ? 1
-        : 0;
-    return Math.floor((sanitized.length * 3) / 4) - padding;
+  async getConversationMessages(
+    messageId: string,
+    maxItems: number,
+  ): Promise<any> {
+    throw new Error('getConversationMessages not implemented for IMAP');
   }
 
-  private validateAttachmentsSize(
-    attachments?: Array<{ filename: string; content: string }>,
-  ): void {
-    if (!attachments?.length) return;
-
-    for (const attachment of attachments) {
-      const size = this.getBase64SizeInBytes(attachment.content);
-      if (size > MailService.MAX_ATTACHMENT_SIZE_BYTES) {
-        throw new BadRequestException(
-          `File "${attachment.filename}" vuot qua gioi han 25MB`,
-        );
-      }
-    }
+  // Calendar
+  async createEvent(payload: any): Promise<any> {
+    throw new Error('Calendar not implemented for IMAP');
   }
-
-  async getFolderCounts() {
-    const email = await this.getEmailFromSession();
-    if (!email) {
-      return this.withProvider(() => this.provider.getFolderCounts());
-    }
-
-    const standardFolders = MAIL_FOLDERS.map((f) => f.id);
-    const cacheKeys = standardFolders.map(
-      (f) => `exchange:count:${email}:${f}`,
-    );
-
-    if (this.dragonfly.enabled) {
-      const cachedValues = await Promise.all(
-        cacheKeys.map((key) => this.dragonfly.get(key)),
-      );
-
-      const result: Record<string, { total: number; unread: number }> = {};
-      let allFound = true;
-
-      standardFolders.forEach((folder, index) => {
-        if (cachedValues[index]) {
-          const type = this.mapIdToFolderType(folder);
-          result[type] = cachedValues[index] as any;
-        } else {
-          allFound = false;
-        }
-      });
-
-      if (allFound) {
-        return result;
-      }
-    }
-
-    const counts = await this.withProvider(() =>
-      this.provider.getFolderCounts(),
-    );
-
-    if (this.dragonfly.enabled) {
-      const ttl = 300;
-      await Promise.all(
-        Object.entries(counts).map(([folder, count]) =>
-          this.dragonfly.set(`exchange:count:${email}:${folder}`, count, ttl),
-        ),
-      );
-    }
-
-    const mappedCounts: Record<string, { total: number; unread: number }> = {};
-    for (const [id, count] of Object.entries(counts)) {
-      const type = this.mapIdToFolderType(id);
-      mappedCounts[type] = count;
-    }
-
-    return mappedCounts;
+  async getEvents(startDate: string, endDate: string): Promise<any[]> {
+    return [];
   }
-
-  async getFolders() {
-    return this.withProvider(() => this.provider.getFolders());
+  async getEventDetails(eventId: string): Promise<any> {
+    throw new Error('Calendar not implemented for IMAP');
   }
-
-  async getMessages(
-    folderType: string,
-    page: number = 1,
-    pageSize: number = 20,
-  ) {
-    const folderId = this.mapFolderTypeToId(folderType);
-    return this.withProvider(() =>
-      this.provider.getMessages(folderId, page, pageSize),
-    );
+  async updateEvent(eventId: string, payload: any): Promise<any> {
+    throw new Error('Calendar not implemented for IMAP');
   }
-
-  async getMessage(id: string) {
-    const message = await this.withProvider(() => this.provider.getMessage(id));
-
-    try {
-      const email = await this.getEmailFromSession();
-      if (email && this.dragonfly.enabled) {
-        const decoded = Buffer.from(id, 'base64').toString('utf8');
-        const [rawFolder] = decoded.split(':');
-        const folder = resolveFolderId(rawFolder, rawFolder);
-
-        const key = `exchange:count:${email}:${folder}`;
-        const current = await this.dragonfly.get<{
-          total: number;
-          unread: number;
-        }>(key);
-
-        if (current && current.unread > 0) {
-          await this.dragonfly.del(key);
-        }
-      }
-    } catch (e) {
-      // ignore cache errors
-    }
-
-    return message;
+  async deleteEvent(eventId: string): Promise<void> {
+    throw new Error('Calendar not implemented for IMAP');
   }
-
-  async downloadAttachment(messageId: string, index: number) {
-    return this.withProvider(() =>
-      this.provider.downloadAttachment(messageId, index),
-    );
+  async getActiveReminders(): Promise<any[]> {
+    return [];
   }
-
-  async sendMessage(dto: SendMailDto) {
-    this.validateAttachmentsSize(dto.attachments);
-    const result = await this.withProvider(() =>
-      this.provider.sendMessage(dto),
-    );
-
-    const email = await this.getEmailFromSession();
-    if (email && this.dragonfly.enabled) {
-      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
-      await this.dragonfly.del(`exchange:count:${email}:INBOX`);
-    }
-
-    return result;
-  }
-
-  async saveDraft(dto: SaveDraftDto) {
-    this.validateAttachmentsSize(dto.attachments);
-    const result = await this.withProvider(() => this.provider.saveDraft(dto));
-    const email = await this.getEmailFromSession();
-    if (email && this.dragonfly.enabled) {
-      // Dọn cache thư mục Nháp (Drafts)
-      await this.dragonfly.del(`exchange:count:${email}:Drafts`);
-    }
-
-    return result;
-  }
-
-  async searchMessages(
-    query: string,
-    page: number = 1,
-    pageSize: number = 20,
-    folder: string = 'inbox',
-  ) {
-    return this.withProvider(() =>
-      this.provider.search(query, page, pageSize, folder),
-    );
-  }
-
-  async moveMessage(messageId: string, targetFolderType: string) {
-    const targetFolderId = this.mapFolderTypeToId(
-      targetFolderType,
-      targetFolderType,
-    );
-    return this.withProvider(() =>
-      this.provider.moveMessage(messageId, targetFolderId),
-    );
-  }
-
-  async markAsRead(dto: MarkReadDto) {
-    const email = await this.getEmailFromSession();
-
-    await this.withProvider(async () => {
-      if (dto.all && dto.folder) {
-        const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessages(folderId, dto.isRead);
-
-        if (email && this.dragonfly.enabled) {
-          const key = `exchange:count:${email}:${folderId}`;
-          await this.dragonfly.del(key);
-        }
-      } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.markMessages(dto.ids, dto.isRead);
-
-        if (email && this.dragonfly.enabled) {
-          const folders = new Set<string>();
-          for (const id of dto.ids) {
-            try {
-              const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
-              const folder = resolveFolderId(rawFolder, rawFolder);
-              if (folder) folders.add(folder);
-            } catch (e) {}
-          }
-
-          for (const folder of folders) {
-            const key = `exchange:count:${email}:${folder}`;
-            await this.dragonfly.del(key);
-          }
-        }
-      }
-    });
-
-    if (email) {
-      await this.getFolderCounts();
-    }
-
-    return { success: true };
-  }
-
-  async moveMessagesBatch(dto: MoveBatchDto) {
-    const email = await this.getEmailFromSession();
-    const targetFolderId = this.mapFolderTypeToId(
-      dto.targetFolder,
-      dto.targetFolder,
-    );
-
-    await this.withProvider(async () => {
-      if (dto.all && dto.sourceFolder) {
-        const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder);
-        await this.provider.moveAllMessages(sourceFolderId, targetFolderId);
-
-        if (email && this.dragonfly.enabled) {
-          await this.dragonfly.del(`exchange:count:${email}:${sourceFolderId}`);
-          await this.dragonfly.del(`exchange:count:${email}:${targetFolderId}`);
-        }
-      } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.moveMessagesBatch(dto.ids, targetFolderId);
-
-        if (email && this.dragonfly.enabled) {
-          const folders = new Set<string>();
-          folders.add(targetFolderId);
-
-          for (const id of dto.ids) {
-            try {
-              const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
-              const folder = resolveFolderId(rawFolder, rawFolder);
-              if (folder) folders.add(folder);
-            } catch (e) {}
-          }
-
-          for (const folder of folders) {
-            const key = `exchange:count:${email}:${folder}`;
-            await this.dragonfly.del(key);
-          }
-        }
-      }
-    });
-
-    if (email) {
-      await this.getFolderCounts();
-    }
-
-    return { success: true };
-  }
-
-  async permanentDelete(dto: PermanentDeleteMailDto) {
-    const hasSingle = !!dto.messageId;
-    const hasMany = Array.isArray(dto.ids) && dto.ids.length > 0;
-    const hasDeleteAll = !!dto.all && !!dto.sourceFolder;
-
-    const selectedModes = [hasSingle, hasMany, hasDeleteAll].filter(
-      Boolean,
-    ).length;
-    if (selectedModes !== 1) {
-      throw new BadRequestException(
-        'Payload khong hop le. Chon dung 1 mode: messageId, ids, hoac all + sourceFolder',
-      );
-    }
-
-    const email = await this.getEmailFromSession();
-    const affectedFolders = new Set<string>();
-
-    const deletedCount = await this.withProvider(async () => {
-      if (hasSingle && dto.messageId) {
-        const decoded = Buffer.from(dto.messageId, 'base64').toString('utf8');
-        const [rawFolder] = decoded.split(':');
-        const folder = resolveFolderId(rawFolder, rawFolder);
-        if (folder) affectedFolders.add(folder);
-        return this.provider.permanentlyDeleteMessages([dto.messageId]);
-      }
-
-      if (hasMany && dto.ids) {
-        for (const id of dto.ids) {
-          try {
-            const decoded = Buffer.from(id, 'base64').toString('utf8');
-            const [rawFolder] = decoded.split(':');
-            const folder = resolveFolderId(rawFolder, rawFolder);
-            if (folder) affectedFolders.add(folder);
-          } catch (e) {}
-        }
-
-        if (dto.sourceFolder) {
-          const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder);
-          const invalidId = dto.ids.find((id) => {
-            try {
-              const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
-              return resolveFolderId(rawFolder, rawFolder) !== sourceFolderId;
-            } catch (e) {
-              return true;
-            }
-          });
-
-          if (invalidId) {
-            throw new BadRequestException(
-              'Danh sach ids co mail khong thuoc sourceFolder',
-            );
-          }
-        }
-
-        return this.provider.permanentlyDeleteMessages(dto.ids);
-      }
-
-      const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder!);
-      affectedFolders.add(sourceFolderId);
-      return this.provider.permanentlyDeleteAllMessages(sourceFolderId);
-    });
-
-    if (email && this.dragonfly.enabled) {
-      for (const folder of affectedFolders) {
-        await this.dragonfly.del(`exchange:count:${email}:${folder}`);
-      }
-    }
-
-    if (email) {
-      await this.getFolderCounts();
-    }
-
-    return { success: true, deletedCount };
-  }
-
-  async markStar(dto: StarMailDto) {
-    const email = await this.getEmailFromSession();
-
-    await this.withProvider(async () => {
-      if (dto.all && dto.folder) {
-        const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessagesStar(folderId, true);
-
-        if (email && this.dragonfly.enabled) {
-          const key = `exchange:count:${email}:${folderId}`;
-          await this.dragonfly.del(key);
-        }
-      } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.markMessagesStar(dto.ids, true);
-
-        if (email && this.dragonfly.enabled) {
-          const folders = new Set<string>();
-          for (const id of dto.ids) {
-            try {
-              const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
-              const folder = resolveFolderId(rawFolder, rawFolder);
-              if (folder) folders.add(folder);
-            } catch (e) {}
-          }
-
-          for (const folder of folders) {
-            const key = `exchange:count:${email}:${folder}`;
-            await this.dragonfly.del(key);
-          }
-        }
-      } else {
-        throw new BadRequestException(
-          'Payload khong hop le. Can ids hoac all + folder',
-        );
-      }
-    });
-
-    if (email) {
-      await this.getFolderCounts();
-    }
-
-    return { success: true };
-  }
-
-  async unmarkStar(dto: StarMailDto) {
-    const email = await this.getEmailFromSession();
-
-    await this.withProvider(async () => {
-      if (dto.all && dto.folder) {
-        const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessagesStar(folderId, false);
-
-        if (email && this.dragonfly.enabled) {
-          const key = `exchange:count:${email}:${folderId}`;
-          await this.dragonfly.del(key);
-        }
-      } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.markMessagesStar(dto.ids, false);
-
-        if (email && this.dragonfly.enabled) {
-          const folders = new Set<string>();
-          for (const id of dto.ids) {
-            try {
-              const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
-              const folder = resolveFolderId(rawFolder, rawFolder);
-              if (folder) folders.add(folder);
-            } catch (e) {}
-          }
-
-          for (const folder of folders) {
-            const key = `exchange:count:${email}:${folder}`;
-            await this.dragonfly.del(key);
-          }
-        }
-      } else {
-        throw new BadRequestException(
-          'Payload khong hop le. Can ids hoac all + folder',
-        );
-      }
-    });
-
-    if (email) {
-      await this.getFolderCounts();
-    }
-
-    return { success: true };
-  }
-
-  /**
-   * Trả lời một email dựa trên ID của thư gốc.
-   * EWS sẽ tự động kết nối luồng hội thoại (In-Reply-To, References headers).
-   */
-  async replyMessage(dto: ReplyMailDto) {
-    this.validateAttachmentsSize(dto.attachments);
-    const result = await this.withProvider(() =>
-      this.provider.replyMessage({
-        messageId: dto.messageId,
-        html: dto.html,
-        text: dto.text,
-        replyAll: dto.replyAll,
-        attachments: dto.attachments?.map((att) => ({
-          filename: att.filename,
-          contentType: att.contentType,
-          content: att.content,
-        })),
-      }),
-    );
-
-    // Xóa cache Sent Items để cập nhật số lượng mới
-    const email = await this.getEmailFromSession();
-    if (email && this.dragonfly.enabled) {
-      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
-    }
-
-    return result;
-  }
-
-  /**
-   * Chuyển tiếp một email đến người nhận khác.
-   * EWS giữ nguyên thư, tệp đính kèm cũ được chuyển theo tự động.
-   */
-  async forwardMessage(dto: ForwardMailDto) {
-    this.validateAttachmentsSize(dto.attachments);
-    const result = await this.withProvider(() =>
-      this.provider.forwardMessage({
-        messageId: dto.messageId,
-        to: dto.to,
-        cc: dto.cc,
-        bcc: dto.bcc,
-        html: dto.html,
-        text: dto.text,
-        attachments: dto.attachments?.map((att) => ({
-          filename: att.filename,
-          contentType: att.contentType,
-          content: att.content,
-        })),
-      }),
-    );
-
-    // Xóa cache Sent Items để cập nhận số lượng mới
-    const email = await this.getEmailFromSession();
-    if (email && this.dragonfly.enabled) {
-      await this.dragonfly.del(`exchange:count:${email}:Sent Items`);
-    }
-
-    return result;
-  }
-
-  /**
-   * Lấy toàn bộ email trong cùng luồng hội thoại theo messageId gốc.
-   * Backend tự bind email để lấy ConversationId, sau đó tìm xuyên Inbox/Sent/Drafts.
-   * @param messageId - Composite ID (base64) của email cần load thread
-   * @param maxItems  - Số lượng email tối đa (mặc định 50)
-   */
-  async getConversationMessages(messageId: string, maxItems: number = 50) {
-    return this.withProvider(() =>
-      this.provider.getConversationMessages(messageId, maxItems),
-    );
-  }
-
-  // ─── CALENDAR & REMINDERS ────────────────────────────────────────────────────────
-
-  async createEvent(payload: {
-    subject: string;
-    body: string;
-    start: string;
-    end: string;
-    location?: string;
-    isAllDayEvent?: boolean;
-    isReminderSet?: boolean;
-    reminderMinutesBeforeStart?: number;
-  }) {
-    return this.withProvider(() => this.provider.createEvent(payload));
-  }
-
-  async getEvents(startDate: string, endDate: string) {
-    return this.withProvider(() => this.provider.getEvents(startDate, endDate));
-  }
-
-  async getEventDetails(eventId: string) {
-    return this.withProvider(() => this.provider.getEventDetails(eventId));
-  }
-
-  async updateEvent(eventId: string, payload: any) {
-    return this.withProvider(() => this.provider.updateEvent(eventId, payload));
-  }
-
-  async deleteEvent(eventId: string) {
-    return this.withProvider(() => this.provider.deleteEvent(eventId));
-  }
-
-  async getActiveReminders() {
-    return this.withProvider(() => this.provider.getActiveReminders());
-  }
-
-  async dismissReminder(eventId: string) {
-    return this.withProvider(() => this.provider.dismissReminder(eventId));
+  async dismissReminder(eventId: string): Promise<void> {
+    throw new Error('Calendar not implemented for IMAP');
   }
 }
 ````
@@ -14296,8 +15743,9 @@ export class ExchangeController {
   @Get('folders/counts')
   @ApiBearerAuth('exchange_cookie')
   @ApiOperation({ summary: 'Dem mail theo folder' })
-  async getFolderCounts() {
-    return this.mailService.getFolderCounts();
+  @ApiQuery({ name: 'mailbox', required: false })
+  async getFolderCounts(@Query('mailbox') mailbox?: string) {
+    return this.mailService.getFolderCounts(mailbox);
   }
 
   @UseGuards(ExchangeAuthGuard)
@@ -14307,12 +15755,14 @@ export class ExchangeController {
   @ApiQuery({ name: 'folder', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'pageSize', required: false })
+  @ApiQuery({ name: 'mailbox', required: false })
   async list(
     @Query('folder') folder: string = 'inbox',
     @Query('page') page: number = 1,
     @Query('pageSize') pageSize: number = 20,
+    @Query('mailbox') mailbox?: string,
   ) {
-    return this.mailService.getMessages(folder, Number(page), Number(pageSize));
+    return this.mailService.getMessages(folder, Number(page), Number(pageSize), mailbox);
   }
 
   @UseGuards(ExchangeAuthGuard)
@@ -14323,17 +15773,20 @@ export class ExchangeController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'pageSize', required: false })
   @ApiQuery({ name: 'folder', required: false })
+  @ApiQuery({ name: 'mailbox', required: false })
   async search(
     @Query('q') q: string,
     @Query('page') page: number = 1,
     @Query('pageSize') pageSize: number = 20,
     @Query('folder') folder: string = 'inbox',
+    @Query('mailbox') mailbox?: string,
   ) {
     return this.mailService.searchMessages(
       q,
       Number(page),
       Number(pageSize),
       folder,
+      mailbox,
     );
   }
 
@@ -14544,6 +15997,996 @@ export class ExchangeController {
   async deleteEvent(@Param('id') id: string) {
     await this.mailService.deleteEvent(id);
     return { success: true };
+  }
+}
+````
+
+## File: src/exchange/dto/exchange.dto.ts
+````typescript
+import {
+  IsString,
+  IsEmail,
+  IsNotEmpty,
+  IsOptional,
+  IsArray,
+  MaxLength,
+} from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+
+export class ExchangeLoginDto {
+  @ApiProperty({ example: 'user@example.com' })
+  @IsString()
+  @IsNotEmpty()
+  email!: string;
+
+  @ApiProperty({ example: 'P@ssw0rd123' })
+  @IsString()
+  @IsNotEmpty()
+  password!: string;
+}
+
+export class AttachmentDto {
+  @ApiProperty({ example: 'report.pdf' })
+  @IsString()
+  @IsNotEmpty()
+  filename!: string;
+
+  @ApiProperty({ example: 'application/pdf', required: false })
+  @IsString()
+  @IsOptional()
+  contentType?: string;
+
+  @ApiProperty({ example: 'BASE64_ENCODED_CONTENT' })
+  @IsString()
+  @IsNotEmpty()
+  content!: string; // Base64 encoded content
+}
+
+export class SendMailDto {
+  @ApiProperty({ example: ['to@example.com'] })
+  @IsArray()
+  @IsEmail(
+    {},
+    {
+      each: true,
+      message: 'Thong tin nguoi nhan khong hop le!',
+    },
+  )
+  @IsOptional()
+  to?: string[];
+
+  @ApiProperty({ example: ['cc@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsEmail({}, { each: true, message: 'Thông tin CC không hợp lệ!' })
+  cc?: string[];
+
+  @ApiProperty({ example: ['bcc@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsEmail({}, { each: true, message: 'Thông tin BCC không hợp lệ!' })
+  bcc?: string[];
+
+  @ApiProperty({ example: ['reply@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsEmail({}, { each: true, message: 'Thông tin Reply-To không hợp lệ!' })
+  replyTo?: string[];
+
+  @ApiProperty({ example: 'Tiêu đề email' })
+  @IsString()
+  @IsOptional()
+  @MaxLength(255, { message: 'Tiêu đề quá dài không được vượt quá 255 ký tự !' })
+  subject?: string;
+
+  @ApiProperty({ example: 'Nội dung text', required: false })
+  @IsString()
+  @IsOptional()
+  text?: string; // Plain text version
+
+  @ApiProperty({ example: '<p>Nội dung HTML</p>', required: false })
+  @IsString()
+  @IsOptional()
+  html?: string; // HTML version
+
+  @ApiProperty({ type: [AttachmentDto], required: false })
+  @IsArray()
+  @IsOptional()
+  attachments?: AttachmentDto[];
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
+}
+
+export class SaveDraftDto {
+  @ApiProperty({ example: ['to@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  to?: string[];
+
+  @ApiProperty({ example: ['cc@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  cc?: string[];
+
+  @ApiProperty({ example: ['bcc@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  bcc?: string[];
+
+  @ApiProperty({ example: ['reply@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  replyTo?: string[];
+
+  @ApiProperty({ example: 'Tiêu đề email', required: false })
+  @IsString()
+  @IsOptional()
+  @MaxLength(255, { message: 'Tiêu đề quá dài không được vượt quá 255 ký tự !' })
+  subject?: string;
+
+  @ApiProperty({ example: 'Nội dung text', required: false })
+  @IsString()
+  @IsOptional()
+  text?: string;
+
+  @ApiProperty({ example: '<p>Nội dung HTML</p>', required: false })
+  @IsString()
+  @IsOptional()
+  html?: string;
+
+  @ApiProperty({ type: [AttachmentDto], required: false })
+  @IsArray()
+  @IsOptional()
+  attachments?: AttachmentDto[];
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
+}
+
+export class MoveMailDto {
+  @ApiProperty({ example: 'SU5CT1g6MTIzNDU=' })
+  @IsString()
+  @IsNotEmpty()
+  messageId!: string;
+
+  @ApiProperty({ example: 'trash' })
+  @IsString()
+  @IsNotEmpty()
+  targetFolder!: string;
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
+}
+
+export class MarkReadDto {
+  @ApiProperty({ example: ['SU5CT1g6MTIzNDU='], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsString({ each: true })
+  ids?: string[];
+
+  @ApiProperty({ example: true, required: false })
+  @IsOptional()
+  all?: boolean;
+
+  @ApiProperty({ example: true })
+  @IsNotEmpty()
+  isRead!: boolean;
+
+  @ApiProperty({ example: 'inbox', required: false })
+  @IsString()
+  @IsOptional()
+  folder?: string;
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
+}
+
+export class MoveBatchDto {
+  @ApiProperty({ example: ['SU5CT1g6MTIzNDU='], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsString({ each: true })
+  ids?: string[];
+
+  @ApiProperty({ example: true, required: false })
+  @IsOptional()
+  all?: boolean;
+
+  @ApiProperty({ example: 'spam', required: false })
+  @IsString()
+  @IsOptional()
+  sourceFolder?: string;
+
+  @ApiProperty({ example: 'trash' })
+  @IsString()
+  @IsNotEmpty()
+  targetFolder!: string;
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
+}
+
+export class PermanentDeleteMailDto {
+  @ApiProperty({ example: 'SU5CT1g6MTIzNDU=', required: false })
+  @IsString()
+  @IsOptional()
+  messageId?: string;
+
+  @ApiProperty({ example: ['SU5CT1g6MTIzNDU='], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsString({ each: true })
+  ids?: string[];
+
+  @ApiProperty({ example: true, required: false })
+  @IsOptional()
+  all?: boolean;
+
+  @ApiProperty({ example: 'trash', required: false })
+  @IsString()
+  @IsOptional()
+  sourceFolder?: string;
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
+}
+
+export class StarMailDto {
+  @ApiProperty({ example: ['SU5CT1g6MTIzNDU='], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsString({ each: true })
+  ids?: string[];
+
+  @ApiProperty({ example: true, required: false })
+  @IsOptional()
+  all?: boolean;
+
+  @ApiProperty({ example: 'inbox', required: false })
+  @IsString()
+  @IsOptional()
+  folder?: string;
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
+}
+
+/** DTO dùng cho API trả lời thư (Reply / Reply All) */
+export class ReplyMailDto {
+  @ApiProperty({
+    example: 'SU5CT1g6MTIzNDU=',
+    description: 'ID của thư gốc cần trả lời',
+  })
+  @IsString()
+  @IsNotEmpty({ message: 'messageId không được để trống!' })
+  messageId!: string;
+
+  @ApiProperty({ example: '<p>Nội dung trả lời</p>', required: false })
+  @IsString()
+  @IsOptional()
+  html?: string;
+
+  @ApiProperty({ example: 'Nội dung trả lời dạng text', required: false })
+  @IsString()
+  @IsOptional()
+  text?: string;
+
+  @ApiProperty({
+    example: true,
+    required: false,
+    description: 'true = reply all, false = reply to sender only',
+  })
+  @IsOptional()
+  replyAll?: boolean;
+
+  @ApiProperty({ type: [AttachmentDto], required: false })
+  @IsArray()
+  @IsOptional()
+  attachments?: AttachmentDto[];
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
+}
+
+/** DTO dùng cho API chuyển tiếp thư (Forward) */
+export class ForwardMailDto {
+  @ApiProperty({
+    example: 'SU5CT1g6MTIzNDU=',
+    description: 'ID của thư gốc cần chuyển tiếp',
+  })
+  @IsString()
+  @IsNotEmpty({ message: 'messageId không được để trống!' })
+  messageId!: string;
+
+  @ApiProperty({
+    example: ['forwardto@example.com'],
+    description: 'Danh sách người nhận chuyển tiếp',
+  })
+  @IsArray()
+  @IsEmail({}, { each: true, message: 'Thông tin người nhận không hợp lệ!' })
+  to!: string[];
+
+  @ApiProperty({ example: ['cc@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsEmail({}, { each: true })
+  cc?: string[];
+
+  @ApiProperty({ example: ['bcc@example.com'], required: false })
+  @IsArray()
+  @IsOptional()
+  @IsEmail({}, { each: true })
+  bcc?: string[];
+
+  @ApiProperty({
+    example: '<p>Nội dung ghi thêm khi forward</p>',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  html?: string;
+
+  @ApiProperty({ example: 'Nội dung ghi thêm dạng text', required: false })
+  @IsString()
+  @IsOptional()
+  text?: string;
+
+  @ApiProperty({ type: [AttachmentDto], required: false })
+  @IsArray()
+  @IsOptional()
+  attachments?: AttachmentDto[];
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
+}
+````
+
+## File: src/exchange/services/mail.service.ts
+````typescript
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  Scope,
+} from '@nestjs/common';
+import { REQUEST } from '@nestjs/core';
+import { EwsMailProvider } from './ews-mail.provider';
+import { MailMessage } from '../interfaces/mail-provider.interface';
+import {
+  SendMailDto,
+  SaveDraftDto,
+  MarkReadDto,
+  MoveBatchDto,
+  PermanentDeleteMailDto,
+  StarMailDto,
+  ReplyMailDto,
+  ForwardMailDto,
+} from '../dto/exchange.dto';
+
+import { DragonflyService } from '../../common/cache/dragonfly.service';
+import { ExchangeAuthService } from './exchange-auth.service';
+import {
+  DEFAULT_FOLDER_ID,
+  MAIL_FOLDERS,
+  resolveFolderId,
+  resolveFolderType,
+} from '../constants/mail-folders.constant';
+
+@Injectable({ scope: Scope.REQUEST })
+export class MailService {
+  private readonly logger = new Logger(MailService.name);
+  private static readonly MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024; // 25MB/file
+
+  constructor(
+    private readonly provider: EwsMailProvider,
+    private readonly dragonfly: DragonflyService,
+    private readonly authService: ExchangeAuthService,
+    @Inject(REQUEST) private readonly request: any,
+  ) {}
+
+  private async withProvider<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      await this.provider.connect();
+      return await operation();
+    } catch (error) {
+      this.logger.error(`Mail operation failed: ${error.message}`, error.stack);
+      throw error;
+    } finally {
+      await this.provider.disconnect();
+    }
+  }
+
+  private async getEmailFromSession(): Promise<string | null> {
+    const token = this.request.cookies?.['exchange_session'];
+    if (!token) return null;
+    const creds = await this.authService.getCredentials(token);
+    return creds?.email || null;
+  }
+
+  private mapFolderTypeToId(type: string, defaultValue?: string): string {
+    return resolveFolderId(type, defaultValue ?? DEFAULT_FOLDER_ID);
+  }
+
+  private mapIdToFolderType(id: string): string {
+    return resolveFolderType(id);
+  }
+
+  private getBase64SizeInBytes(base64Content: string): number {
+    if (!base64Content) return 0;
+    const normalized = base64Content.includes(',')
+      ? base64Content.split(',').pop() || ''
+      : base64Content;
+    const sanitized = normalized.replace(/\s/g, '');
+    const padding = sanitized.endsWith('==')
+      ? 2
+      : sanitized.endsWith('=')
+        ? 1
+        : 0;
+    return Math.floor((sanitized.length * 3) / 4) - padding;
+  }
+
+  private validateAttachmentsSize(
+    attachments?: Array<{ filename: string; content: string }>,
+  ): void {
+    if (!attachments?.length) return;
+
+    const totalSize = attachments.reduce((acc, attachment) => {
+      return acc + this.getBase64SizeInBytes(attachment.content);
+    }, 0);
+
+    if (totalSize > MailService.MAX_ATTACHMENT_SIZE_BYTES) {
+      throw new BadRequestException(
+        `Tổng dung lượng file đính kèm vượt quá dung lượng cho phép 25MB`,
+      );
+    }
+  }
+
+  async getFolderCounts(mailbox?: string) {
+    const email = await this.getEmailFromSession();
+    if (!email) {
+      return this.withProvider(() => this.provider.getFolderCounts(mailbox));
+    }
+
+    const standardFolders = MAIL_FOLDERS.map((f) => f.id);
+    const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+    const cacheKeys = standardFolders.map(
+      (f) => `exchange:count:${email}${mailboxPrefix}:${f}`,
+    );
+
+    if (this.dragonfly.enabled) {
+      const cachedValues = await Promise.all(
+        cacheKeys.map((key) => this.dragonfly.get(key)),
+      );
+
+      const result: Record<string, { total: number; unread: number }> = {};
+      let allFound = true;
+
+      standardFolders.forEach((folder, index) => {
+        if (cachedValues[index]) {
+          const type = this.mapIdToFolderType(folder);
+          result[type] = cachedValues[index] as any;
+        } else {
+          allFound = false;
+        }
+      });
+
+      if (allFound) {
+        return result;
+      }
+    }
+
+    const counts = await this.withProvider(() =>
+      this.provider.getFolderCounts(mailbox),
+    );
+
+    if (this.dragonfly.enabled) {
+      const ttl = 300;
+      await Promise.all(
+        Object.entries(counts).map(([folder, count]) =>
+          this.dragonfly.set(`exchange:count:${email}${mailboxPrefix}:${folder}`, count, ttl),
+        ),
+      );
+    }
+
+    const mappedCounts: Record<string, { total: number; unread: number }> = {};
+    for (const [id, count] of Object.entries(counts)) {
+      const type = this.mapIdToFolderType(id);
+      mappedCounts[type] = count;
+    }
+
+    return mappedCounts;
+  }
+
+  async getFolders() {
+    return this.withProvider(() => this.provider.getFolders());
+  }
+
+  async getMessages(
+    folderType: string,
+    page: number = 1,
+    pageSize: number = 20,
+    mailbox?: string,
+  ) {
+    const folderId = this.mapFolderTypeToId(folderType);
+    return this.withProvider(() =>
+      this.provider.getMessages(folderId, page, pageSize, mailbox),
+    );
+  }
+
+  async getMessage(id: string) {
+    const message = await this.withProvider(() => this.provider.getMessage(id));
+
+    try {
+      const email = await this.getEmailFromSession();
+      if (email && this.dragonfly.enabled) {
+        // Extract folder from ID
+        const decoded = Buffer.from(id, 'base64').toString('utf8');
+        const parts = decoded.split('::');
+        const rawFolder = parts[0];
+        const folder = resolveFolderId(rawFolder, rawFolder);
+        const mailbox = parts[2];
+        const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+
+        const key = `exchange:count:${email}${mailboxPrefix}:${folder}`;
+        const current = await this.dragonfly.get<{
+          total: number;
+          unread: number;
+        }>(key);
+
+        if (current && current.unread > 0) {
+          await this.dragonfly.del(key);
+        }
+      }
+    } catch (e) {
+      // ignore cache errors
+    }
+
+    return message;
+  }
+
+  async downloadAttachment(messageId: string, index: number) {
+    return this.withProvider(() =>
+      this.provider.downloadAttachment(messageId, index),
+    );
+  }
+
+  async sendMessage(dto: SendMailDto) {
+    this.validateAttachmentsSize(dto.attachments);
+    const result = await this.withProvider(() =>
+      this.provider.sendMessage(dto),
+    );
+
+    // Xóa cache song song (fire-and-forget) để không block response trả về client
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
+      Promise.all([
+        this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:Sent Items`),
+        this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:INBOX`),
+      ]).catch(() => {}); // Bỏ qua lỗi cache, không ảnh hưởng kết quả gửi mail
+    }
+
+    return result;
+  }
+
+  async saveDraft(dto: SaveDraftDto) {
+    this.validateAttachmentsSize(dto.attachments);
+    const result = await this.withProvider(() => this.provider.saveDraft(dto));
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
+      // Dọn cache thư mục Nháp (Drafts)
+      await this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:Drafts`);
+    }
+
+    return result;
+  }
+
+  async searchMessages(
+    query: string,
+    page: number = 1,
+    pageSize: number = 20,
+    folder: string = 'inbox',
+    mailbox?: string,
+  ) {
+    return this.withProvider(() =>
+      this.provider.search(query, page, pageSize, folder, mailbox),
+    );
+  }
+
+  async moveMessage(messageId: string, targetFolderType: string) {
+    const targetFolderId = this.mapFolderTypeToId(
+      targetFolderType,
+      targetFolderType,
+    );
+    return this.withProvider(() =>
+      this.provider.moveMessage(messageId, targetFolderId),
+    );
+  }
+
+  async markAsRead(dto: MarkReadDto) {
+    const email = await this.getEmailFromSession();
+
+    await this.withProvider(async () => {
+      if (dto.all && dto.folder) {
+        const folderId = this.mapFolderTypeToId(dto.folder);
+        await this.provider.markAllMessages(folderId, dto.isRead, dto.mailbox);
+
+        if (email && this.dragonfly.enabled) {
+          const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
+          const key = `exchange:count:${email}${mailboxPrefix}:${folderId}`;
+          await this.dragonfly.del(key);
+        }
+      } else if (dto.ids && dto.ids.length > 0) {
+        await this.provider.markMessages(dto.ids, dto.isRead);
+
+        if (email && this.dragonfly.enabled) {
+          const folders = new Map<string, string | undefined>();
+          for (const id of dto.ids) {
+            try {
+              const decoded = Buffer.from(id, 'base64').toString('utf8');
+              const parts = decoded.split('::');
+              const rawFolder = parts[0];
+              const mailbox = parts[2];
+              const folder = resolveFolderId(rawFolder, rawFolder);
+              if (folder) folders.set(folder, mailbox);
+            } catch (e) {}
+          }
+
+          for (const [folder, mailbox] of folders.entries()) {
+            const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+            const key = `exchange:count:${email}${mailboxPrefix}:${folder}`;
+            await this.dragonfly.del(key);
+          }
+        }
+      }
+    });
+
+    if (email) {
+      await this.getFolderCounts(dto.mailbox);
+    }
+
+    return { success: true };
+  }
+
+  async moveMessagesBatch(dto: MoveBatchDto) {
+    const email = await this.getEmailFromSession();
+    const targetFolderId = this.mapFolderTypeToId(
+      dto.targetFolder,
+      dto.targetFolder,
+    );
+
+    await this.withProvider(async () => {
+      if (dto.all && dto.sourceFolder) {
+        const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder);
+        await this.provider.moveAllMessages(sourceFolderId, targetFolderId, dto.mailbox);
+
+        if (email && this.dragonfly.enabled) {
+          const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
+          await this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:${sourceFolderId}`);
+          await this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:${targetFolderId}`);
+        }
+      } else if (dto.ids && dto.ids.length > 0) {
+        await this.provider.moveMessagesBatch(dto.ids, targetFolderId);
+
+        if (email && this.dragonfly.enabled) {
+          const folders = new Map<string, string | undefined>();
+          folders.set(targetFolderId, dto.mailbox);
+
+          for (const id of dto.ids) {
+            try {
+              const decoded = Buffer.from(id, 'base64').toString('utf8');
+              const parts = decoded.split('::');
+              const rawFolder = parts[0];
+              const mailbox = parts[2];
+              const folder = resolveFolderId(rawFolder, rawFolder);
+              if (folder) folders.set(folder, mailbox);
+            } catch (e) {}
+          }
+
+          for (const [folder, mailbox] of folders.entries()) {
+            const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+            const key = `exchange:count:${email}${mailboxPrefix}:${folder}`;
+            await this.dragonfly.del(key);
+          }
+        }
+      }
+    });
+
+    if (email) {
+      await this.getFolderCounts(dto.mailbox);
+    }
+
+    return { success: true };
+  }
+
+  async permanentDelete(dto: PermanentDeleteMailDto) {
+    const hasSingle = !!dto.messageId;
+    const hasMany = Array.isArray(dto.ids) && dto.ids.length > 0;
+    const hasDeleteAll = !!dto.all && !!dto.sourceFolder;
+
+    const selectedModes = [hasSingle, hasMany, hasDeleteAll].filter(
+      Boolean,
+    ).length;
+    if (selectedModes !== 1) {
+      throw new BadRequestException(
+        'Payload khong hop le. Chon dung 1 mode: messageId, ids, hoac all + sourceFolder',
+      );
+    }
+
+    const email = await this.getEmailFromSession();
+    const affectedFolders = new Map<string, string | undefined>();
+
+    const deletedCount = await this.withProvider(async () => {
+      if (hasSingle && dto.messageId) {
+        const decoded = Buffer.from(dto.messageId, 'base64').toString('utf8');
+        const parts = decoded.split('::');
+        const rawFolder = parts[0];
+        const mailbox = parts[2];
+        const folder = resolveFolderId(rawFolder, rawFolder);
+        if (folder) affectedFolders.set(folder, mailbox);
+        return this.provider.permanentlyDeleteMessages([dto.messageId]);
+      }
+
+      if (hasMany && dto.ids) {
+        for (const id of dto.ids) {
+          try {
+            const decoded = Buffer.from(id, 'base64').toString('utf8');
+            const parts = decoded.split('::');
+            const rawFolder = parts[0];
+            const mailbox = parts[2];
+            const folder = resolveFolderId(rawFolder, rawFolder);
+            if (folder) affectedFolders.set(folder, mailbox);
+          } catch (e) {}
+        }
+
+        if (dto.sourceFolder) {
+          const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder);
+          const invalidId = dto.ids.find((id) => {
+            try {
+              const decoded = Buffer.from(id, 'base64').toString('utf8');
+              const parts = decoded.split('::');
+              const rawFolder = parts[0];
+              return resolveFolderId(rawFolder, rawFolder) !== sourceFolderId;
+            } catch (e) {
+              return true;
+            }
+          });
+
+          if (invalidId) {
+            throw new BadRequestException(
+              'Danh sach ids co mail khong thuoc sourceFolder',
+            );
+          }
+        }
+
+        return this.provider.permanentlyDeleteMessages(dto.ids);
+      }
+
+      const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder!);
+      affectedFolders.set(sourceFolderId, dto.mailbox);
+      return this.provider.permanentlyDeleteAllMessages(sourceFolderId, dto.mailbox);
+    });
+
+    if (email && this.dragonfly.enabled) {
+      for (const [folder, mailbox] of affectedFolders.entries()) {
+        const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+        await this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:${folder}`);
+      }
+    }
+
+    if (email) {
+      await this.getFolderCounts(dto.mailbox);
+    }
+
+    return { success: true, deletedCount };
+  }
+
+  async markStar(dto: StarMailDto) {
+    const email = await this.getEmailFromSession();
+
+    await this.withProvider(async () => {
+      if (dto.all && dto.folder) {
+        const folderId = this.mapFolderTypeToId(dto.folder);
+        await this.provider.markAllMessagesStar(folderId, true, dto.mailbox);
+
+        if (email && this.dragonfly.enabled) {
+          const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
+          const key = `exchange:count:${email}${mailboxPrefix}:${folderId}`;
+          await this.dragonfly.del(key);
+        }
+      } else if (dto.ids && dto.ids.length > 0) {
+        await this.provider.markMessagesStar(dto.ids, true);
+
+        if (email && this.dragonfly.enabled) {
+          const folders = new Map<string, string | undefined>();
+          for (const id of dto.ids) {
+            try {
+              const decoded = Buffer.from(id, 'base64').toString('utf8');
+              const parts = decoded.split('::');
+              const rawFolder = parts[0];
+              const mailbox = parts[2];
+              const folder = resolveFolderId(rawFolder, rawFolder);
+              if (folder) folders.set(folder, mailbox);
+            } catch (e) {}
+          }
+
+          for (const [folder, mailbox] of folders.entries()) {
+            const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+            const key = `exchange:count:${email}${mailboxPrefix}:${folder}`;
+            await this.dragonfly.del(key);
+          }
+        }
+      } else {
+        throw new BadRequestException(
+          'Payload khong hop le. Can ids hoac all + folder',
+        );
+      }
+    });
+
+    if (email) {
+      await this.getFolderCounts(dto.mailbox);
+    }
+
+    return { success: true };
+  }
+
+  async unmarkStar(dto: StarMailDto) {
+    const email = await this.getEmailFromSession();
+
+    await this.withProvider(async () => {
+      if (dto.all && dto.folder) {
+        const folderId = this.mapFolderTypeToId(dto.folder);
+        await this.provider.markAllMessagesStar(folderId, false, dto.mailbox);
+
+        if (email && this.dragonfly.enabled) {
+          const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
+          const key = `exchange:count:${email}${mailboxPrefix}:${folderId}`;
+          await this.dragonfly.del(key);
+        }
+      } else if (dto.ids && dto.ids.length > 0) {
+        await this.provider.markMessagesStar(dto.ids, false);
+
+        if (email && this.dragonfly.enabled) {
+          const folders = new Map<string, string | undefined>();
+          for (const id of dto.ids) {
+            try {
+              const decoded = Buffer.from(id, 'base64').toString('utf8');
+              const parts = decoded.split('::');
+              const rawFolder = parts[0];
+              const mailbox = parts[2];
+              const folder = resolveFolderId(rawFolder, rawFolder);
+              if (folder) folders.set(folder, mailbox);
+            } catch (e) {}
+          }
+
+          for (const [folder, mailbox] of folders.entries()) {
+            const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+            const key = `exchange:count:${email}${mailboxPrefix}:${folder}`;
+            await this.dragonfly.del(key);
+          }
+        }
+      } else {
+        throw new BadRequestException(
+          'Payload khong hop le. Can ids hoac all + folder',
+        );
+      }
+    });
+
+    if (email) {
+      await this.getFolderCounts(dto.mailbox);
+    }
+
+    return { success: true };
+  }
+
+  async replyMessage(dto: ReplyMailDto) {
+    this.validateAttachmentsSize(dto.attachments);
+    const result = await this.withProvider(() =>
+      this.provider.replyMessage({
+        messageId: dto.messageId,
+        html: dto.html,
+        text: dto.text,
+        replyAll: dto.replyAll,
+        attachments: dto.attachments?.map((att) => ({
+          filename: att.filename,
+          contentType: att.contentType,
+          content: att.content,
+        })),
+      }),
+    );
+
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
+      this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:Sent Items`).catch(() => {});
+    }
+
+    return result;
+  }
+
+  async forwardMessage(dto: ForwardMailDto) {
+    this.validateAttachmentsSize(dto.attachments);
+    const result = await this.withProvider(() =>
+      this.provider.forwardMessage({
+        messageId: dto.messageId,
+        to: dto.to,
+        cc: dto.cc,
+        bcc: dto.bcc,
+        html: dto.html,
+        text: dto.text,
+        attachments: dto.attachments?.map((att) => ({
+          filename: att.filename,
+          contentType: att.contentType,
+          content: att.content,
+        })),
+      }),
+    );
+
+    const email = await this.getEmailFromSession();
+    if (email && this.dragonfly.enabled) {
+      const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
+      this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:Sent Items`).catch(() => {});
+    }
+
+    return result;
+  }
+
+  async getConversationMessages(messageId: string, maxItems: number = 50) {
+    return this.withProvider(() =>
+      this.provider.getConversationMessages(messageId, maxItems),
+    );
+  }
+
+  // ─── CALENDAR & REMINDERS ────────────────────────────────────────────────────────
+
+  async createEvent(payload: any) {
+    return this.withProvider(() => this.provider.createEvent(payload));
+  }
+
+  async getEvents(startDate: string, endDate: string) {
+    return this.withProvider(() => this.provider.getEvents(startDate, endDate));
+  }
+
+  async getEventDetails(eventId: string) {
+    return this.withProvider(() => this.provider.getEventDetails(eventId));
+  }
+
+  async updateEvent(eventId: string, payload: any) {
+    return this.withProvider(() => this.provider.updateEvent(eventId, payload));
+  }
+
+  async deleteEvent(eventId: string) {
+    return this.withProvider(() => this.provider.deleteEvent(eventId));
+  }
+
+  async getActiveReminders() {
+    return this.withProvider(() => this.provider.getActiveReminders());
+  }
+
+  async dismissReminder(eventId: string) {
+    return this.withProvider(() => this.provider.dismissReminder(eventId));
   }
 }
 ````

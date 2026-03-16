@@ -19,6 +19,9 @@ import { AuditLogModule } from './audit/audit.module';
 import { ExchangeModule } from './exchange/exchange.module';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { MailboxModule } from './mailbox/mailbox.module';
+import { SharedMailboxModule } from './shared-mailbox/shared-mailbox.module';
+import { SharedMailbox } from './database/entities/shared-mailbox.entity';
+import { SharedMailboxMember } from './database/entities/shared-mailbox-member.entity';
 
 @Module({
   imports: [
@@ -30,7 +33,7 @@ import { MailboxModule } from './mailbox/mailbox.module';
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
         driver: PostgreSqlDriver,
-        entities: [User, File, AuditLog, Role, Permission],
+        entities: [User, File, AuditLog, Role, Permission, SharedMailbox, SharedMailboxMember],
         dbName: configService.get<string>('database.name'),
         host: configService.get<string>('database.host'),
         port: configService.get<number>('database.port'),
@@ -54,6 +57,7 @@ import { MailboxModule } from './mailbox/mailbox.module';
     AuditLogModule,
     ExchangeModule,
     MailboxModule,
+    SharedMailboxModule,
   ],
   controllers: [],
   providers: [],

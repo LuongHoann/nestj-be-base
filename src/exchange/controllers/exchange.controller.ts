@@ -134,8 +134,9 @@ export class ExchangeController {
   @Get('folders/counts')
   @ApiBearerAuth('exchange_cookie')
   @ApiOperation({ summary: 'Dem mail theo folder' })
-  async getFolderCounts() {
-    return this.mailService.getFolderCounts();
+  @ApiQuery({ name: 'mailbox', required: false })
+  async getFolderCounts(@Query('mailbox') mailbox?: string) {
+    return this.mailService.getFolderCounts(mailbox);
   }
 
   @UseGuards(ExchangeAuthGuard)
@@ -145,12 +146,14 @@ export class ExchangeController {
   @ApiQuery({ name: 'folder', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'pageSize', required: false })
+  @ApiQuery({ name: 'mailbox', required: false })
   async list(
     @Query('folder') folder: string = 'inbox',
     @Query('page') page: number = 1,
     @Query('pageSize') pageSize: number = 20,
+    @Query('mailbox') mailbox?: string,
   ) {
-    return this.mailService.getMessages(folder, Number(page), Number(pageSize));
+    return this.mailService.getMessages(folder, Number(page), Number(pageSize), mailbox);
   }
 
   @UseGuards(ExchangeAuthGuard)
@@ -161,17 +164,20 @@ export class ExchangeController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'pageSize', required: false })
   @ApiQuery({ name: 'folder', required: false })
+  @ApiQuery({ name: 'mailbox', required: false })
   async search(
     @Query('q') q: string,
     @Query('page') page: number = 1,
     @Query('pageSize') pageSize: number = 20,
     @Query('folder') folder: string = 'inbox',
+    @Query('mailbox') mailbox?: string,
   ) {
     return this.mailService.searchMessages(
       q,
       Number(page),
       Number(pageSize),
       folder,
+      mailbox,
     );
   }
 

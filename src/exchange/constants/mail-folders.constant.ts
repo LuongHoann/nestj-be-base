@@ -4,7 +4,8 @@ export type MailFolderType =
   | 'starred'
   | 'drafts'
   | 'spam'
-  | 'trash';
+  | 'trash'
+  | 'outbox';
 
 export type MailFolderDefinition = {
   id: string;
@@ -19,6 +20,12 @@ export const MAIL_FOLDERS: MailFolderDefinition[] = [
     type: 'inbox',
     name: 'Hộp thư đến',
     aliases: ['INBOX'],
+  },
+  {
+    id: 'Outbox',
+    type: 'outbox',
+    name: 'Thư chờ gửi',
+    aliases: ['Outbox'],
   },
   {
     id: 'Sent Items',
@@ -74,7 +81,7 @@ export function resolveFolderId(
     }
   }
 
-  return fallback;
+  return input;
 }
 
 export function resolveFolderType(input: string): string {

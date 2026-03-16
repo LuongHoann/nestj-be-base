@@ -45,9 +45,7 @@ def run_cmdlet(pool, cmdlet_name, params=None):
     cmd = ps.add_cmdlet(cmdlet_name)
     if params:
         for key, value in params.items():
-            if value is True:
-                cmd.add_parameter(key)
-            elif value is not None:
+            if value is not None:
                 cmd.add_parameter(key, value)
     ps.invoke()
     return ps.output, ps.streams.error, ps.had_errors
@@ -150,11 +148,17 @@ def handle_restore(pool, data):
 
 def handle_delete(pool, data):
     email = data.get("email", "")
+    # Remove-Mailbox -Identity ... -Confirm:$false se xoa ca Mailbox va User AD.
+    # Tham so -Permanent chi dung cho Soft-Deleted mailbox, dung cho mailbox active se gay loi binding.
     _, errors, had_errors = run_cmdlet(pool, "Remove-Mailbox", {
-        "Identity": email, "Permanent": True, "Confirm": False,
+        "Identity": email, "Confirm": False,
     })
     if had_errors:
-        return {"success": False, "message": str(errors[0]) if errors else "Unknown"}
+        err_msg = str(errors[0]) if errors else "Unknown error"
+        # Neu mailbox khong ton tai tren Exchange, chung ta van coi nhu thanh cong de xoa DB
+        if "wasn't found" in err_msg.lower() or "không tìm thấy" in err_msg.lower():
+             return {"success": True, "message": f"not_found_on_exchange_but_proceed:{email}"}
+        return {"success": False, "message": err_msg}
     return {"success": True, "message": f"successfully_deleted:{email}"}
 
 def main():

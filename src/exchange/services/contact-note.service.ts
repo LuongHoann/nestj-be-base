@@ -149,11 +149,12 @@ export class ContactNoteService {
 
   async getContactsCount(): Promise<{ total: number }> {
     const email = await this.getEmailFromSession();
+    console.log('email', email);  
     if (email && this.dragonfly.enabled) {
       const key = this.getContactsCountCacheKey(email);
       const cached = await this.dragonfly.get<number>(key);
       if (cached !== null) {
-        return { total: cached };
+        return { total: Math.max(0, cached) };
       }
 
       const total = await this.withProvider(() =>

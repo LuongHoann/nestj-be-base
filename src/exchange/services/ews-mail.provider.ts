@@ -16,6 +16,9 @@ import {
   WellKnownFolderName,
   Folder,
   FolderId,
+  FolderTraversal,
+  FolderView,
+  Mailbox,
   ItemView,
   SearchFilter,
   LogicalOperator,
@@ -58,6 +61,9 @@ import {
   SendInvitationsMode,
   SendInvitationsOrCancellationsMode,
   DateTime,
+  FindItemsResults,
+  ContainmentMode,
+  ComparisonMode,
 } from 'ews-javascript-api';
 
 import { XhrApi } from '@ewsjs/xhr';
@@ -333,23 +339,32 @@ export class EwsMailProvider implements IMailProvider {
     }
   }
 
-  private toFolderId(folder: WellKnownFolderName): FolderId {
+  private toFolderId(folder: WellKnownFolderName, mailbox?: string): FolderId {
+    if (mailbox) {
+      return new FolderId(folder, new Mailbox(mailbox));
+    }
     return new FolderId(folder);
   }
 
   // ─── ID helpers ───────────────────────────────────────────────────────────
 
-  private encodeId(folder: string, itemId: string): string {
-    return Buffer.from(`${folder}:${itemId}`).toString('base64');
+  private encodeId(folder: string, itemId: string, mailbox?: string): string {
+    const parts = [folder, itemId];
+    if (mailbox) parts.push(mailbox);
+    return Buffer.from(parts.join('::')).toString('base64');
   }
 
-  private decodeId(id: string): { folder: string; itemId: string } {
+  private decodeId(id: string): {
+    folder: string;
+    itemId: string;
+    mailbox?: string;
+  } {
     const decoded = Buffer.from(id, 'base64').toString('utf8');
-    const colonIndex = decoded.indexOf(':');
+    const parts = decoded.split('::');
     return {
-      folder: decoded.slice(0, colonIndex),
-      // Dùng indexOf tránh split sai nếu EWS UniqueId chứa ':'
-      itemId: decoded.slice(colonIndex + 1),
+      folder: parts[0],
+      itemId: parts[1],
+      mailbox: parts[2] || undefined,
     };
   }
 
@@ -574,10 +589,13 @@ export class EwsMailProvider implements IMailProvider {
     const items: any[] = collection?.items ?? collection?.Items ?? [];
     return items.map((a: any) => {
       const addr = a.Address ?? '';
+      const name = a.Name ?? '';
+
+      // Nếu là X500 DN mà không có name, ta vẫn giữ nguyên addr nguyên bản để không mất dữ liệu
+      // Thông thường EWS sẽ trả về cả Name (hiển thị) và Address (X500)
       return {
-        name: a.Name ?? '',
-        // Recipients thường dùng SMTP, nhưng vẫn check X500 phòng trường hợp
-        email: this.isX500Address(addr) ? '' : addr,
+        name: name,
+        email: addr,
       };
     });
   }
@@ -654,61 +672,135 @@ export class EwsMailProvider implements IMailProvider {
   async getFolders(): Promise<MailFolder[]> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const folders: MailFolder[] = [];
-    for (const folder of MAIL_FOLDERS) {
-      if (folder.id === 'Starred') {
-        folders.push({ id: folder.id, name: folder.name });
-        continue;
-      }
-      try {
-        await Folder.Bind(
-          this.service,
-          new FolderId(this.resolveFolderName(folder.id)),
-        );
-        folders.push({ id: folder.id, name: folder.name });
-      } catch (err) {
-        this.logger.warn(`Cannot bind folder ${folder.id}: ${err.message}`);
-      }
-    }
-    return folders;
-  }
-
-  async getFolderCounts(): Promise<
-    Record<string, { total: number; unread: number }>
-  > {
-    if (!this.service) throw new Error('EWS service not connected');
-
-    const counts: Record<string, { total: number; unread: number }> = {};
-    const countProps = new PropertySet(
+    // 1. Lấy toàn bộ folder từ MsgFolderRoot
+    const view = new FolderView(1000);
+    view.Traversal = FolderTraversal.Deep;
+    view.PropertySet = new PropertySet(
       BasePropertySet.IdOnly,
+      FolderSchema.DisplayName,
+      FolderSchema.ParentFolderId,
       FolderSchema.TotalCount,
       FolderSchema.UnreadCount,
     );
+    
+    const findResults = await this.service.FindFolders(
+      WellKnownFolderName.MsgFolderRoot,
+      view,
+    );
 
-    for (const folder of MAIL_FOLDERS) {
-      if (folder.id === 'Starred') {
-        counts[folder.id] = await this.getStarredCounts();
-        continue;
-      }
+    // 2. Map sang MailFolder phẳng
+    const flatFolders: MailFolder[] = findResults.Folders.map(f => {
+      const wellKnownName = this.getWellKnownNameFromDisplayName(f.DisplayName);
+      const isSystem = !!wellKnownName;
+      
+      let unread = 0;
+      let total = 0;
+      
       try {
-        const bound = await Folder.Bind(
-          this.service,
-          new FolderId(this.resolveFolderName(folder.id)),
-          countProps,
-        );
-        counts[folder.id] = {
-          total: bound.TotalCount ?? 0,
-          unread: bound.UnreadCount ?? 0,
-        };
-      } catch (err) {
-        this.logger.warn(`getFolderCounts ${folder.id}: ${err.message}`);
-        counts[folder.id] = { total: 0, unread: 0 };
+        unread = (f as any).UnreadCount ?? 0;
+      } catch (e) {
+        // Một số folder như Calendar/Contacts có thể không trả về UnreadCount
+      }
+      
+      try {
+        total = (f as any).TotalCount ?? 0;
+      } catch (e) {
+      }
+      
+      return {
+        // Nếu là system folder, dùng chính constant ID (inbox, sent...) để FE nhận diện được Icon/Label
+        id: isSystem ? wellKnownName : f.Id.UniqueId,
+        name: f.DisplayName,
+        type: wellKnownName || 'user_created',
+        parentId: f.ParentFolderId?.UniqueId,
+        isSystem,
+        unreadCount: unread,
+        totalCount: total,
+      };
+    });
+
+    // 3. Xây dựng cấu trúc cây
+    const uniqueIdToFolderId = new Map<string, string>();
+    findResults.Folders.forEach(f => {
+      const wellKnownName = this.getWellKnownNameFromDisplayName(f.DisplayName);
+      uniqueIdToFolderId.set(f.Id.UniqueId, wellKnownName || f.Id.UniqueId);
+    });
+
+    const tree = this.buildFolderTree(flatFolders, uniqueIdToFolderId);
+
+    // 4. Thêm folder ảo "Starred" vào đầu danh sách system (nếu không ở trong cây EWS)
+    const starredCounts = await this.getStarredCounts();
+    const starredFolder: MailFolder = {
+      id: 'Starred',
+      name: 'Có gắn dấu sao',
+      type: 'starred',
+      isSystem: true,
+      unreadCount: starredCounts.unread,
+      totalCount: starredCounts.total,
+    };
+
+    return [starredFolder, ...tree];
+  }
+
+  private getWellKnownNameFromDisplayName(displayName: string): string | null {
+    const lowerName = displayName.toLowerCase();
+    for (const folder of MAIL_FOLDERS) {
+      if (
+        folder.aliases.some(alias => alias.toLowerCase() === lowerName) ||
+        folder.name.toLowerCase() === lowerName
+      ) {
+        return folder.type;
       }
     }
+    return null;
+  }
+
+  private buildFolderTree(folders: MailFolder[], idMap: Map<string, string>): MailFolder[] {
+    const map = new Map<string, MailFolder>();
+    const roots: MailFolder[] = [];
+
+    folders.forEach(f => {
+      map.set(f.id, { ...f, children: [] });
+    });
+
+    folders.forEach(f => {
+      const node = map.get(f.id)!;
+      const mappedParentId = f.parentId ? idMap.get(f.parentId) : undefined;
+      
+      if (mappedParentId && map.has(mappedParentId)) {
+        map.get(mappedParentId)!.children!.push(node);
+      } else {
+        roots.push(node);
+      }
+    });
+
+    return roots;
+  }
+
+  async getFolderCounts(
+    mailbox?: string,
+  ): Promise<Record<string, { total: number; unread: number }>> {
+    // Với logic động, chúng ta có thể gọi getFolders hoặc tối ưu bằng cách fetch riêng
+    // Tuy nhiên để tương thích với MailService cũ, ta sẽ trả về map phẳng của các system folders
+    const folders = await this.getFolders();
+    const counts: Record<string, { total: number; unread: number }> = {};
+    
+    const flatten = (items: MailFolder[]) => {
+      items.forEach(f => {
+        if (f.isSystem) {
+          counts[f.id] = { total: f.totalCount || 0, unread: f.unreadCount || 0 };
+        }
+        if (f.children) flatten(f.children);
+      });
+    };
+    
+    flatten(folders);
     return counts;
   }
 
-  private async getStarredCounts(): Promise<{ total: number; unread: number }> {
+  private async getStarredCounts(
+    mailbox?: string,
+  ): Promise<{ total: number; unread: number }> {
     if (!this.service) throw new Error('EWS service not connected');
     try {
       const countView = new ItemView(1, 0);
@@ -719,7 +811,7 @@ export class EwsMailProvider implements IMailProvider {
       );
 
       const totalResult = await this.service.FindItems(
-        WellKnownFolderName.Inbox,
+        this.toFolderId(WellKnownFolderName.Inbox, mailbox),
         starredFilter,
         countView,
       );
@@ -727,7 +819,7 @@ export class EwsMailProvider implements IMailProvider {
       if (!totalResult.TotalCount) return { total: 0, unread: 0 };
 
       const unreadResult = await this.service.FindItems(
-        WellKnownFolderName.Inbox,
+        this.toFolderId(WellKnownFolderName.Inbox, mailbox),
         new SearchFilter.SearchFilterCollection(LogicalOperator.And, [
           starredFilter,
           new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, false),
@@ -751,6 +843,7 @@ export class EwsMailProvider implements IMailProvider {
     folderId: string,
     page: number,
     limit: number,
+    mailbox?: string,
   ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
     if (!this.service) throw new Error('EWS service not connected');
 
@@ -771,7 +864,7 @@ export class EwsMailProvider implements IMailProvider {
           FlagStatus.Flagged,
         );
         result = await this.service.FindItems(
-          WellKnownFolderName.Inbox,
+          this.toFolderId(WellKnownFolderName.Inbox, mailbox),
           filter,
           view,
         );
@@ -780,11 +873,14 @@ export class EwsMailProvider implements IMailProvider {
         return { items: [], total: 0 };
       }
     } else {
-      result = await this.service.FindItems(resolvedFolder, view);
+      result = await this.service.FindItems(
+        this.toFolderId(resolvedFolder, mailbox),
+        view,
+      );
     }
 
     const items: Partial<MailMessage>[] = result.Items.map((item: any) => ({
-      id: this.encodeId(resolvedId, item.Id?.UniqueId ?? ''),
+      id: this.encodeId(resolvedId, item.Id?.UniqueId ?? '', mailbox),
       subject: item.Subject ?? '(không có chủ đề)',
       from: this.getFrom(item),
       receivedAt: this.toJsDate(item.DateTimeReceived),
@@ -836,7 +932,9 @@ export class EwsMailProvider implements IMailProvider {
     const bodyText = message.Body?.Text ?? '';
     const attachments = this.extractAttachmentMetas(message);
 
-    this.logger.log(`[getMessage] bodyText length: ${bodyText.length}, sample: ${bodyText.substring(0, 50).trim()}`);
+    this.logger.log(
+      `[getMessage] bodyText length: ${bodyText.length}, sample: ${bodyText.substring(0, 50).trim()}`,
+    );
 
     // Đọc ConversationId nếu có — dùng để fetch toàn bộ luồng thư hội thoại
     const rawConvId = (message as any).ConversationId?.UniqueId as
@@ -852,6 +950,7 @@ export class EwsMailProvider implements IMailProvider {
       },
       to: this.getRecipients(message.ToRecipients),
       cc: this.getRecipients(message.CcRecipients),
+      bcc: this.getRecipients(message.BccRecipients),
       receivedAt: this.toJsDate(message.DateTimeReceived),
       body: bodyText,
       isHtml: message.Body?.BodyType === BodyType.HTML,
@@ -1098,18 +1197,20 @@ export class EwsMailProvider implements IMailProvider {
   ): Promise<{ success: boolean; messageId?: string }> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    this.logger.debug(`[SaveDraft] Payload: ${JSON.stringify({
-      subject: options.subject,
-      htmlLen: options.html?.length,
-      textLen: options.text?.length,
-      htmlSample: options.html?.substring(0, 50),
-    })}`);
+    this.logger.debug(
+      `[SaveDraft] Payload: ${JSON.stringify({
+        subject: options.subject,
+        htmlLen: options.html?.length,
+        textLen: options.text?.length,
+        htmlSample: options.html?.substring(0, 50),
+      })}`,
+    );
 
     const message = new EmailMessage(this.service);
     message.Subject = options.subject ?? '';
     const bodyString = options.html ?? options.text ?? '';
     const encodedBody = this.xmlEncodeForSoap(bodyString);
-    
+
     message.Body = new MessageBody(
       options.html ? BodyType.HTML : BodyType.Text,
       encodedBody,
@@ -1504,11 +1605,150 @@ export class EwsMailProvider implements IMailProvider {
     return { success: true };
   }
 
+  // Thêm interface để trả về cả query lẫn size filter
+  private parseSizeFromQuery(query: string): {
+    cleanQuery: string;
+    sizeFilter: SearchFilter | null;
+  } {
+    let sizeFilter: SearchFilter | null = null;
+
+    // Tìm và extract "size:[<>]Value[Unit]" ra khỏi query string
+    const cleanQuery = query
+      .replace(
+        /\bsize:([<>])?(\d+)([a-zA-Z]+)?\b/gi,
+        (match, op, val, unit) => {
+          let bytes = parseInt(val, 10);
+          const u = (unit || '').toLowerCase();
+
+          if (u === 'mb') bytes *= 1024 * 1024;
+          else if (u === 'kb') bytes *= 1024;
+
+          // Tạo SearchFilter thay vì AQS string
+          if (op === '>') {
+            sizeFilter = new SearchFilter.IsGreaterThan(ItemSchema.Size, bytes);
+          } else if (op === '<') {
+            sizeFilter = new SearchFilter.IsLessThan(ItemSchema.Size, bytes);
+          } else {
+            // Không có operator -> mặc định tìm >= bytes
+            sizeFilter = new SearchFilter.IsGreaterThanOrEqualTo(
+              ItemSchema.Size,
+              bytes,
+            );
+          }
+
+          return ''; // Xoá phần size: ra khỏi AQS string
+        },
+      )
+      .trim()
+      .replace(/\s+/g, ' '); // Dọn khoảng trắng thừa
+
+    return { cleanQuery, sizeFilter };
+  }
+
+  /**
+   * Convert toàn bộ query string thành SearchFilter.
+   * Hỗ trợ: has:attachment, is:unread, is:read, from:xxx, size:[<>]NNN[kb|mb]
+   * Các từ khóa tự do còn lại (subject, body text...) dùng ContainsSubstring trên Subject.
+   */
+  private buildSearchFilter(query: string): SearchFilter | null {
+    if (!query?.trim()) return null;
+
+    const filters: SearchFilter[] = [];
+    let remaining = query;
+
+    // has:attachment
+    if (/\bhas:attachment\b/i.test(remaining)) {
+      filters.push(new SearchFilter.IsEqualTo(ItemSchema.HasAttachments, true));
+      remaining = remaining.replace(/\bhas:attachment\b/gi, '').trim();
+    }
+
+    // is:unread
+    if (/\bis:unread\b/i.test(remaining)) {
+      filters.push(
+        new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, false),
+      );
+      remaining = remaining.replace(/\bis:unread\b/gi, '').trim();
+    }
+
+    // is:read
+    if (/\bis:read\b/i.test(remaining)) {
+      filters.push(new SearchFilter.IsEqualTo(EmailMessageSchema.IsRead, true));
+      remaining = remaining.replace(/\bis:read\b/gi, '').trim();
+    }
+
+    // from:xxx hoặc from:me
+    const fromMatch = remaining.match(/\bfrom:("([^"]+)"|(\S+))/i);
+    if (fromMatch) {
+      const fromValue = fromMatch[2] ?? fromMatch[3]; // bên trong quotes hoặc không quotes
+      const resolvedFrom =
+        fromValue.toLowerCase() === 'me' ? this.email : fromValue;
+      if (resolvedFrom) {
+        filters.push(
+          new SearchFilter.ContainsSubstring(
+            EmailMessageSchema.From,
+            resolvedFrom,
+            ContainmentMode.Substring,
+            ComparisonMode.IgnoreCase,
+          ),
+        );
+      }
+      remaining = remaining.replace(/\bfrom:("([^"]+)"|(\S+))/gi, '').trim();
+    }
+
+    // size:[<>]NNN[kb|mb]
+    const sizeMatch = remaining.match(/\bsize:([<>])?(\d+)(kb|mb)?\b/i);
+    if (sizeMatch) {
+      const op = sizeMatch[1]; // '<' | '>' | undefined
+      let bytes = parseInt(sizeMatch[2], 10);
+      const unit = (sizeMatch[3] ?? '').toLowerCase();
+
+      if (unit === 'mb') bytes *= 1024 * 1024;
+      else if (unit === 'kb') bytes *= 1024;
+
+      if (op === '>') {
+        filters.push(new SearchFilter.IsGreaterThan(ItemSchema.Size, bytes));
+      } else if (op === '<') {
+        filters.push(new SearchFilter.IsLessThan(ItemSchema.Size, bytes));
+      } else {
+        filters.push(
+          new SearchFilter.IsGreaterThanOrEqualTo(ItemSchema.Size, bytes),
+        );
+      }
+      remaining = remaining
+        .replace(/\bsize:([<>])?(\d+)(kb|mb)?\b/gi, '')
+        .trim();
+    }
+
+    // Phần text tự do còn lại -> tìm trong Subject
+    const freeText = remaining.replace(/\s+/g, ' ').trim();
+    if (freeText) {
+      filters.push(
+        new SearchFilter.ContainsSubstring(
+          ItemSchema.Subject,
+          freeText,
+          ContainmentMode.Substring,
+          ComparisonMode.IgnoreCase,
+        ),
+      );
+    }
+
+    if (filters.length === 0) return null;
+    if (filters.length === 1) return filters[0];
+
+    // Gộp tất cả bằng AND
+    const collection = new SearchFilter.SearchFilterCollection(
+      LogicalOperator.And,
+    );
+    filters.forEach((f) => collection.Add(f));
+    return collection;
+  }
+
   async search(
     query: string,
     page: number,
     limit: number,
     folder: string = 'inbox',
+    mailbox?: string,
   ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
     if (!this.service) throw new Error('EWS service not connected');
 
@@ -1516,28 +1756,24 @@ export class EwsMailProvider implements IMailProvider {
     view.OrderBy.Add(ItemSchema.DateTimeReceived, SortDirection.Descending);
     view.PropertySet = LIST_PROPS;
 
-    // Xác định thư mục cần tìm kiếm (hỗ trợ inbox, sent, trash, v.v.)
-    let resolveFolder: FolderId | WellKnownFolderName;
-    if (folder.toLowerCase() === 'all') {
-      // EWS AQS không hỗ trợ Deep Traversal ở MsgFolderRoot
-      // Tạm thời fallback về Inbox hoặc AllItems nếu hệ thống map được
-      // Theo mặc định với EWS, nếu muốn tìm toàn mailbox thường dùng Inbox làm chính
-      // Hoặc sử dụng tìm kiếm nhiều thư mục nhưng ews-javascript-api không hỗ trợ truy vấn mảng FolderId dễ dàng
-      resolveFolder = WellKnownFolderName.Inbox;
-    } else {
-      resolveFolder = this.resolveFolderName(folder);
-    }
+    const resolveFolder =
+      folder.toLowerCase() === 'all'
+        ? this.toFolderId(WellKnownFolderName.Inbox, mailbox)
+        : this.toFolderId(this.resolveFolderName(folder), mailbox);
 
     try {
-      // Dùng queryString (tham số thứ 2 là string) để bật AQS (Advanced Query Syntax)
-      // Điều này tự động hỗ trợ lọc: has:attachment, subject:"...", from:"..."
-      // Không cần dùng SearchFilter thủ công cho từng field.
-      const result = await this.service.FindItems(resolveFolder, query, view);
+      // Ưu tiên SearchFilter nếu query có bất kỳ keyword nào
+      const searchFilter = this.buildSearchFilter(query);
+
+      const result = searchFilter
+        ? await this.service.FindItems(resolveFolder, searchFilter, view)
+        : await this.service.FindItems(resolveFolder, query ?? '', view);
 
       const items: Partial<MailMessage>[] = result.Items.map((item: any) => ({
         id: this.encodeId(
           folder.toLowerCase() === 'all' ? 'INBOX' : folder.toUpperCase(),
           item.Id?.UniqueId ?? '',
+          mailbox,
         ),
         subject: item.Subject ?? '(không có chủ đề)',
         from: this.getFrom(item),
@@ -1546,6 +1782,7 @@ export class EwsMailProvider implements IMailProvider {
         hasAttachments: item.HasAttachments ?? false,
         isStarred: this.isItemStarred(item),
       }));
+
       return { items, total: result.TotalCount ?? 0 };
     } catch (err) {
       this.logger.error(`Search error: ${err.message}`);
@@ -1561,10 +1798,10 @@ export class EwsMailProvider implements IMailProvider {
   ): Promise<{ success: boolean }> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const { itemId } = this.decodeId(messageId);
+    const { itemId, mailbox } = this.decodeId(messageId);
     await this.service.MoveItems(
       [new ItemId(itemId)],
-      this.toFolderId(this.resolveFolderName(targetFolder)),
+      this.toFolderId(this.resolveFolderName(targetFolder), mailbox),
     );
     return { success: true };
   }
@@ -1572,19 +1809,26 @@ export class EwsMailProvider implements IMailProvider {
   async moveMessagesBatch(ids: string[], targetFolder: string): Promise<void> {
     if (!this.service) throw new Error('EWS service not connected');
 
+    const decoded = this.decodeId(ids[0]);
+    const mailbox = decoded.mailbox;
+
     await this.service.MoveItems(
       ids.map((id) => new ItemId(this.decodeId(id).itemId)),
-      this.toFolderId(this.resolveFolderName(targetFolder)),
+      this.toFolderId(this.resolveFolderName(targetFolder), mailbox),
     );
   }
 
   async moveAllMessages(
     sourceFolder: string,
     targetFolder: string,
+    mailbox?: string,
   ): Promise<void> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const source = this.resolveFolderName(sourceFolder);
+    const source = this.toFolderId(
+      this.resolveFolderName(sourceFolder),
+      mailbox,
+    );
     const target = this.resolveFolderName(targetFolder);
     let more = true;
 
@@ -1598,7 +1842,7 @@ export class EwsMailProvider implements IMailProvider {
 
       await this.service.MoveItems(
         result.Items.map((item) => new ItemId(item.Id.UniqueId)),
-        this.toFolderId(target),
+        this.toFolderId(target, mailbox),
       );
       more = result.MoreAvailable ?? false;
     }
@@ -1627,10 +1871,14 @@ export class EwsMailProvider implements IMailProvider {
     }
   }
 
-  async markAllMessages(folder: string, isRead: boolean): Promise<void> {
+  async markAllMessages(
+    folder: string,
+    isRead: boolean,
+    mailbox?: string,
+  ): Promise<void> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const resolved = this.resolveFolderName(folder);
+    const resolved = this.toFolderId(this.resolveFolderName(folder), mailbox);
     const props = new PropertySet(
       BasePropertySet.IdOnly,
       EmailMessageSchema.IsRead,
@@ -1774,10 +2022,14 @@ export class EwsMailProvider implements IMailProvider {
     }
   }
 
-  async markAllMessagesStar(folder: string, starred: boolean): Promise<void> {
+  async markAllMessagesStar(
+    folder: string,
+    starred: boolean,
+    mailbox?: string,
+  ): Promise<void> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const resolved = this.resolveFolderName(folder);
+    const resolved = this.toFolderId(this.resolveFolderName(folder), mailbox);
     let offset = 0;
     let more = true;
 
@@ -1816,10 +2068,13 @@ export class EwsMailProvider implements IMailProvider {
     ).length;
   }
 
-  async permanentlyDeleteAllMessages(folder: string): Promise<number> {
+  async permanentlyDeleteAllMessages(
+    folder: string,
+    mailbox?: string,
+  ): Promise<number> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const resolved = this.resolveFolderName(folder);
+    const resolved = this.toFolderId(this.resolveFolderName(folder), mailbox);
     let offset = 0;
     let more = true;
     let deleted = 0;
@@ -2150,9 +2405,11 @@ export class EwsMailProvider implements IMailProvider {
     };
 
     if (!trimmed) {
-      // Không filter — lấy toàn bộ contacts
+      // Không filter — lấy toàn bộ IPM.Contact
+      const filter = new SearchFilter.IsEqualTo(ItemSchema.ItemClass, 'IPM.Contact');
       const result = await this.service.FindItems(
         WellKnownFolderName.Contacts,
+        filter,
         view,
       );
       const items = await Promise.all(result.Items.map(mapContact));
@@ -2161,11 +2418,16 @@ export class EwsMailProvider implements IMailProvider {
 
     // Filter theo DisplayName hoặc email — dùng IndexedPropertyDefinition cho email
     // ContactSchema.EmailAddresses (complex) KHÔNG được phép trong FindItem filter.
-    const filter = new SearchFilter.SearchFilterCollection(LogicalOperator.Or, [
+    const keywordFilter = new SearchFilter.SearchFilterCollection(LogicalOperator.Or, [
       new SearchFilter.ContainsSubstring(ContactSchema.DisplayName, trimmed),
       new SearchFilter.ContainsSubstring(ContactSchema.EmailAddress1, trimmed),
       new SearchFilter.ContainsSubstring(ContactSchema.EmailAddress2, trimmed),
       new SearchFilter.ContainsSubstring(ContactSchema.EmailAddress3, trimmed),
+    ]);
+
+    const filter = new SearchFilter.SearchFilterCollection(LogicalOperator.And, [
+      new SearchFilter.IsEqualTo(ItemSchema.ItemClass, 'IPM.Contact'),
+      keywordFilter,
     ]);
 
     const result = await this.service.FindItems(
@@ -2183,12 +2445,17 @@ export class EwsMailProvider implements IMailProvider {
     const view = new ItemView(1, 0);
     view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
 
+    // Chỉ đếm các mục là IPM.Contact (loại trừ Distribution List và các loại khác)
+    const filter = new SearchFilter.IsEqualTo(ItemSchema.ItemClass, 'IPM.Contact');
+
     const result = await this.service.FindItems(
       WellKnownFolderName.Contacts,
+      filter,
       view,
     );
 
-    return result.TotalCount ?? result.Items.length ?? 0;
+    const count = result.TotalCount ?? result.Items.length ?? 0;
+    return Math.max(0, count);
   }
 
   async listNotes(

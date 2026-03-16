@@ -58,11 +58,14 @@ export class ContactsController {
     return this.contactNoteService.getContactByEmail(email);
   }
 
-  @Get('count')
+  @Get(['count', 'counts'])
   @ApiBearerAuth('exchange_cookie')
   @ApiOperation({ summary: 'Get contacts count' })
   async getContactsCount() {
-    return this.contactNoteService.getContactsCount();
+    console.log('[ContactsController] Getting contacts count...');
+    const result = await this.contactNoteService.getContactsCount();
+    console.log('[ContactsController] Count result:', result);
+    return result;
   }
 
   @Get(':id')

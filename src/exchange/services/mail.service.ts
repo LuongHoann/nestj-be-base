@@ -86,25 +86,27 @@ export class MailService {
   ): void {
     if (!attachments?.length) return;
 
-    for (const attachment of attachments) {
-      const size = this.getBase64SizeInBytes(attachment.content);
-      if (size > MailService.MAX_ATTACHMENT_SIZE_BYTES) {
-        throw new BadRequestException(
-          `File "${attachment.filename}" vuot qua gioi han 25MB`,
-        );
-      }
+    const totalSize = attachments.reduce((acc, attachment) => {
+      return acc + this.getBase64SizeInBytes(attachment.content);
+    }, 0);
+
+    if (totalSize > MailService.MAX_ATTACHMENT_SIZE_BYTES) {
+      throw new BadRequestException(
+        `Tổng dung lượng file đính kèm vượt quá dung lượng cho phép 25MB`,
+      );
     }
   }
 
-  async getFolderCounts() {
+  async getFolderCounts(mailbox?: string) {
     const email = await this.getEmailFromSession();
     if (!email) {
-      return this.withProvider(() => this.provider.getFolderCounts());
+      return this.withProvider(() => this.provider.getFolderCounts(mailbox));
     }
 
     const standardFolders = MAIL_FOLDERS.map((f) => f.id);
+    const mailboxPrefix = mailbox ? `:${mailbox}` : '';
     const cacheKeys = standardFolders.map(
-      (f) => `exchange:count:${email}:${f}`,
+      (f) => `exchange:count:${email}${mailboxPrefix}:${f}`,
     );
 
     if (this.dragonfly.enabled) {
@@ -130,14 +132,14 @@ export class MailService {
     }
 
     const counts = await this.withProvider(() =>
-      this.provider.getFolderCounts(),
+      this.provider.getFolderCounts(mailbox),
     );
 
     if (this.dragonfly.enabled) {
       const ttl = 300;
       await Promise.all(
         Object.entries(counts).map(([folder, count]) =>
-          this.dragonfly.set(`exchange:count:${email}:${folder}`, count, ttl),
+          this.dragonfly.set(`exchange:count:${email}${mailboxPrefix}:${folder}`, count, ttl),
         ),
       );
     }
@@ -159,10 +161,11 @@ export class MailService {
     folderType: string,
     page: number = 1,
     pageSize: number = 20,
+    mailbox?: string,
   ) {
     const folderId = this.mapFolderTypeToId(folderType);
     return this.withProvider(() =>
-      this.provider.getMessages(folderId, page, pageSize),
+      this.provider.getMessages(folderId, page, pageSize, mailbox),
     );
   }
 
@@ -172,11 +175,15 @@ export class MailService {
     try {
       const email = await this.getEmailFromSession();
       if (email && this.dragonfly.enabled) {
+        // Extract folder from ID
         const decoded = Buffer.from(id, 'base64').toString('utf8');
-        const [rawFolder] = decoded.split(':');
+        const parts = decoded.split('::');
+        const rawFolder = parts[0];
         const folder = resolveFolderId(rawFolder, rawFolder);
+        const mailbox = parts[2];
+        const mailboxPrefix = mailbox ? `:${mailbox}` : '';
 
-        const key = `exchange:count:${email}:${folder}`;
+        const key = `exchange:count:${email}${mailboxPrefix}:${folder}`;
         const current = await this.dragonfly.get<{
           total: number;
           unread: number;
@@ -208,9 +215,10 @@ export class MailService {
     // Xóa cache song song (fire-and-forget) để không block response trả về client
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
+      const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
       Promise.all([
-        this.dragonfly.del(`exchange:count:${email}:Sent Items`),
-        this.dragonfly.del(`exchange:count:${email}:INBOX`),
+        this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:Sent Items`),
+        this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:INBOX`),
       ]).catch(() => {}); // Bỏ qua lỗi cache, không ảnh hưởng kết quả gửi mail
     }
 
@@ -222,8 +230,9 @@ export class MailService {
     const result = await this.withProvider(() => this.provider.saveDraft(dto));
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
+      const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
       // Dọn cache thư mục Nháp (Drafts)
-      await this.dragonfly.del(`exchange:count:${email}:Drafts`);
+      await this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:Drafts`);
     }
 
     return result;
@@ -234,9 +243,10 @@ export class MailService {
     page: number = 1,
     pageSize: number = 20,
     folder: string = 'inbox',
+    mailbox?: string,
   ) {
     return this.withProvider(() =>
-      this.provider.search(query, page, pageSize, folder),
+      this.provider.search(query, page, pageSize, folder, mailbox),
     );
   }
 
@@ -256,28 +266,32 @@ export class MailService {
     await this.withProvider(async () => {
       if (dto.all && dto.folder) {
         const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessages(folderId, dto.isRead);
+        await this.provider.markAllMessages(folderId, dto.isRead, dto.mailbox);
 
         if (email && this.dragonfly.enabled) {
-          const key = `exchange:count:${email}:${folderId}`;
+          const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
+          const key = `exchange:count:${email}${mailboxPrefix}:${folderId}`;
           await this.dragonfly.del(key);
         }
       } else if (dto.ids && dto.ids.length > 0) {
         await this.provider.markMessages(dto.ids, dto.isRead);
 
         if (email && this.dragonfly.enabled) {
-          const folders = new Set<string>();
+          const folders = new Map<string, string | undefined>();
           for (const id of dto.ids) {
             try {
               const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
+              const parts = decoded.split('::');
+              const rawFolder = parts[0];
+              const mailbox = parts[2];
               const folder = resolveFolderId(rawFolder, rawFolder);
-              if (folder) folders.add(folder);
+              if (folder) folders.set(folder, mailbox);
             } catch (e) {}
           }
 
-          for (const folder of folders) {
-            const key = `exchange:count:${email}:${folder}`;
+          for (const [folder, mailbox] of folders.entries()) {
+            const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+            const key = `exchange:count:${email}${mailboxPrefix}:${folder}`;
             await this.dragonfly.del(key);
           }
         }
@@ -285,7 +299,7 @@ export class MailService {
     });
 
     if (email) {
-      await this.getFolderCounts();
+      await this.getFolderCounts(dto.mailbox);
     }
 
     return { success: true };
@@ -301,30 +315,34 @@ export class MailService {
     await this.withProvider(async () => {
       if (dto.all && dto.sourceFolder) {
         const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder);
-        await this.provider.moveAllMessages(sourceFolderId, targetFolderId);
+        await this.provider.moveAllMessages(sourceFolderId, targetFolderId, dto.mailbox);
 
         if (email && this.dragonfly.enabled) {
-          await this.dragonfly.del(`exchange:count:${email}:${sourceFolderId}`);
-          await this.dragonfly.del(`exchange:count:${email}:${targetFolderId}`);
+          const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
+          await this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:${sourceFolderId}`);
+          await this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:${targetFolderId}`);
         }
       } else if (dto.ids && dto.ids.length > 0) {
         await this.provider.moveMessagesBatch(dto.ids, targetFolderId);
 
         if (email && this.dragonfly.enabled) {
-          const folders = new Set<string>();
-          folders.add(targetFolderId);
+          const folders = new Map<string, string | undefined>();
+          folders.set(targetFolderId, dto.mailbox);
 
           for (const id of dto.ids) {
             try {
               const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
+              const parts = decoded.split('::');
+              const rawFolder = parts[0];
+              const mailbox = parts[2];
               const folder = resolveFolderId(rawFolder, rawFolder);
-              if (folder) folders.add(folder);
+              if (folder) folders.set(folder, mailbox);
             } catch (e) {}
           }
 
-          for (const folder of folders) {
-            const key = `exchange:count:${email}:${folder}`;
+          for (const [folder, mailbox] of folders.entries()) {
+            const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+            const key = `exchange:count:${email}${mailboxPrefix}:${folder}`;
             await this.dragonfly.del(key);
           }
         }
@@ -332,7 +350,7 @@ export class MailService {
     });
 
     if (email) {
-      await this.getFolderCounts();
+      await this.getFolderCounts(dto.mailbox);
     }
 
     return { success: true };
@@ -353,14 +371,16 @@ export class MailService {
     }
 
     const email = await this.getEmailFromSession();
-    const affectedFolders = new Set<string>();
+    const affectedFolders = new Map<string, string | undefined>();
 
     const deletedCount = await this.withProvider(async () => {
       if (hasSingle && dto.messageId) {
         const decoded = Buffer.from(dto.messageId, 'base64').toString('utf8');
-        const [rawFolder] = decoded.split(':');
+        const parts = decoded.split('::');
+        const rawFolder = parts[0];
+        const mailbox = parts[2];
         const folder = resolveFolderId(rawFolder, rawFolder);
-        if (folder) affectedFolders.add(folder);
+        if (folder) affectedFolders.set(folder, mailbox);
         return this.provider.permanentlyDeleteMessages([dto.messageId]);
       }
 
@@ -368,9 +388,11 @@ export class MailService {
         for (const id of dto.ids) {
           try {
             const decoded = Buffer.from(id, 'base64').toString('utf8');
-            const [rawFolder] = decoded.split(':');
+            const parts = decoded.split('::');
+            const rawFolder = parts[0];
+            const mailbox = parts[2];
             const folder = resolveFolderId(rawFolder, rawFolder);
-            if (folder) affectedFolders.add(folder);
+            if (folder) affectedFolders.set(folder, mailbox);
           } catch (e) {}
         }
 
@@ -379,7 +401,8 @@ export class MailService {
           const invalidId = dto.ids.find((id) => {
             try {
               const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
+              const parts = decoded.split('::');
+              const rawFolder = parts[0];
               return resolveFolderId(rawFolder, rawFolder) !== sourceFolderId;
             } catch (e) {
               return true;
@@ -397,18 +420,19 @@ export class MailService {
       }
 
       const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder!);
-      affectedFolders.add(sourceFolderId);
-      return this.provider.permanentlyDeleteAllMessages(sourceFolderId);
+      affectedFolders.set(sourceFolderId, dto.mailbox);
+      return this.provider.permanentlyDeleteAllMessages(sourceFolderId, dto.mailbox);
     });
 
     if (email && this.dragonfly.enabled) {
-      for (const folder of affectedFolders) {
-        await this.dragonfly.del(`exchange:count:${email}:${folder}`);
+      for (const [folder, mailbox] of affectedFolders.entries()) {
+        const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+        await this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:${folder}`);
       }
     }
 
     if (email) {
-      await this.getFolderCounts();
+      await this.getFolderCounts(dto.mailbox);
     }
 
     return { success: true, deletedCount };
@@ -420,28 +444,32 @@ export class MailService {
     await this.withProvider(async () => {
       if (dto.all && dto.folder) {
         const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessagesStar(folderId, true);
+        await this.provider.markAllMessagesStar(folderId, true, dto.mailbox);
 
         if (email && this.dragonfly.enabled) {
-          const key = `exchange:count:${email}:${folderId}`;
+          const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
+          const key = `exchange:count:${email}${mailboxPrefix}:${folderId}`;
           await this.dragonfly.del(key);
         }
       } else if (dto.ids && dto.ids.length > 0) {
         await this.provider.markMessagesStar(dto.ids, true);
 
         if (email && this.dragonfly.enabled) {
-          const folders = new Set<string>();
+          const folders = new Map<string, string | undefined>();
           for (const id of dto.ids) {
             try {
               const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
+              const parts = decoded.split('::');
+              const rawFolder = parts[0];
+              const mailbox = parts[2];
               const folder = resolveFolderId(rawFolder, rawFolder);
-              if (folder) folders.add(folder);
+              if (folder) folders.set(folder, mailbox);
             } catch (e) {}
           }
 
-          for (const folder of folders) {
-            const key = `exchange:count:${email}:${folder}`;
+          for (const [folder, mailbox] of folders.entries()) {
+            const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+            const key = `exchange:count:${email}${mailboxPrefix}:${folder}`;
             await this.dragonfly.del(key);
           }
         }
@@ -453,7 +481,7 @@ export class MailService {
     });
 
     if (email) {
-      await this.getFolderCounts();
+      await this.getFolderCounts(dto.mailbox);
     }
 
     return { success: true };
@@ -465,28 +493,32 @@ export class MailService {
     await this.withProvider(async () => {
       if (dto.all && dto.folder) {
         const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessagesStar(folderId, false);
+        await this.provider.markAllMessagesStar(folderId, false, dto.mailbox);
 
         if (email && this.dragonfly.enabled) {
-          const key = `exchange:count:${email}:${folderId}`;
+          const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
+          const key = `exchange:count:${email}${mailboxPrefix}:${folderId}`;
           await this.dragonfly.del(key);
         }
       } else if (dto.ids && dto.ids.length > 0) {
         await this.provider.markMessagesStar(dto.ids, false);
 
         if (email && this.dragonfly.enabled) {
-          const folders = new Set<string>();
+          const folders = new Map<string, string | undefined>();
           for (const id of dto.ids) {
             try {
               const decoded = Buffer.from(id, 'base64').toString('utf8');
-              const [rawFolder] = decoded.split(':');
+              const parts = decoded.split('::');
+              const rawFolder = parts[0];
+              const mailbox = parts[2];
               const folder = resolveFolderId(rawFolder, rawFolder);
-              if (folder) folders.add(folder);
+              if (folder) folders.set(folder, mailbox);
             } catch (e) {}
           }
 
-          for (const folder of folders) {
-            const key = `exchange:count:${email}:${folder}`;
+          for (const [folder, mailbox] of folders.entries()) {
+            const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+            const key = `exchange:count:${email}${mailboxPrefix}:${folder}`;
             await this.dragonfly.del(key);
           }
         }
@@ -498,16 +530,12 @@ export class MailService {
     });
 
     if (email) {
-      await this.getFolderCounts();
+      await this.getFolderCounts(dto.mailbox);
     }
 
     return { success: true };
   }
 
-  /**
-   * Trả lời một email dựa trên ID của thư gốc.
-   * EWS sẽ tự động kết nối luồng hội thoại (In-Reply-To, References headers).
-   */
   async replyMessage(dto: ReplyMailDto) {
     this.validateAttachmentsSize(dto.attachments);
     const result = await this.withProvider(() =>
@@ -524,19 +552,15 @@ export class MailService {
       }),
     );
 
-    // Xóa cache Sent Items (fire-and-forget, không block response)
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
-      this.dragonfly.del(`exchange:count:${email}:Sent Items`).catch(() => {});
+      const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
+      this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:Sent Items`).catch(() => {});
     }
 
     return result;
   }
 
-  /**
-   * Chuyển tiếp một email đến người nhận khác.
-   * EWS giữ nguyên thư, tệp đính kèm cũ được chuyển theo tự động.
-   */
   async forwardMessage(dto: ForwardMailDto) {
     this.validateAttachmentsSize(dto.attachments);
     const result = await this.withProvider(() =>
@@ -555,21 +579,15 @@ export class MailService {
       }),
     );
 
-    // Xóa cache Sent Items (fire-and-forget, không block response)
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
-      this.dragonfly.del(`exchange:count:${email}:Sent Items`).catch(() => {});
+      const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
+      this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:Sent Items`).catch(() => {});
     }
 
     return result;
   }
 
-  /**
-   * Lấy toàn bộ email trong cùng luồng hội thoại theo messageId gốc.
-   * Backend tự bind email để lấy ConversationId, sau đó tìm xuyên Inbox/Sent/Drafts.
-   * @param messageId - Composite ID (base64) của email cần load thread
-   * @param maxItems  - Số lượng email tối đa (mặc định 50)
-   */
   async getConversationMessages(messageId: string, maxItems: number = 50) {
     return this.withProvider(() =>
       this.provider.getConversationMessages(messageId, maxItems),
@@ -578,16 +596,7 @@ export class MailService {
 
   // ─── CALENDAR & REMINDERS ────────────────────────────────────────────────────────
 
-  async createEvent(payload: {
-    subject: string;
-    body: string;
-    start: string;
-    end: string;
-    location?: string;
-    isAllDayEvent?: boolean;
-    isReminderSet?: boolean;
-    reminderMinutesBeforeStart?: number;
-  }) {
+  async createEvent(payload: any) {
     return this.withProvider(() => this.provider.createEvent(payload));
   }
 

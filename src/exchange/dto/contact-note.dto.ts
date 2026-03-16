@@ -4,6 +4,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  MaxLength,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -43,6 +44,7 @@ export class CreateContactDto {
   @ApiProperty({ example: 'User Name' })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(255)
   displayName!: string;
 
   @ApiProperty({ required: false })
@@ -81,6 +83,7 @@ export class UpdateContactDto {
   @ApiProperty({ required: false })
   @IsString()
   @IsOptional()
+  @MaxLength(255)
   displayName?: string;
 
   @ApiProperty({ required: false })

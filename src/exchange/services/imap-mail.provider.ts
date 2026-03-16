@@ -90,6 +90,13 @@ export class ImapMailProvider implements IMailProvider {
     this.logger.log(`IMAP connected for ${this.credentials.email}`);
   }
 
+  async downloadAttachment(
+    messageId: string,
+    index: number,
+  ): Promise<{ filename: string; contentType: string; content: Buffer }> {
+    throw new Error('downloadAttachment not implemented for IMAP');
+  }
+
   async disconnect(): Promise<void> {
     if (this.client) {
       try {
@@ -240,39 +247,100 @@ export class ImapMailProvider implements IMailProvider {
     }
 
     const mailboxList = await this.client.list();
-    const mailboxMap = new Map<string, string>();
-    for (const mailbox of mailboxList) {
-      mailboxMap.set(this.normalizeFolderName(mailbox.path), mailbox.path);
-    }
-
     const folders: MailFolder[] = [];
 
-    for (const folder of MAIL_FOLDERS) {
-      // Starred is virtual (Flagged in INBOX), show only when INBOX exists.
-      if (folder.id === 'Starred') {
-        if (mailboxMap.has('inbox')) {
-          folders.push({ id: folder.id, name: folder.name });
-        }
-        continue;
-      }
-
-      const exists = !!this.resolveMailboxPathFromMap(
-        folder.id,
-        mailboxMap,
-        mailboxList,
-      );
-
-      if (exists) {
-        folders.push({ id: folder.id, name: folder.name });
+    // 1. Map all mailboxes with status counts
+    for (const mailbox of mailboxList) {
+      const lock = await this.client.getMailboxLock(mailbox.path);
+      try {
+        const stats = await this.client.status(mailbox.path, { messages: true, unseen: true });
+        const wellKnownType = this.getWellKnownNameFromPath(mailbox.path, mailbox);
+        
+        folders.push({
+          id: mailbox.path,
+          name: mailbox.name,
+          type: wellKnownType || 'user_created',
+          parentId: this.getParentPath(mailbox.path),
+          isSystem: !!wellKnownType,
+          unreadCount: stats.unseen || 0,
+          totalCount: stats.messages || 0,
+        });
+      } finally {
+        lock.release();
       }
     }
 
-    return folders;
+    // 2. Build Tree
+    const tree = this.buildFolderTree(folders);
+
+    // 3. Add Starred virtual folder
+    const starred = await this.getStarredCounts();
+    const starredFolder: MailFolder = {
+      id: 'Starred',
+      name: 'Có gắn dấu sao',
+      type: 'starred',
+      isSystem: true,
+      unreadCount: starred.unread,
+      totalCount: starred.total,
+    };
+
+    return [starredFolder, ...tree];
   }
 
-  async getFolderCounts(): Promise<
-    Record<string, { total: number; unread: number }>
-  > {
+  private getWellKnownNameFromPath(path: string, mailbox: any): string | null {
+    const specialUse = mailbox?.specialUse;
+    const flags = mailbox?.flags;
+    
+    // Check IMAP Special Use flags if available
+    if (specialUse === '\\Inbox' || (flags && typeof flags.has === 'function' && flags.has('\\Inbox'))) return 'inbox';
+    if (specialUse === '\\Sent' || (flags && typeof flags.has === 'function' && flags.has('\\Sent'))) return 'sent';
+    if (specialUse === '\\Drafts' || (flags && typeof flags.has === 'function' && flags.has('\\Drafts'))) return 'drafts';
+    if (specialUse === '\\Junk' || (flags && typeof flags.has === 'function' && flags.has('\\Junk'))) return 'spam';
+    if (specialUse === '\\Trash' || (flags && typeof flags.has === 'function' && flags.has('\\Trash'))) return 'trash';
+
+    // Fallback to name-based matching
+    const lowerPath = path.toLowerCase();
+    for (const folder of MAIL_FOLDERS) {
+      if (getFolderAliases(folder.id).some(alias => alias.toLowerCase() === lowerPath)) {
+        return folder.type;
+      }
+    }
+    return null;
+  }
+
+  private getParentPath(path: string): string | undefined {
+    // IMAP folders typically use '/' or '.' as separator. imapflow provides 'delimiter'.
+    // For simplicity, we handle common cases or just return undefined if root.
+    const parts = path.split('/');
+    if (parts.length > 1) {
+      return parts.slice(0, -1).join('/');
+    }
+    return undefined;
+  }
+
+  private buildFolderTree(folders: MailFolder[]): MailFolder[] {
+    const map = new Map<string, MailFolder>();
+    const roots: MailFolder[] = [];
+
+    folders.forEach(f => {
+      map.set(f.id, { ...f, children: [] });
+    });
+
+    folders.forEach(f => {
+      const node = map.get(f.id)!;
+      if (f.parentId && map.has(f.parentId)) {
+        map.get(f.parentId)!.children!.push(node);
+      } else {
+        roots.push(node);
+      }
+    });
+
+    return roots;
+  }
+
+  async getFolderCounts(
+    mailbox?: string,
+  ): Promise<Record<string, { total: number; unread: number }>> {
     if (!this.client) {
       throw new Error('Client not connected. Call connect() first.');
     }
@@ -329,6 +397,8 @@ export class ImapMailProvider implements IMailProvider {
     folderId: string,
     page: number,
     limit: number,
+    folder?: string,
+    mailbox?: string,
   ): Promise<{ items: Partial<MailMessage>[]; total: number }> {
     if (!this.client) {
       throw new Error('Client not connected. Call connect() first.');
@@ -679,6 +749,7 @@ export class ImapMailProvider implements IMailProvider {
         from,
         to: this.parseAddressList(parsed.to),
         cc: this.parseAddressList(parsed.cc),
+        bcc: this.parseAddressList(parsed.bcc),
         receivedAt: parsed.date || new Date(),
         body: parsed.html || parsed.textAsHtml || parsed.text || '',
         isHtml: !!parsed.html,
@@ -1109,7 +1180,11 @@ export class ImapMailProvider implements IMailProvider {
     }
   }
 
-  async markAllMessages(folder: string, isRead: boolean): Promise<void> {
+  async markAllMessages(
+    folder: string,
+    isRead: boolean,
+    mailbox?: string,
+  ): Promise<void> {
     if (!this.client) {
       throw new Error('Client not connected. Call connect() first.');
     }
@@ -1174,6 +1249,7 @@ export class ImapMailProvider implements IMailProvider {
   async moveAllMessages(
     sourceFolder: string,
     targetFolder: string,
+    mailbox?: string,
   ): Promise<void> {
     if (!this.client) {
       throw new Error('Client not connected. Call connect() first.');
@@ -1235,7 +1311,10 @@ export class ImapMailProvider implements IMailProvider {
     return deletedCount;
   }
 
-  async permanentlyDeleteAllMessages(folder: string): Promise<number> {
+  async permanentlyDeleteAllMessages(
+    folder: string,
+    mailbox?: string,
+  ): Promise<number> {
     if (!this.client) {
       throw new Error('Client not connected. Call connect() first.');
     }
@@ -1294,5 +1373,54 @@ export class ImapMailProvider implements IMailProvider {
     } finally {
       lock.release();
     }
+  }
+  async markMessagesStar(ids: string[], starred: boolean): Promise<void> {
+    throw new Error('markMessagesStar not implemented for IMAP');
+  }
+
+  async markAllMessagesStar(
+    folder: string,
+    starred: boolean,
+    mailbox?: string,
+  ): Promise<void> {
+    throw new Error('markAllMessagesStar not implemented for IMAP');
+  }
+
+  async replyMessage(options: any): Promise<any> {
+    throw new Error('replyMessage not implemented for IMAP');
+  }
+
+  async forwardMessage(options: any): Promise<any> {
+    throw new Error('forwardMessage not implemented for IMAP');
+  }
+
+  async getConversationMessages(
+    messageId: string,
+    maxItems: number,
+  ): Promise<any> {
+    throw new Error('getConversationMessages not implemented for IMAP');
+  }
+
+  // Calendar
+  async createEvent(payload: any): Promise<any> {
+    throw new Error('Calendar not implemented for IMAP');
+  }
+  async getEvents(startDate: string, endDate: string): Promise<any[]> {
+    return [];
+  }
+  async getEventDetails(eventId: string): Promise<any> {
+    throw new Error('Calendar not implemented for IMAP');
+  }
+  async updateEvent(eventId: string, payload: any): Promise<any> {
+    throw new Error('Calendar not implemented for IMAP');
+  }
+  async deleteEvent(eventId: string): Promise<void> {
+    throw new Error('Calendar not implemented for IMAP');
+  }
+  async getActiveReminders(): Promise<any[]> {
+    return [];
+  }
+  async dismissReminder(eventId: string): Promise<void> {
+    throw new Error('Calendar not implemented for IMAP');
   }
 }
