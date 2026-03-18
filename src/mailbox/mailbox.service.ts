@@ -6,8 +6,10 @@ import {
 } from '@nestjs/common';
 import { EntityManager, QueryOrder } from '@mikro-orm/core';
 import { User } from '../database/entities/user.entity';
+import { OrganizationUnit } from '../database/entities/organization-unit.entity';
 import { ScriptRunnerService } from './script-runner.service';
 import { CreateMailboxDto, UpdateMailboxDto } from './mailbox.dto';
+import * as argon2 from 'argon2';
 
 @Injectable()
 export class MailboxService {
@@ -55,14 +57,28 @@ export class MailboxService {
     });
 
     const now = new Date();
+    const hashedPassword = await argon2.hash(dto.password);
+    
     const user = this.em.create(User, {
       email: dto.email,
       name: dto.name,
+      password: hashedPassword,
       isActive: true,
       mailboxInitialized: true,
       createdAt: now,
       updatedAt: now,
     });
+
+    if (dto.orgUnitId) {
+      const unit = await this.em.findOne(OrganizationUnit, { id: dto.orgUnitId });
+      if (unit) {
+        user.orgUnit = unit;
+        if (dto.isAdmin) {
+          user.unitAdminLevel = unit.level;
+        }
+      }
+    }
+
     await this.em.persistAndFlush(user);
 
     return user;

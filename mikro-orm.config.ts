@@ -5,7 +5,8 @@ import { File } from './src/database/entities/file.entity';
 import { AuditLog } from './src/database/entities/audit-log.entity';
 
 export default defineConfig({
-  entities: [User, File, AuditLog],
+  entities: ['./dist/database/entities/*.entity.js'],
+  entitiesTs: ['./src/database/entities/*.entity.ts'],
   dbName: process.env.DB_NAME || 'postgres',
   host: process.env.DB_HOST || 'localhost',
   port: parseInt(process.env.DB_PORT || '5432', 10),

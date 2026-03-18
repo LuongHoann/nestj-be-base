@@ -1844,8 +1844,23 @@ export class EwsMailProvider implements IMailProvider {
         result.Items.map((item) => new ItemId(item.Id.UniqueId)),
         this.toFolderId(target, mailbox),
       );
-      more = result.MoreAvailable ?? false;
     }
+  }
+
+  async markAsJunk(
+    ids: string[],
+    isJunk: boolean,
+    moveItem: boolean = true,
+  ): Promise<void> {
+    if (!this.service) throw new Error('EWS service not connected');
+
+    // MarkAsJunk operation adds/removes senders from Blocked Senders List
+    // and optionally moves the items to Junk Email folder.
+    await this.service.MarkAsJunk(
+      ids.map((id) => new ItemId(this.decodeId(id).itemId)),
+      isJunk,
+      moveItem,
+    );
   }
 
   // ─── Mark read/unread ─────────────────────────────────────────────────────
@@ -2079,8 +2094,9 @@ export class EwsMailProvider implements IMailProvider {
     let more = true;
     let deleted = 0;
 
-    while (more) {
-      const view = new ItemView(200, offset);
+    while (true) {
+      // Khi xóa vĩnh viễn, chúng ta không dùng offset vì list items sẽ co lại sau mỗi lần xóa
+      const view = new ItemView(200, 0);
       view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
 
       const result = await this.service.FindItems(resolved, view);
@@ -2094,11 +2110,13 @@ export class EwsMailProvider implements IMailProvider {
           AffectedTaskOccurrence.AllOccurrences,
         );
 
-      deleted += response.Responses.filter(
+      const count = response.Responses.filter(
         (r) => r.ErrorCode === ServiceError.NoError,
       ).length;
-      offset += result.Items.length;
-      more = result.MoreAvailable ?? false;
+      deleted += count;
+
+      if (!result.MoreAvailable && count === result.Items.length) break;
+      if (count === 0) break; // Tránh vòng lặp vô tận nếu xóa lỗi
     }
 
     return deleted;
@@ -2418,45 +2436,82 @@ export class EwsMailProvider implements IMailProvider {
 
     // Filter theo DisplayName hoặc email — dùng IndexedPropertyDefinition cho email
     // ContactSchema.EmailAddresses (complex) KHÔNG được phép trong FindItem filter.
-    const keywordFilter = new SearchFilter.SearchFilterCollection(LogicalOperator.Or, [
-      new SearchFilter.ContainsSubstring(ContactSchema.DisplayName, trimmed),
-      new SearchFilter.ContainsSubstring(ContactSchema.EmailAddress1, trimmed),
-      new SearchFilter.ContainsSubstring(ContactSchema.EmailAddress2, trimmed),
-      new SearchFilter.ContainsSubstring(ContactSchema.EmailAddress3, trimmed),
-    ]);
+    // Theo yêu cầu: Chạy 2 luồng tìm kiếm song song cho DisplayName và EmailAddress1
+    console.log(`[EwsMailProvider] Searching contacts (Parallel): "${trimmed}"`);
 
-    const filter = new SearchFilter.SearchFilterCollection(LogicalOperator.And, [
-      new SearchFilter.IsEqualTo(ItemSchema.ItemClass, 'IPM.Contact'),
-      keywordFilter,
-    ]);
-
-    const result = await this.service.FindItems(
-      WellKnownFolderName.Contacts,
-      filter,
-      view,
+    const nameFilter = new SearchFilter.ContainsSubstring(
+      ContactSchema.DisplayName, 
+      trimmed, 
+      ContainmentMode.Substring, 
+      ComparisonMode.IgnoreCase
     );
-    const items = await Promise.all(result.Items.map(mapContact));
-    return { items, total: result.TotalCount ?? items.length };
+
+    const emailFilter = new SearchFilter.ContainsSubstring(
+      ContactSchema.EmailAddress1, 
+      trimmed, 
+      ContainmentMode.Substring, 
+      ComparisonMode.IgnoreCase
+    );
+
+    // Chạy song song 2 luồng tìm kiếm
+    const [nameRes, emailRes] = await Promise.all([
+      this.service.FindItems(WellKnownFolderName.Contacts, nameFilter, view),
+      this.service.FindItems(WellKnownFolderName.Contacts, emailFilter, view)
+    ]);
+
+    // Gộp kết quả và loại bỏ trùng lặp theo UniqueId
+    const combinedItemsMap = new Map();
+    [...nameRes.Items, ...emailRes.Items].forEach(item => {
+      combinedItemsMap.set(item.Id.UniqueId, item);
+    });
+
+    const finalItems = Array.from(combinedItemsMap.values());
+    console.log(`[EwsMailProvider] Parallel search finished. Found ${finalItems.length} unique results.`);
+
+    // Map dữ liệu và trả về (giới hạn theo limit của view hiện tại)
+    const items = await Promise.all(finalItems.slice(0, limit).map(mapContact));
+    const total = (nameRes.TotalCount || 0) + (emailRes.TotalCount || 0);
+    
+    return { items, total: Math.max(items.length, total) };
   }
 
-  async getContactsCount(): Promise<number> {
-    if (!this.service) throw new Error('EWS service not connected');
+ async getContactsCount(): Promise<number> {
+  if (!this.service) throw new Error('EWS service not connected');
 
-    const view = new ItemView(1, 0);
+  try {
+    // Filter chỉ lấy IPM.Contact (loại trừ Distribution Lists và các loại khác)
+    const filter = new SearchFilter.IsEqualTo(
+      ItemSchema.ItemClass, 
+      'IPM.Contact'
+    );
+
+    // Dùng FindItems với limit 1 để chỉ lấy TotalCount (hiệu quả nhất)
+    const view = new ItemView(25, 0);
     view.PropertySet = new PropertySet(BasePropertySet.IdOnly);
 
-    // Chỉ đếm các mục là IPM.Contact (loại trừ Distribution List và các loại khác)
-    const filter = new SearchFilter.IsEqualTo(ItemSchema.ItemClass, 'IPM.Contact');
-
     const result = await this.service.FindItems(
       WellKnownFolderName.Contacts,
       filter,
       view,
     );
 
-    const count = result.TotalCount ?? result.Items.length ?? 0;
-    return Math.max(0, count);
+    const totalCount = result.TotalCount || 0;
+    console.log(`[EwsMailProvider] Total IPM.Contact count: ${totalCount}`);
+    
+    return Math.max(0, totalCount);
+  } catch (error) {
+    console.error('[EwsMailProvider] Error getting contacts count:', error);
+    
+    // Fallback: Nếu lỗi, dùng Folder.Bind (ít chính xác hơn)
+    try {
+      const folder = await Folder.Bind(this.service, WellKnownFolderName.Contacts);
+      console.warn(`[EwsMailProvider] Fallback to folder.TotalCount: ${folder.TotalCount}`);
+      return Math.max(0, folder.TotalCount || 0);
+    } catch {
+      return 0;
+    }
   }
+}
 
   async listNotes(
     page: number,

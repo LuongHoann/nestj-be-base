@@ -17,8 +17,9 @@ import {
   UpdateSharedMailboxDto,
   AddSharedMailboxMemberDto,
 } from './shared-mailbox.dto';
-import { SharedMailbox } from 'src/database/entities/shared-mailbox.entity';
-import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
+import { SharedMailbox } from '../database/entities/shared-mailbox.entity';
+import { ExchangeAuthGuard } from '../auth/guards/exchange-auth.guard';
+import { AuditAction } from '../common/decorators/audit-action.decorator';
 
 @ApiTags('Shared Mailbox')
 @Controller('shared-mailbox')
@@ -40,13 +41,14 @@ export class SharedMailboxController {
   @Get('me')
   @ApiOperation({ summary: 'Lấy danh sách các Shared Mailbox mà user hiện tại được quyền truy cập' })
   async getMe(@Req() req: any): Promise<SharedMailbox[]> {
-    return this.sharedMailboxService.getForUser(req.user.id);
+    return this.sharedMailboxService.getForUserByEmail(req.user.email);
   }
 
   @Post()
+  @AuditAction('Tạo Shared Mailbox')
   @ApiOperation({ summary: 'Tạo Shared Mailbox mới' })
   async create(@Body() dto: CreateSharedMailboxDto, @Req() req: any) {
-    return this.sharedMailboxService.create(dto, req.user.id);
+    return this.sharedMailboxService.create(dto, req.user.email);
   }
 
   @Get(':id')
@@ -56,50 +58,56 @@ export class SharedMailboxController {
   }
 
   @Put(':id')
+  @AuditAction('Cập nhật Shared Mailbox')
   @ApiOperation({ summary: 'Cập nhật thông tin Shared Mailbox' })
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateSharedMailboxDto,
     @Req() req: any,
   ) {
-    return this.sharedMailboxService.update(id, dto, req.user.id);
+    return this.sharedMailboxService.update(id, dto, req.user.email);
   }
 
   @Delete(':id')
+  @AuditAction('Vô hiệu hóa Shared Mailbox')
   @ApiOperation({ summary: 'Vô hiệu hóa Shared Mailbox' })
   async disable(@Param('id') id: string, @Req() req: any) {
-    return this.sharedMailboxService.disable(id, req.user.id);
+    return this.sharedMailboxService.disable(id, req.user.email);
   }
 
   @Post(':id/restore')
+  @AuditAction('Khôi phục Shared Mailbox')
   @ApiOperation({ summary: 'Khôi phục Shared Mailbox' })
   async restore(@Param('id') id: string, @Req() req: any) {
-    return this.sharedMailboxService.restore(id, req.user.id);
+    return this.sharedMailboxService.restore(id, req.user.email);
   }
 
   @Delete(':id/permanent')
+  @AuditAction('Xóa vĩnh viễn Shared Mailbox')
   @ApiOperation({ summary: 'Xóa vĩnh viễn Shared Mailbox' })
   async permanentDelete(@Param('id') id: string, @Req() req: any) {
-    return this.sharedMailboxService.permanentDelete(id, req.user.id);
+    return this.sharedMailboxService.permanentDelete(id, req.user.email);
   }
 
   @Post(':id/members')
+  @AuditAction('Thêm thành viên Shared Mailbox')
   @ApiOperation({ summary: 'Thêm thành viên vào Shared Mailbox' })
   async addMember(
     @Param('id') id: string,
     @Body() dto: AddSharedMailboxMemberDto,
     @Req() req: any,
   ) {
-    return this.sharedMailboxService.addMember(id, dto, req.user.id);
+    return this.sharedMailboxService.addMember(id, dto, req.user.email);
   }
 
   @Delete(':id/members/:userId')
+  @AuditAction('Xóa thành viên Shared Mailbox')
   @ApiOperation({ summary: 'Xóa thành viên khỏi Shared Mailbox' })
   async removeMember(
     @Param('id') id: string,
     @Param('userId') userId: string,
     @Req() req: any,
   ) {
-    return this.sharedMailboxService.removeMember(id, userId, req.user.id);
+    return this.sharedMailboxService.removeMember(id, userId, req.user.email);
   }
 }

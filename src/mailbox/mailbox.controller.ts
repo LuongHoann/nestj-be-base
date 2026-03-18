@@ -17,7 +17,8 @@ import {
   ImportMailboxDto,
   UpdateMailboxDto,
 } from './mailbox.dto';
-import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
+import { ExchangeAuthGuard } from '../auth/guards/exchange-auth.guard';
+import { AuditAction } from '../common/decorators/audit-action.decorator';
 
 @ApiTags('Mailbox')
 @Controller('mailbox')
@@ -42,6 +43,7 @@ export class MailboxController {
   }
 
   @Post()
+  @AuditAction('Tạo Mailbox')
   @ApiOperation({ summary: 'Create user/mailbox' })
   @ApiBody({ type: CreateMailboxDto })
   async create(@Body() dto: CreateMailboxDto) {
@@ -49,6 +51,7 @@ export class MailboxController {
   }
 
   @Put(':id')
+  @AuditAction('Cập nhật Mailbox')
   @ApiOperation({ summary: 'Update user/mailbox' })
   @ApiBody({ type: UpdateMailboxDto })
   async update(@Param('id') id: string, @Body() dto: UpdateMailboxDto) {
@@ -56,24 +59,28 @@ export class MailboxController {
   }
 
   @Delete(':id')
+  @AuditAction('Vô hiệu hóa Mailbox')
   @ApiOperation({ summary: 'Disable user/mailbox' })
   async remove(@Param('id') id: string) {
     return this.mailboxService.remove(id);
   }
 
   @Post(':id/restore')
+  @AuditAction('Khôi phục Mailbox')
   @ApiOperation({ summary: 'Restore user/mailbox' })
   async restore(@Param('id') id: string) {
     return this.mailboxService.restore(id);
   }
 
   @Delete(':id/permanent')
+  @AuditAction('Xóa vĩnh viễn Mailbox')
   @ApiOperation({ summary: 'Permanently delete user/mailbox' })
   async destroy(@Param('id') id: string) {
     return this.mailboxService.destroy(id);
   }
 
   @Post('import')
+  @AuditAction('Import Mailbox từ CSV')
   @ApiOperation({ summary: 'Import users/mailboxes from CSV' })
   @ApiBody({ type: ImportMailboxDto })
   async importCsv(@Body() dto: ImportMailboxDto) {
@@ -94,6 +101,7 @@ export class MailboxController {
   }
 
   @Post('sync/:id')
+  @AuditAction('Đồng bộ Mailbox')
   @ApiOperation({ summary: 'Sync mailbox for user' })
   @ApiBody({ schema: { properties: { password: { type: 'string' } } } })
   async sync(@Param('id') id: string, @Body('password') password?: string) {

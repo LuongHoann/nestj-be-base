@@ -1,10 +1,10 @@
 import { Entity, PrimaryKey, Property, ManyToOne } from '@mikro-orm/core';
-import { ulid } from 'ulid';
+import { OrganizationUnit } from './organization-unit.entity';
 
 @Entity({ tableName: 'shared_mailboxes' })
 export class SharedMailbox {
-  @PrimaryKey()
-  id: string = ulid();
+  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
+  id!: string;
 
   @Property()
   name!: string;
@@ -23,6 +23,9 @@ export class SharedMailbox {
 
   @Property({ nullable: true })
   createdBy?: string;
+
+  @ManyToOne(() => OrganizationUnit, { nullable: true })
+  orgUnit?: OrganizationUnit;
 
   @Property({ onCreate: () => new Date() })
   createdAt = new Date();

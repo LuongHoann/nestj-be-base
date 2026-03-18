@@ -22,7 +22,7 @@ export class SharedMailboxScriptRunner {
   private readonly scriptsPath: string;
 
   constructor(private readonly configService: ConfigService) {
-    this.timeoutMs = this.configService.get<number>('MAILBOX_SCRIPT_TIMEOUT_MS', 120000);
+    this.timeoutMs = parseInt(this.configService.get<string>('MAILBOX_SCRIPT_TIMEOUT_MS', '120000'), 10);
     this.scriptsPath = path.resolve('./scripts/shared-mailbox');
   }
 

@@ -16,7 +16,7 @@ import {
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
-import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
+import { ExchangeAuthGuard } from '../../auth/guards/exchange-auth.guard';
 import { ContactNoteService } from '../services/contact-note.service';
 import { CreateNoteDto, UpdateNoteDto } from '../dto/contact-note.dto';
 

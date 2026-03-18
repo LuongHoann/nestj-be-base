@@ -10,6 +10,8 @@ import { Observable } from 'rxjs';
 import { tap, catchError } from 'rxjs/operators';
 import { AuditLogService } from './audit.service';
 import { RequestContext } from '../common/context/request.context';
+import { Reflector } from '@nestjs/core';
+import { AUDIT_ACTION_KEY } from '../common/decorators/audit-action.decorator';
 
 /**
  * AuditLogInterceptor - Tự động ghi log cho các thao tác CUD
@@ -28,6 +30,7 @@ export class AuditLogInterceptor implements NestInterceptor {
   constructor(
     private readonly auditLogService: AuditLogService,
     private readonly requestContext: RequestContext,
+    private readonly reflector: Reflector,
   ) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
@@ -42,10 +45,10 @@ export class AuditLogInterceptor implements NestInterceptor {
 
     // Get user from context
     const user = this.requestContext.user;
-    const userId = user?.id || 'anonymous';
+    const userEmail = user?.email || 'anonymous';
 
     // ========== DEV LOG: Request Start ==========
-    this.logger.log(`📥 [${method}] ${url} | User: ${userId} | IP: ${ip}`);
+    this.logger.log(`📥 [${method}] ${url} | User: ${userEmail} | IP: ${ip}`);
 
     if (method !== 'GET' && body && Object.keys(body).length > 0) {
       // Mask sensitive fields in dev log
@@ -59,17 +62,22 @@ export class AuditLogInterceptor implements NestInterceptor {
 
         // ========== DEV LOG: Request Success ==========
         this.logger.log(
-          `✅ [${method}] ${url} | ${duration}ms | User: ${userId}`,
+          `✅ [${method}] ${url} | ${duration}ms | User: ${userEmail}`,
         );
 
         // ========== USER LOG: Only for CUD operations ==========
-        if (this.shouldLogToDatabase(method)) {
+        if (this.shouldLogToDatabase(method, context)) {
+          const actionMetadata = this.reflector.get<string>(
+            AUDIT_ACTION_KEY,
+            context.getHandler(),
+          );
+
           await this.logUserAction({
-            userId,
+            userEmail,
             method,
             collection,
             targetId: targetId || this.extractIdFromResponse(response),
-            action: this.mapMethodToAction(method),
+            action: actionMetadata || this.mapMethodToAction(method),
             success: true,
             ip,
             userAgent,
@@ -83,18 +91,23 @@ export class AuditLogInterceptor implements NestInterceptor {
 
         // ========== DEV LOG: Request Error ==========
         this.logger.error(
-          `❌ [${method}] ${url} | ${duration}ms | User: ${userId} | Error: ${error.message}`,
+          `❌ [${method}] ${url} | ${duration}ms | User: ${userEmail} | Error: ${error.message}`,
         );
         this.logger.debug(`   Stack: ${error.stack}`);
 
         // ========== USER LOG: Failed CUD operations ==========
-        if (this.shouldLogToDatabase(method)) {
+        if (this.shouldLogToDatabase(method, context)) {
+          const actionMetadata = this.reflector.get<string>(
+            AUDIT_ACTION_KEY,
+            context.getHandler(),
+          );
+
           await this.logUserAction({
-            userId,
+            userEmail,
             method,
             collection,
             targetId,
-            action: this.mapMethodToAction(method),
+            action: actionMetadata || this.mapMethodToAction(method),
             success: false,
             ip,
             userAgent,
@@ -114,7 +127,16 @@ export class AuditLogInterceptor implements NestInterceptor {
    * Xác định có nên ghi vào database không
    * Chỉ ghi cho các thao tác thay đổi dữ liệu
    */
-  private shouldLogToDatabase(method: string): boolean {
+  private shouldLogToDatabase(
+    method: string,
+    context: ExecutionContext,
+  ): boolean {
+    const hasDecorator = this.reflector.get<string>(
+      AUDIT_ACTION_KEY,
+      context.getHandler(),
+    );
+    if (hasDecorator) return true;
+
     return ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase());
   }
 
@@ -220,7 +242,7 @@ export class AuditLogInterceptor implements NestInterceptor {
    * Ghi User Log vào database
    */
   private async logUserAction(data: {
-    userId: string | number;
+    userEmail: string;
     method: string;
     collection: string;
     targetId: string | null;
@@ -232,7 +254,7 @@ export class AuditLogInterceptor implements NestInterceptor {
   }): Promise<void> {
     try {
       await this.auditLogService.logAction(
-        data.userId !== 'anonymous' ? ({ id: data.userId } as any) : null,
+        data.userEmail,
         data.action,
         data.collection,
         data.targetId || 'new',

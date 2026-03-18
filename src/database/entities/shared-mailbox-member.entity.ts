@@ -1,5 +1,4 @@
 import { Entity, PrimaryKey, Property, ManyToOne, Unique } from '@mikro-orm/core';
-import { ulid } from 'ulid';
 import { SharedMailbox } from './shared-mailbox.entity';
 
 export enum SharedMailboxRole {
@@ -10,14 +9,14 @@ export enum SharedMailboxRole {
 @Entity({ tableName: 'shared_mailbox_members' })
 @Unique({ properties: ['mailbox', 'userId'] }) // Ngăn chặn duplicate membership
 export class SharedMailboxMember {
-  @PrimaryKey()
-  id: string = ulid();
+  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
+  id!: string;
 
   @ManyToOne(() => SharedMailbox)
   mailbox!: SharedMailbox;
 
-  @Property()
-  userId!: string; // Reference to User ID
+  @Property({ type: 'uuid' })
+  userId!: string; // Reference to User ID (UUID)
 
   @Property({ type: 'string' })
   role: SharedMailboxRole = SharedMailboxRole.MEMBER;

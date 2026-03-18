@@ -26,6 +26,7 @@ import {
   StarMailDto,
   ReplyMailDto,
   ForwardMailDto,
+  ReportJunkDto,
 } from '../dto/exchange.dto';
 import { CreateEventDto, UpdateEventDto } from '../dto/calendar.dto';
 
@@ -40,6 +41,7 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { AuditAction } from '../../common/decorators/audit-action.decorator';
 
 @ApiTags('Webmail')
 @Controller('webmail')
@@ -51,6 +53,7 @@ export class ExchangeController {
   ) {}
 
   @Post('auth/login')
+  @AuditAction('Đăng nhập Webmail')
   @ApiOperation({ summary: 'Dang nhap mailbox' })
   @ApiBody({ type: ExchangeLoginDto })
   @ApiResponse({ status: 200, description: 'Exchange session tokens' })
@@ -58,12 +61,12 @@ export class ExchangeController {
     @Body() dto: ExchangeLoginDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { accessToken, refreshToken, email } = await this.authService.login(
+    const result = await this.authService.login(
       dto.email,
       dto.password,
     );
 
-    res.cookie('exchange_session', accessToken, {
+    res.cookie('exchange_session', result.accessToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
@@ -72,9 +75,11 @@ export class ExchangeController {
 
     return {
       success: true,
-      email,
-      accessToken,
-      refreshToken,
+      id: result.id,
+      name: result.name,
+      email: result.email,
+      accessToken: result.accessToken,
+      refreshToken: result.refreshToken,
     };
   }
 
@@ -319,6 +324,15 @@ export class ExchangeController {
   @ApiBody({ type: ForwardMailDto })
   async forward(@Body() dto: ForwardMailDto) {
     return this.mailService.forwardMessage(dto);
+  }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Post('mail/mark-as-junk')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Báo cáo spam / Không phải spam' })
+  @ApiBody({ type: ReportJunkDto })
+  async markAsJunk(@Body() dto: ReportJunkDto) {
+    return this.mailService.reportJunk(dto);
   }
 
   // ─── LỊCH & SỰ KIỆN (CALENDAR & REMINDERS) ───────────────────────────────────

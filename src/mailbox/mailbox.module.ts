@@ -4,7 +4,7 @@ import { MailboxController } from './mailbox.controller';
 import { MailboxService } from './mailbox.service';
 import { ScriptRunnerService } from './script-runner.service';
 import { GalService } from './gal.service';
-import { ExchangeAuthService } from 'src/exchange/services/exchange-auth.service';
+import { ExchangeAuthService } from '../exchange/services/exchange-auth.service';
 
 @Module({
   imports: [AuthModule],

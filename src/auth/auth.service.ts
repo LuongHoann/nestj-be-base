@@ -1,4 +1,4 @@
-﻿import {
+import {
   Injectable,
   UnauthorizedException,
   Logger,
@@ -29,21 +29,24 @@ export class AuthService {
     accessToken: string;
     exchangeAccessToken: string;
     exchangeRefreshToken: string;
+    id: string;
+    email: string;
+    name?: string;
   }> {
     const user = await this.em.findOne(User, { email });
     if (!user || !user.password) {
-      await this.auditLogService.logAuth(null, 'login_failed', { email });
+      await this.auditLogService.logAuth(email, 'login_failed', { email });
       throw new UnauthorizedException('Thông tin đăng nhập không hợp lệ!');
     }
 
     if (!user.isActive) {
-      await this.auditLogService.logAuth(user.id, 'login_failed', { email });
+      await this.auditLogService.logAuth(user.email, 'login_failed', { email });
       throw new UnauthorizedException('Tài khoản đã bị vô hiệu hoá');
     }
 
     const isValid = await argon2.verify(user.password, password);
     if (!isValid) {
-      await this.auditLogService.logAuth(user.id, 'login_failed', { email });
+      await this.auditLogService.logAuth(user.email, 'login_failed', { email });
       throw new UnauthorizedException('Thông tin đăng nhập không hợp lệ!');
     }
 
@@ -58,12 +61,15 @@ export class AuthService {
         password,
       );
 
-    await this.auditLogService.logAuth(user.id, 'login', { email });
+    await this.auditLogService.logAuth(user.email, 'login', { email });
 
     return {
       accessToken,
       exchangeAccessToken: exchangeTokens.accessToken,
       exchangeRefreshToken: exchangeTokens.refreshToken,
+      id: user.id,
+      email: user.email,
+      name: user.name,
     };
   }
 
@@ -94,7 +100,7 @@ export class AuthService {
     });
 
     await this.em.persistAndFlush(user);
-    await this.auditLogService.logAuth(user.id, 'login', {
+    await this.auditLogService.logAuth(user.email, 'login', {
       email,
       action: 'register',
     });

@@ -48,11 +48,13 @@ export class SharedMailboxService {
     return { items, total, page, pageSize: limit };
   }
 
-  async create(dto: CreateSharedMailboxDto, adminUserId: string) {
+  async create(dto: CreateSharedMailboxDto, adminEmail: string) {
     const existing = await this.em.findOne(SharedMailbox, { email: dto.email });
     if (existing) {
       throw new ConflictException('Email already exists');
     }
+
+    const adminUser = await this.em.findOne(User, { email: adminEmail });
 
     // Transactional Workflow: Run PS Script first, then save to DB
     const scriptResult = await this.scriptRunner.run('create', {
@@ -68,7 +70,7 @@ export class SharedMailboxService {
       email: dto.email,
       displayName: dto.displayName,
       exchangeGuid,
-      createdBy: adminUserId,
+      createdBy: adminUser?.id || adminEmail,
       isActive: true,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -78,7 +80,7 @@ export class SharedMailboxService {
       collection: 'shared_mailbox',
       targetId: mailbox.id,
       action: 'CREATE',
-      user: { id: adminUserId } as any,
+      userEmail: adminEmail,
       details: { email: dto.email, displayName: dto.displayName },
       timestamp: new Date(),
     });
@@ -96,12 +98,14 @@ export class SharedMailboxService {
     }
   }
 
-  async addMember(mailboxId: string, dto: AddSharedMailboxMemberDto, adminUserId: string) {
+  async addMember(mailboxId: string, dto: AddSharedMailboxMemberDto, adminEmail: string) {
     const mailbox = await this.em.findOne(SharedMailbox, { id: mailboxId });
     if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
 
     const targetUser = await this.em.findOne(User, { email: dto.userEmail });
     if (!targetUser) throw new NotFoundException('Target User not found');
+
+    const adminUser = await this.em.findOne(User, { email: adminEmail });
 
     const existingMember = await this.em.findOne(SharedMailboxMember, {
       mailbox,
@@ -122,7 +126,7 @@ export class SharedMailboxService {
       mailbox,
       userId: targetUser.id,
       role: dto.role,
-      addedBy: adminUserId,
+      addedBy: adminUser?.id || adminEmail,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -131,7 +135,7 @@ export class SharedMailboxService {
       collection: 'shared_mailbox',
       targetId: mailbox.id,
       action: 'ADD_MEMBER',
-      user: { id: adminUserId } as any,
+      userEmail: adminEmail,
       details: { targetUserId: targetUser.id, targetUserEmail: targetUser.email, role: dto.role },
       timestamp: new Date(),
     });
@@ -147,7 +151,7 @@ export class SharedMailboxService {
     }
   }
 
-  async removeMember(mailboxId: string, targetUserId: string, adminUserId: string) {
+  async removeMember(mailboxId: string, targetUserId: string, adminEmail: string) {
     const mailbox = await this.em.findOne(SharedMailbox, { id: mailboxId });
     if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
 
@@ -171,7 +175,7 @@ export class SharedMailboxService {
        collection: 'shared_mailbox',
        targetId: mailbox.id,
        action: 'REMOVE_MEMBER',
-       user: { id: adminUserId } as any,
+       userEmail: adminEmail,
        details: { targetUserId: targetUser.id, targetUserEmail: targetUser.email, previousRole: member.role },
        timestamp: new Date(),
     });
@@ -194,7 +198,7 @@ export class SharedMailboxService {
     return mailbox;
   }
 
-  async update(id: string, dto: UpdateSharedMailboxDto, adminUserId: string) {
+  async update(id: string, dto: UpdateSharedMailboxDto, adminEmail: string) {
     const mailbox = await this.em.findOne(SharedMailbox, { id });
     if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
 
@@ -221,7 +225,7 @@ export class SharedMailboxService {
       collection: 'shared_mailbox',
       targetId: mailbox.id,
       action: 'UPDATE',
-      user: { id: adminUserId } as any,
+      userEmail: adminEmail,
       details: { email: nextEmail, displayName: nextDisplayName },
       timestamp: new Date(),
     });
@@ -230,7 +234,7 @@ export class SharedMailboxService {
     return mailbox;
   }
 
-  async disable(id: string, adminUserId: string) {
+  async disable(id: string, adminEmail: string) {
     const mailbox = await this.em.findOne(SharedMailbox, { id });
     if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
 
@@ -245,7 +249,7 @@ export class SharedMailboxService {
       collection: 'shared_mailbox',
       targetId: mailbox.id,
       action: 'DISABLE',
-      user: { id: adminUserId } as any,
+      userEmail: adminEmail,
       timestamp: new Date(),
     });
 
@@ -253,12 +257,14 @@ export class SharedMailboxService {
     return { success: true };
   }
 
-  async getForUser(userId: string): Promise<SharedMailbox[]> {
-    const memberships = await this.em.find(SharedMailboxMember, { userId }, { populate: ['mailbox'] as any });
+  async getForUserByEmail(email: string): Promise<SharedMailbox[]> {
+    const user = await this.em.findOne(User, { email });
+    if (!user) return [];
+    const memberships = await this.em.find(SharedMailboxMember, { userId: user.id }, { populate: ['mailbox'] as any });
     return memberships.map(m => m.mailbox) as SharedMailbox[];
   }
 
-  async restore(id: string, adminUserId: string) {
+  async restore(id: string, adminEmail: string) {
     const mailbox = await this.em.findOne(SharedMailbox, { id });
     if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
 
@@ -273,7 +279,7 @@ export class SharedMailboxService {
       collection: 'shared_mailbox',
       targetId: mailbox.id,
       action: 'RESTORE',
-      user: { id: adminUserId } as any,
+      userEmail: adminEmail,
       timestamp: new Date(),
     });
 
@@ -281,7 +287,7 @@ export class SharedMailboxService {
     return { success: true };
   }
 
-  async permanentDelete(id: string, adminUserId: string) {
+  async permanentDelete(id: string, adminEmail: string) {
     const mailbox = await this.em.findOne(SharedMailbox, { id });
     if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
 
@@ -294,7 +300,7 @@ export class SharedMailboxService {
       collection: 'shared_mailbox',
       targetId: mailbox.id,
       action: 'PERMANENT_DELETE',
-      user: { id: adminUserId } as any,
+      userEmail: adminEmail,
       timestamp: new Date(),
     });
 

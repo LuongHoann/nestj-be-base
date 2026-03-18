@@ -6,8 +6,8 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EntityManager } from '@mikro-orm/core';
-import { User } from 'src/database/entities/user.entity';
-import { DragonflyService } from 'src/common/cache/dragonfly.service';
+import { User } from '../../database/entities/user.entity';
+import { DragonflyService } from '../../common/cache/dragonfly.service';
 import { ulid } from 'ulid';
 import * as crypto from 'crypto';
 import * as argon2 from 'argon2';
@@ -102,7 +102,7 @@ export class ExchangeAuthService {
   async login(
     email: string,
     password: string,
-  ): Promise<{ accessToken: string; refreshToken: string; email: string }> {
+  ): Promise<{ accessToken: string; refreshToken: string; email: string; id: string; name?: string }> {
     // Ensure user exists and verify password in DB
     const user = await this.em.findOne(User, { email });
     if (!user) {
@@ -135,7 +135,12 @@ export class ExchangeAuthService {
     }
 
     // 3. Issue tokens
-    return this.issueTokens(email, password);
+    const tokens = await this.issueTokens(email, password);
+    return {
+      ...tokens,
+      id: user.id,
+      name: user.name,
+    };
   }
 
   /**
@@ -186,6 +191,10 @@ export class ExchangeAuthService {
   async rotateRefreshToken(
     fullToken: string,
   ): Promise<{ accessToken: string; refreshToken: string }> {
+    if (!fullToken || typeof fullToken !== 'string') {
+      throw new UnauthorizedException('Token không được để trống !');
+    }
+
     const [tokenId, tokenSecret] = fullToken.split('.');
 
     if (!tokenId || !tokenSecret) {
@@ -346,6 +355,12 @@ export class ExchangeAuthService {
     email: string,
     password: string,
   ): Promise<void> {
+    const validate = this.configService.get<boolean>('EWS_VALIDATE_ON_LOGIN');
+    if (!validate) {
+      this.logger.log(`Skip EWS basic validation for ${email}`);
+      return;
+    }
+
     const service = await this.createEwsService(email, password);
     try {
       await Folder.Bind(service, WellKnownFolderName.Inbox);

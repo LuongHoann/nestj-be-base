@@ -180,4 +180,43 @@ export class DragonflyService implements OnModuleDestroy {
       return false;
     }
   }
+
+  /**
+   * Add members to a set safely
+   */
+  async sadd(key: string, ...members: string[]): Promise<number> {
+    if (!this.enabled || !this.client) return 0;
+    try {
+      return await this.client.sadd(key, ...members);
+    } catch (error) {
+      this.logger.warn(`Failed to sadd to key ${key}: ${error.message}`);
+      return 0;
+    }
+  }
+
+  /**
+   * Remove members from a set safely
+   */
+  async srem(key: string, ...members: string[]): Promise<number> {
+    if (!this.enabled || !this.client) return 0;
+    try {
+      return await this.client.srem(key, ...members);
+    } catch (error) {
+      this.logger.warn(`Failed to srem from key ${key}: ${error.message}`);
+      return 0;
+    }
+  }
+
+  /**
+   * Get all members of a set safely
+   */
+  async smembers(key: string): Promise<string[]> {
+    if (!this.enabled || !this.client) return [];
+    try {
+      return await this.client.smembers(key);
+    } catch (error) {
+      this.logger.warn(`Failed to smembers for key ${key}: ${error.message}`);
+      return [];
+    }
+  }
 }

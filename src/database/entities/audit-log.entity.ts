@@ -13,8 +13,8 @@ export class AuditLog {
   @PrimaryKey({ type: 'bigint' })
   id!: string;
 
-  @ManyToOne(() => User, { nullable: true, index: 'audit_log_user_id_index' })
-  user?: User;
+  @Property({ length: 255, nullable: true, index: 'audit_log_user_email_index' })
+  userEmail?: string;
 
   @Property({ length: 100, index: 'audit_log_collection_index' })
   collection!: string;

@@ -21,6 +21,16 @@ export class CreateMailboxDto {
   @IsString()
   @IsNotEmpty()
   password!: string;
+
+  @ApiProperty({ example: 'unit-id-123', required: false })
+  @IsString()
+  @IsOptional()
+  orgUnitId?: string;
+
+  @ApiProperty({ example: false, required: false })
+  @IsBoolean()
+  @IsOptional()
+  isAdmin?: boolean;
 }
 
 export class UpdateMailboxDto {

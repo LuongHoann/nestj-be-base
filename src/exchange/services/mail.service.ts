@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { REQUEST } from '@nestjs/core';
 import { EwsMailProvider } from './ews-mail.provider';
+import { SpamModerationService } from './spam-moderation.service';
 import { MailMessage } from '../interfaces/mail-provider.interface';
 import {
   SendMailDto,
@@ -17,6 +18,7 @@ import {
   StarMailDto,
   ReplyMailDto,
   ForwardMailDto,
+  ReportJunkDto,
 } from '../dto/exchange.dto';
 
 import { DragonflyService } from '../../common/cache/dragonfly.service';
@@ -37,6 +39,7 @@ export class MailService {
     private readonly provider: EwsMailProvider,
     private readonly dragonfly: DragonflyService,
     private readonly authService: ExchangeAuthService,
+    private readonly moderationService: SpamModerationService,
     @Inject(REQUEST) private readonly request: any,
   ) {}
 
@@ -586,6 +589,53 @@ export class MailService {
     }
 
     return result;
+  }
+
+  async reportJunk(dto: ReportJunkDto) {
+    const email = await this.getEmailFromSession();
+
+    await this.withProvider(async () => {
+      // 1. Thực hiện xử lý trên Exchange via Provider
+      await this.provider.markAsJunk(dto.ids, dto.isJunk, true);
+
+      // 2. Ghi log báo cáo spam nếu hành động là "đánh dấu thư rác"
+      if (dto.isJunk && email && dto.ids && dto.ids.length > 0) {
+        for (const messageId of dto.ids) {
+          try {
+            // Lấy thông tin người gửi để ghi log
+            const msg = await this.provider.getMessage(messageId);
+            if (msg && msg.from) {
+              await this.moderationService.reportSpam(
+                email,
+                msg.from.email,
+                messageId,
+              );
+            }
+          } catch (e) {
+            this.logger.warn(`Failed to log spam report for ${messageId}: ${e.message}`);
+          }
+        }
+      }
+
+      // 3. Xử lý Cache
+      if (email && this.dragonfly.enabled) {
+        const folders = new Map<string, string | undefined>();
+        folders.set(this.mapFolderTypeToId('inbox'), dto.mailbox);
+        folders.set(this.mapFolderTypeToId('spam'), dto.mailbox);
+
+        for (const [folder, mailbox] of folders.entries()) {
+          const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+          const key = `exchange:count:${email}${mailboxPrefix}:${folder}`;
+          await this.dragonfly.del(key);
+        }
+      }
+    });
+
+    if (email) {
+      await this.getFolderCounts(dto.mailbox);
+    }
+
+    return { success: true };
   }
 
   async getConversationMessages(messageId: string, maxItems: number = 50) {

@@ -354,3 +354,20 @@ export class ForwardMailDto {
   @IsOptional()
   mailbox?: string;
 }
+
+export class ReportJunkDto {
+  @ApiProperty({ example: ['SU5CT1g6MTIzNDU='] })
+  @IsArray()
+  @IsString({ each: true })
+  @IsNotEmpty({ each: true })
+  ids!: string[];
+
+  @ApiProperty({ example: true })
+  @IsNotEmpty()
+  isJunk!: boolean;
+
+  @ApiProperty({ example: 'shared@example.com', required: false })
+  @IsString()
+  @IsOptional()
+  mailbox?: string;
+}

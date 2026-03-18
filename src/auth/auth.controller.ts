@@ -13,17 +13,10 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { AuditAction } from '../common/decorators/audit-action.decorator';
 
 /**
  * AuthController - Handles authentication endpoints.
- *
- * Endpoints:
- * - POST /auth/login - Login with email/password
- * - POST /auth/refresh - Rotate refresh token
- * - POST /auth/logout - Revoke refresh token
- * - POST /auth/reset-password-request - Request password reset token
- * - POST /auth/reset-password - Reset password with token
- * - GET /auth/me - Get current user info (requires JWT)
  */
 @ApiTags('Auth')
 @Controller('auth')
@@ -31,6 +24,7 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Post('login')
+  @AuditAction('Đăng nhập')
   @ApiOperation({ summary: 'Đăng nhập hệ thống' })
   @ApiBody({ type: LoginDto })
   @ApiResponse({ status: 200, description: 'JWT + exchange session token' })
@@ -51,6 +45,7 @@ export class AuthController {
   }
 
   @Post('register')
+  @AuditAction('Tạo tài khoản')
   @ApiOperation({ summary: 'Tạo tài khoản hệ thống' })
   @ApiBody({ type: RegisterDto })
   @ApiResponse({ status: 201, description: 'Tạo user thành công' })

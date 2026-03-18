@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import databaseConfig from './config/database.config';
@@ -22,6 +23,10 @@ import { MailboxModule } from './mailbox/mailbox.module';
 import { SharedMailboxModule } from './shared-mailbox/shared-mailbox.module';
 import { SharedMailbox } from './database/entities/shared-mailbox.entity';
 import { SharedMailboxMember } from './database/entities/shared-mailbox-member.entity';
+import { SpamReport } from './database/entities/spam-report.entity';
+import { GlobalBlocklist } from './database/entities/global-blocklist.entity';
+import { SecurityPolicy } from './database/entities/security-policy.entity';
+import { OrganizationModule } from './organization/organization.module';
 
 @Module({
   imports: [
@@ -33,7 +38,7 @@ import { SharedMailboxMember } from './database/entities/shared-mailbox-member.e
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
         driver: PostgreSqlDriver,
-        entities: [User, File, AuditLog, Role, Permission, SharedMailbox, SharedMailboxMember],
+        entities: [User, File, AuditLog, Role, Permission, SharedMailbox, SharedMailboxMember, SpamReport, GlobalBlocklist, SecurityPolicy],
         dbName: configService.get<string>('database.name'),
         host: configService.get<string>('database.host'),
         port: configService.get<number>('database.port'),
@@ -58,6 +63,8 @@ import { SharedMailboxMember } from './database/entities/shared-mailbox-member.e
     ExchangeModule,
     MailboxModule,
     SharedMailboxModule,
+    ScheduleModule.forRoot(),
+    OrganizationModule,
   ],
   controllers: [],
   providers: [],

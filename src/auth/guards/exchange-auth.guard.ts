@@ -13,7 +13,7 @@ export class ExchangeAuthGuard implements CanActivate {
   constructor(private readonly authService: ExchangeAuthService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest<Request>();
+    const request = context.switchToHttp().getRequest<any>();
     const cookieToken = request.cookies?.['exchange_session'];
     const authHeader = request.headers?.authorization;
     const bearerToken =
@@ -26,16 +26,19 @@ export class ExchangeAuthGuard implements CanActivate {
       throw new UnauthorizedException('No session token provided');
     }
 
-    const isValid = await this.authService.validateSession(sessionToken);
+    const credentials = await this.authService.getCredentials(sessionToken);
 
-    if (!isValid) {
+    if (!credentials) {
       throw new UnauthorizedException('Invalid or expired session');
     }
 
     // Refresh session on each request
     await this.authService.refreshSession(sessionToken);
 
-    // Attach session token to request
+    // Attach user and session token to request
+    request.user = {
+      email: credentials.email,
+    };
     request['exchangeSession'] = sessionToken;
 
     return true;
