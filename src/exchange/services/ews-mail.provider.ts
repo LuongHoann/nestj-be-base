@@ -195,7 +195,15 @@ const CONTACT_DETAIL_PROPS = new PropertySet(
   ContactSchema.PhysicalAddresses,
 );
 
-const NOTE_LIST_PROPS = new PropertySet(
+const NOTE_FIND_PROPS = new PropertySet(
+  BasePropertySet.IdOnly,
+  ItemSchema.Subject,
+  ItemSchema.DateTimeCreated,
+  ItemSchema.LastModifiedTime,
+  ItemSchema.ItemClass,
+);
+
+const NOTE_DETAIL_PROPS = new PropertySet(
   BasePropertySet.IdOnly,
   ItemSchema.Subject,
   ItemSchema.Body,
@@ -2521,7 +2529,7 @@ export class EwsMailProvider implements IMailProvider {
     if (!this.service) throw new Error('EWS service not connected');
 
     const view = new ItemView(limit, (page - 1) * limit);
-    view.PropertySet = NOTE_LIST_PROPS;
+    view.PropertySet = NOTE_FIND_PROPS;
 
     const filter = new SearchFilter.IsEqualTo(
       ItemSchema.ItemClass,
@@ -2533,13 +2541,37 @@ export class EwsMailProvider implements IMailProvider {
       view,
     );
 
-    const items = result.Items.map((item: any) => ({
-      id: this.encodeNoteId(item.Id?.UniqueId ?? ''),
-      subject: item.Subject ?? '',
-      content: item.Body?.Text ?? '',
-      createdAt: this.toJsDate(item.DateTimeCreated),
-      updatedAt: this.toJsDate(item.LastModifiedTime),
-    }));
+    if (result.Items.length > 0) {
+      await this.service.LoadPropertiesForItems(result.Items, NOTE_DETAIL_PROPS);
+    }
+
+    const safeGetDate = (item: any, key: 'DateTimeCreated' | 'LastModifiedTime') => {
+      try {
+        return this.toJsDate(item[key]);
+      } catch {
+        return undefined;
+      }
+    };
+
+    const safeGetBodyText = (item: any) => {
+      try {
+        return item.Body?.Text ?? '';
+      } catch {
+        return '';
+      }
+    };
+
+    const items = result.Items.map((item: any) => {
+      const noteId = item.Id?.UniqueId ?? '';
+
+      return {
+        id: this.encodeNoteId(noteId),
+        subject: item.Subject ?? '',
+        content: safeGetBodyText(item),
+        createdAt: safeGetDate(item, 'DateTimeCreated'),
+        updatedAt: safeGetDate(item, 'LastModifiedTime'),
+      };
+    });
 
     return { items, total: result.TotalCount ?? items.length };
   }
@@ -2550,19 +2582,32 @@ export class EwsMailProvider implements IMailProvider {
   }): Promise<ExchangeNote> {
     if (!this.service) throw new Error('EWS service not connected');
 
-    const note = new (Item as any)(this.service) as Item;
+    // Exchange returns Message for this create flow; use EmailMessage to avoid type mismatch.
+    const note = new EmailMessage(this.service);
     note.Subject = payload.subject ?? '';
     note.Body = new MessageBody(BodyType.Text, payload.content);
     note.ItemClass = 'IPM.StickyNote';
 
     await note.Save(WellKnownFolderName.Notes);
+    const noteId = note.Id?.UniqueId ?? '';
+    if (!noteId) {
+      throw new Error('Create note failed: missing note id after save');
+    }
+
+    // Properties like DateTimeCreated/LastModifiedTime may not be populated right after Save.
+    // Re-bind with NOTE_DETAIL_PROPS before reading them.
+    const savedNote = await Item.Bind(
+      this.service,
+      new ItemId(noteId),
+      NOTE_DETAIL_PROPS,
+    );
 
     return {
-      id: this.encodeNoteId(note.Id?.UniqueId ?? ''),
-      subject: note.Subject ?? '',
-      content: payload.content,
-      createdAt: this.toJsDate(note.DateTimeCreated),
-      updatedAt: this.toJsDate(note.LastModifiedTime),
+      id: this.encodeNoteId(noteId),
+      subject: savedNote.Subject ?? '',
+      content: savedNote.Body?.Text ?? payload.content,
+      createdAt: this.toJsDate(savedNote.DateTimeCreated),
+      updatedAt: this.toJsDate(savedNote.LastModifiedTime),
     };
   }
 
@@ -2576,7 +2621,7 @@ export class EwsMailProvider implements IMailProvider {
     const note = await Item.Bind(
       this.service,
       new ItemId(itemId),
-      NOTE_LIST_PROPS,
+      NOTE_DETAIL_PROPS,
     );
 
     if (payload.subject !== undefined) note.Subject = payload.subject;
@@ -2601,7 +2646,7 @@ export class EwsMailProvider implements IMailProvider {
     const note = await Item.Bind(
       this.service,
       new ItemId(itemId),
-      NOTE_LIST_PROPS,
+      NOTE_DETAIL_PROPS,
     );
     await note.Delete(DeleteMode.MoveToDeletedItems);
   }
