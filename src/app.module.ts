@@ -8,6 +8,9 @@ import storageConfig from './config/storage.config';
 import ewsConfig from './config/ews.config';
 import { MetaModule } from './meta/meta.module';
 import { CommonModule } from './common/common.module';
+import { QueryModule } from './query/query.module';
+import { RepositoryModule } from './repository/repository.module';
+import { ServicesModule } from './services/services.module';
 import { AuthModule } from './auth/auth.module';
 import { FilesModule } from './files/files.module';
 import { User } from './database/entities/user.entity';
@@ -15,12 +18,18 @@ import { File } from './database/entities/file.entity';
 import { AuditLog } from './database/entities/audit-log.entity';
 import { Role } from './database/entities/role.entity';
 import { Permission } from './database/entities/permission.entity';
+import { Post } from './database/entities/post.entity';
+import { Comment } from './database/entities/comment.entity';
+import { RefreshToken } from './database/entities/refresh-token.entity';
+import { ResetPasswordToken } from './database/entities/reset-password-token.entity';
 import { RssFeed } from './database/entities/rss-feed.entity';
 import { RssArticle } from './database/entities/rss-article.entity';
 import { UserRssSubscription } from './database/entities/user-rss-subscription.entity';
 import { UserRssState } from './database/entities/user-rss-state.entity';
 import { AuditLogModule } from './audit/audit.module';
 import { ExchangeModule } from './exchange/exchange.module';
+import { ReportsController } from './controllers/reports.controller';
+import { ReportsService } from './services/reports.service';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { MailboxModule } from './mailbox/mailbox.module';
 import { RssModule } from './rss/rss.module';
@@ -41,6 +50,10 @@ import { RssModule } from './rss/rss.module';
           AuditLog,
           Role,
           Permission,
+          Post,
+          Comment,
+          RefreshToken,
+          ResetPasswordToken,
           RssFeed,
           RssArticle,
           UserRssSubscription,
@@ -64,6 +77,9 @@ import { RssModule } from './rss/rss.module';
     }),
     MetaModule,
     CommonModule,
+    QueryModule,
+    RepositoryModule,
+    ServicesModule,
     AuthModule,
     FilesModule,
     AuditLogModule,
@@ -71,7 +87,7 @@ import { RssModule } from './rss/rss.module';
     MailboxModule,
     RssModule,
   ],
-  controllers: [],
-  providers: [],
+  controllers: [ReportsController],
+  providers: [ReportsService],
 })
 export class AppModule { }
