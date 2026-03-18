@@ -2,11 +2,21 @@ import { Injectable, OnModuleDestroy, Logger, Inject } from '@nestjs/common';
 import Redis from 'ioredis';
 import dragonflyConfig from '../../config/dragonfly.config';
 
+type MemoryCacheEntry = {
+  value: string;
+  expiresAt: number | null;
+};
+
 @Injectable()
 export class DragonflyService implements OnModuleDestroy {
   private readonly logger = new Logger(DragonflyService.name);
   private client: Redis | null = null;
+  private readonly memoryStore = new Map<string, MemoryCacheEntry>();
   private isConnected = false;
+  private lastErrorMessage: string | null = null;
+  private lastErrorLoggedAt = 0;
+  private suppressedErrorCount = 0;
+  private readonly errorThrottleMs = 30000;
 
   constructor(
     @Inject(dragonflyConfig.KEY)
@@ -14,7 +24,46 @@ export class DragonflyService implements OnModuleDestroy {
   ) {
     if (this.config.enabled) {
       this.initClient();
+    } else {
+      this.logger.warn(
+        'DragonflyDB is disabled. Falling back to in-memory cache for the current process.',
+      );
     }
+  }
+
+  private get shouldUseMemoryFallback(): boolean {
+    return !this.config.enabled || !this.client || !this.isConnected;
+  }
+
+  private getExpiresAt(ttlSeconds?: number): number | null {
+    const effectiveTTL = ttlSeconds ?? this.config.ttl;
+
+    if (!effectiveTTL || effectiveTTL <= 0) {
+      return null;
+    }
+
+    return Date.now() + effectiveTTL * 1000;
+  }
+
+  private readMemoryEntry(key: string): MemoryCacheEntry | null {
+    const entry = this.memoryStore.get(key);
+    if (!entry) {
+      return null;
+    }
+
+    if (entry.expiresAt !== null && entry.expiresAt <= Date.now()) {
+      this.memoryStore.delete(key);
+      return null;
+    }
+
+    return entry;
+  }
+
+  private writeMemoryEntry(key: string, value: string, ttlSeconds?: number): void {
+    this.memoryStore.set(key, {
+      value,
+      expiresAt: this.getExpiresAt(ttlSeconds),
+    });
   }
 
   private initClient() {
@@ -26,11 +75,13 @@ export class DragonflyService implements OnModuleDestroy {
       host: this.config.host,
       port: this.config.port,
       password: this.config.password,
+      connectTimeout: 5000,
       // Retry strategy: keep trying to reconnect but don't block
       retryStrategy: (times) => {
-        const delay = Math.min(times * 50, 2000);
+        const delay = Math.min(times * 250, 5000);
         return delay;
       },
+      maxRetriesPerRequest: 1,
       // Don't crash on connection error
       enableOfflineQueue: false,
       lazyConnect: true, // Don't connect immediately in constructor
@@ -43,12 +94,20 @@ export class DragonflyService implements OnModuleDestroy {
     });
 
     this.client.on('connect', () => {
+      if (this.suppressedErrorCount > 0) {
+        this.logger.warn(
+          `DragonflyDB reconnected after ${this.suppressedErrorCount} suppressed connection errors`,
+        );
+        this.suppressedErrorCount = 0;
+      }
       this.logger.log('✅ Connected to DragonflyDB');
       this.isConnected = true;
+      this.lastErrorMessage = null;
+      this.lastErrorLoggedAt = 0;
     });
 
     this.client.on('error', (err) => {
-      this.logger.error(`❌ DragonflyDB Error: ${err.message}`);
+      this.logConnectionError(err);
       this.isConnected = false;
     });
 
@@ -62,22 +121,70 @@ export class DragonflyService implements OnModuleDestroy {
 
   async onModuleDestroy() {
     if (this.client) {
-      await this.client.quit();
+      try {
+        await this.client.quit();
+      } catch {
+        this.client.disconnect();
+      }
     }
   }
 
+  private logConnectionError(err: Error) {
+    const message = err.message || 'Unknown DragonflyDB error';
+    const now = Date.now();
+    const shouldLog =
+      this.lastErrorMessage !== message ||
+      now - this.lastErrorLoggedAt >= this.errorThrottleMs;
+
+    if (shouldLog) {
+      if (this.suppressedErrorCount > 0) {
+        this.logger.warn(
+          `Suppressed ${this.suppressedErrorCount} repeated DragonflyDB connection errors`,
+        );
+        this.suppressedErrorCount = 0;
+      }
+
+      this.logger.error(
+        `❌ DragonflyDB unavailable. Cache is temporarily disabled: ${message}`,
+      );
+      this.lastErrorMessage = message;
+      this.lastErrorLoggedAt = now;
+      return;
+    }
+
+    this.suppressedErrorCount += 1;
+  }
+
   get enabled(): boolean {
-    return this.config.enabled && this.isConnected && !!this.client;
+    return !this.shouldUseMemoryFallback;
   }
 
   /**
    * Get value from cache safely. Returns null if error or miss.
    */
   async get<T>(key: string): Promise<T | null> {
-    if (!this.enabled || !this.client) return null;
+    if (this.shouldUseMemoryFallback) {
+      const entry = this.readMemoryEntry(key);
+      if (!entry) {
+        return null;
+      }
+
+      try {
+        return JSON.parse(entry.value) as T;
+      } catch (error) {
+        this.logger.warn(`Failed to parse memory cache key ${key}: ${error.message}`);
+        this.memoryStore.delete(key);
+        return null;
+      }
+    }
+
+    const client = this.client;
+    if (!client) {
+      return null;
+    }
 
     try {
-      const data = await this.client.get(key);
+      const data = await client.get(key);
       if (!data) return null;
       return JSON.parse(data) as T;
     } catch (error) {
@@ -90,16 +197,28 @@ export class DragonflyService implements OnModuleDestroy {
    * Set value to cache safely.
    */
   async set(key: string, value: any, ttl?: number): Promise<void> {
-    if (!this.enabled || !this.client) return;
+    if (this.shouldUseMemoryFallback) {
+      try {
+        this.writeMemoryEntry(key, JSON.stringify(value), ttl);
+      } catch (error) {
+        this.logger.warn(`Failed to set memory cache key ${key}: ${error.message}`);
+      }
+      return;
+    }
+
+    const client = this.client;
+    if (!client) {
+      return;
+    }
 
     try {
       const serialized = JSON.stringify(value);
       const effectiveTTL = ttl || this.config.ttl;
 
       if (effectiveTTL > 0) {
-        await this.client.set(key, serialized, 'EX', effectiveTTL);
+        await client.set(key, serialized, 'EX', effectiveTTL);
       } else {
-        await this.client.set(key, serialized);
+        await client.set(key, serialized);
       }
     } catch (error) {
       this.logger.warn(`Failed to set cache key ${key}: ${error.message}`);
@@ -110,9 +229,18 @@ export class DragonflyService implements OnModuleDestroy {
    * Delete key from cache safely
    */
   async del(key: string): Promise<void> {
-    if (!this.enabled || !this.client) return;
+    if (this.shouldUseMemoryFallback) {
+      this.memoryStore.delete(key);
+      return;
+    }
+
+    const client = this.client;
+    if (!client) {
+      return;
+    }
+
     try {
-      await this.client.del(key);
+      await client.del(key);
     } catch (error) {
       this.logger.warn(`Failed to del cache key ${key}: ${error.message}`);
     }
@@ -123,10 +251,17 @@ export class DragonflyService implements OnModuleDestroy {
    * @returns true if key exists, false otherwise
    */
   async exists(key: string): Promise<boolean> {
-    if (!this.enabled || !this.client) return false;
+    if (this.shouldUseMemoryFallback) {
+      return this.readMemoryEntry(key) !== null;
+    }
+
+    const client = this.client;
+    if (!client) {
+      return false;
+    }
 
     try {
-      const result = await this.client.exists(key);
+      const result = await client.exists(key);
       return result === 1; // Redis EXISTS returns number of keys that exist (1 or 0 for single key)
     } catch (error) {
       this.logger.warn(
@@ -142,10 +277,26 @@ export class DragonflyService implements OnModuleDestroy {
    * @returns true if expiration was set, false otherwise
    */
   async expire(key: string, ttl: number): Promise<boolean> {
-    if (!this.enabled || !this.client) return false;
+    if (this.shouldUseMemoryFallback) {
+      const entry = this.readMemoryEntry(key);
+      if (!entry) {
+        return false;
+      }
+
+      this.memoryStore.set(key, {
+        ...entry,
+        expiresAt: this.getExpiresAt(ttl),
+      });
+      return true;
+    }
+
+    const client = this.client;
+    if (!client) {
+      return false;
+    }
 
     try {
-      const result = await this.client.expire(key, ttl);
+      const result = await client.expire(key, ttl);
       return result === 1; // Redis EXPIRE returns 1 if successful, 0 if key doesn't exist
     } catch (error) {
       this.logger.warn(
@@ -163,11 +314,28 @@ export class DragonflyService implements OnModuleDestroy {
     value: any,
     ttlSeconds: number,
   ): Promise<boolean> {
-    if (!this.enabled || !this.client) return false;
+    if (this.shouldUseMemoryFallback) {
+      if (this.readMemoryEntry(key)) {
+        return false;
+      }
+
+      try {
+        this.writeMemoryEntry(key, JSON.stringify(value), ttlSeconds);
+        return true;
+      } catch (error) {
+        this.logger.warn(`Failed to set NX memory cache key ${key}: ${error.message}`);
+        return false;
+      }
+    }
+
+    const client = this.client;
+    if (!client) {
+      return false;
+    }
 
     try {
       const serialized = JSON.stringify(value);
-      const result = await this.client.set(
+      const result = await client.set(
         key,
         serialized,
         'EX',

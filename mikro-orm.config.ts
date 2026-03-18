@@ -3,6 +3,10 @@ import { defineConfig } from '@mikro-orm/postgresql';
 import { User } from './src/database/entities/user.entity';
 import { File } from './src/database/entities/file.entity';
 import { AuditLog } from './src/database/entities/audit-log.entity';
+import { RssFeed } from './src/database/entities/rss-feed.entity';
+import { RssArticle } from './src/database/entities/rss-article.entity';
+import { UserRssSubscription } from './src/database/entities/user-rss-subscription.entity';
+import { UserRssState } from './src/database/entities/user-rss-state.entity';
 
 export default defineConfig({
   entities: ['./dist/database/entities/*.entity.js'],

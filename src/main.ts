@@ -7,9 +7,21 @@ import { json, urlencoded } from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  const corsOrigins = (process.env.FRONTEND_ORIGIN ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
   // Keep request body limit fixed in code.
   // 25MB file in base64 is larger than 25MB, so transport limit must be higher.
   const bodyLimit = '40mb';
+
+  if (corsOrigins.length > 0 || process.env.NODE_ENV !== 'production') {
+    app.enableCors({
+      origin: corsOrigins.length > 0 ? corsOrigins : true,
+      credentials: true,
+    });
+  }
 
   app.use(json({ limit: bodyLimit }));
   app.use(urlencoded({ extended: true, limit: bodyLimit }));

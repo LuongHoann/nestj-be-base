@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { REQUEST } from '@nestjs/core';
 import { EwsMailProvider } from './ews-mail.provider';
+import { ImapMailProvider } from './imap-mail.provider';
 import { SpamModerationService } from './spam-moderation.service';
 import { MailMessage } from '../interfaces/mail-provider.interface';
 import {
@@ -36,22 +37,45 @@ export class MailService {
   private static readonly MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024; // 25MB/file
 
   constructor(
-    private readonly provider: EwsMailProvider,
+    private readonly ewsProvider: EwsMailProvider,
+    private readonly imapProvider: ImapMailProvider,
     private readonly dragonfly: DragonflyService,
     private readonly authService: ExchangeAuthService,
     private readonly moderationService: SpamModerationService,
     @Inject(REQUEST) private readonly request: any,
-  ) {}
+  ) { }
 
-  private async withProvider<T>(operation: () => Promise<T>): Promise<T> {
+  private async resolveMailProvider() {
+    const token = this.request.cookies?.['exchange_session'];
+    if (!token) {
+      return this.ewsProvider as any;
+    }
+
+    const credentials = await this.authService.getCredentials(token);
+    return credentials?.mailProvider === 'imap'
+      ? (this.imapProvider as any)
+      : (this.ewsProvider as any);
+  }
+
+  private ensureProviderMethod(provider: any, methodName: string): void {
+    if (typeof provider?.[methodName] !== 'function') {
+      throw new BadRequestException(
+        'Tính năng này hiện chỉ hỗ trợ với kết nối EWS.',
+      );
+    }
+  }
+
+  private async withProvider<T>(operation: (provider: any) => Promise<T>): Promise<T> {
+    const provider = await this.resolveMailProvider();
+
     try {
-      await this.provider.connect();
-      return await operation();
+      await provider.connect();
+      return await operation(provider);
     } catch (error) {
       this.logger.error(`Mail operation failed: ${error.message}`, error.stack);
       throw error;
     } finally {
-      await this.provider.disconnect();
+      await provider.disconnect();
     }
   }
 
@@ -103,7 +127,7 @@ export class MailService {
   async getFolderCounts(mailbox?: string) {
     const email = await this.getEmailFromSession();
     if (!email) {
-      return this.withProvider(() => this.provider.getFolderCounts(mailbox));
+      return this.withProvider((provider) => provider.getFolderCounts(mailbox));
     }
 
     const standardFolders = MAIL_FOLDERS.map((f) => f.id);
@@ -134,9 +158,9 @@ export class MailService {
       }
     }
 
-    const counts = await this.withProvider(() =>
-      this.provider.getFolderCounts(mailbox),
-    );
+    const counts = (await this.withProvider((provider) =>
+      provider.getFolderCounts(mailbox),
+    )) as any;
 
     if (this.dragonfly.enabled) {
       const ttl = 300;
@@ -150,14 +174,14 @@ export class MailService {
     const mappedCounts: Record<string, { total: number; unread: number }> = {};
     for (const [id, count] of Object.entries(counts)) {
       const type = this.mapIdToFolderType(id);
-      mappedCounts[type] = count;
+      mappedCounts[type] = count as any;
     }
 
     return mappedCounts;
   }
 
   async getFolders() {
-    return this.withProvider(() => this.provider.getFolders());
+    return this.withProvider((provider) => provider.getFolders());
   }
 
   async getMessages(
@@ -167,13 +191,13 @@ export class MailService {
     mailbox?: string,
   ) {
     const folderId = this.mapFolderTypeToId(folderType);
-    return this.withProvider(() =>
-      this.provider.getMessages(folderId, page, pageSize, mailbox),
+    return this.withProvider((provider) =>
+      provider.getMessages(folderId, page, pageSize, mailbox),
     );
   }
 
   async getMessage(id: string) {
-    const message = await this.withProvider(() => this.provider.getMessage(id));
+    const message = await this.withProvider((provider) => provider.getMessage(id));
 
     try {
       const email = await this.getEmailFromSession();
@@ -190,7 +214,7 @@ export class MailService {
         const current = await this.dragonfly.get<{
           total: number;
           unread: number;
-        }>(key);
+        }>(key) as any;
 
         if (current && current.unread > 0) {
           await this.dragonfly.del(key);
@@ -204,15 +228,16 @@ export class MailService {
   }
 
   async downloadAttachment(messageId: string, index: number) {
-    return this.withProvider(() =>
-      this.provider.downloadAttachment(messageId, index),
-    );
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'downloadAttachment');
+      return provider.downloadAttachment(messageId, index);
+    });
   }
 
   async sendMessage(dto: SendMailDto) {
     this.validateAttachmentsSize(dto.attachments);
-    const result = await this.withProvider(() =>
-      this.provider.sendMessage(dto),
+    const result = await this.withProvider((provider) =>
+      provider.sendMessage(dto),
     );
 
     // Xóa cache song song (fire-and-forget) để không block response trả về client
@@ -230,7 +255,7 @@ export class MailService {
 
   async saveDraft(dto: SaveDraftDto) {
     this.validateAttachmentsSize(dto.attachments);
-    const result = await this.withProvider(() => this.provider.saveDraft(dto));
+    const result = await this.withProvider((provider) => provider.saveDraft(dto));
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
       const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
@@ -248,8 +273,8 @@ export class MailService {
     folder: string = 'inbox',
     mailbox?: string,
   ) {
-    return this.withProvider(() =>
-      this.provider.search(query, page, pageSize, folder, mailbox),
+    return this.withProvider((provider) =>
+      provider.search(query, page, pageSize, folder, mailbox),
     );
   }
 
@@ -258,18 +283,18 @@ export class MailService {
       targetFolderType,
       targetFolderType,
     );
-    return this.withProvider(() =>
-      this.provider.moveMessage(messageId, targetFolderId),
+    return this.withProvider((provider) =>
+      provider.moveMessage(messageId, targetFolderId),
     );
   }
 
   async markAsRead(dto: MarkReadDto) {
     const email = await this.getEmailFromSession();
 
-    await this.withProvider(async () => {
+    await this.withProvider(async (provider) => {
       if (dto.all && dto.folder) {
         const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessages(folderId, dto.isRead, dto.mailbox);
+        await provider.markAllMessages(folderId, dto.isRead, dto.mailbox);
 
         if (email && this.dragonfly.enabled) {
           const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
@@ -277,10 +302,9 @@ export class MailService {
           await this.dragonfly.del(key);
         }
       } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.markMessages(dto.ids, dto.isRead);
+        await provider.markMessages(dto.ids, dto.isRead);
 
         if (email && this.dragonfly.enabled) {
-          const folders = new Map<string, string | undefined>();
           for (const id of dto.ids) {
             try {
               const decoded = Buffer.from(id, 'base64').toString('utf8');
@@ -288,14 +312,11 @@ export class MailService {
               const rawFolder = parts[0];
               const mailbox = parts[2];
               const folder = resolveFolderId(rawFolder, rawFolder);
-              if (folder) folders.set(folder, mailbox);
+              if (folder) {
+                const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+                await this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:${folder}`);
+              }
             } catch (e) {}
-          }
-
-          for (const [folder, mailbox] of folders.entries()) {
-            const mailboxPrefix = mailbox ? `:${mailbox}` : '';
-            const key = `exchange:count:${email}${mailboxPrefix}:${folder}`;
-            await this.dragonfly.del(key);
           }
         }
       }
@@ -315,10 +336,10 @@ export class MailService {
       dto.targetFolder,
     );
 
-    await this.withProvider(async () => {
+    await this.withProvider(async (provider) => {
       if (dto.all && dto.sourceFolder) {
         const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder);
-        await this.provider.moveAllMessages(sourceFolderId, targetFolderId, dto.mailbox);
+        await provider.moveAllMessages(sourceFolderId, targetFolderId, dto.mailbox);
 
         if (email && this.dragonfly.enabled) {
           const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
@@ -326,7 +347,7 @@ export class MailService {
           await this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:${targetFolderId}`);
         }
       } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.moveMessagesBatch(dto.ids, targetFolderId);
+        await provider.moveMessagesBatch(dto.ids, targetFolderId);
 
         if (email && this.dragonfly.enabled) {
           const folders = new Map<string, string | undefined>();
@@ -369,14 +390,14 @@ export class MailService {
     ).length;
     if (selectedModes !== 1) {
       throw new BadRequestException(
-        'Payload khong hop le. Chon dung 1 mode: messageId, ids, hoac all + sourceFolder',
+        'Payload không hợp lệ. Chọn đúng 1 mode: messageId, ids, hoặc all + sourceFolder',
       );
     }
 
     const email = await this.getEmailFromSession();
     const affectedFolders = new Map<string, string | undefined>();
 
-    const deletedCount = await this.withProvider(async () => {
+    const deletedCount = await this.withProvider(async (provider) => {
       if (hasSingle && dto.messageId) {
         const decoded = Buffer.from(dto.messageId, 'base64').toString('utf8');
         const parts = decoded.split('::');
@@ -384,7 +405,7 @@ export class MailService {
         const mailbox = parts[2];
         const folder = resolveFolderId(rawFolder, rawFolder);
         if (folder) affectedFolders.set(folder, mailbox);
-        return this.provider.permanentlyDeleteMessages([dto.messageId]);
+        return provider.permanentlyDeleteMessages([dto.messageId]);
       }
 
       if (hasMany && dto.ids) {
@@ -414,17 +435,17 @@ export class MailService {
 
           if (invalidId) {
             throw new BadRequestException(
-              'Danh sach ids co mail khong thuoc sourceFolder',
+              'Danh sách ids có mail không thuộc sourceFolder',
             );
           }
         }
 
-        return this.provider.permanentlyDeleteMessages(dto.ids);
+        return provider.permanentlyDeleteMessages(dto.ids);
       }
 
       const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder!);
       affectedFolders.set(sourceFolderId, dto.mailbox);
-      return this.provider.permanentlyDeleteAllMessages(sourceFolderId, dto.mailbox);
+      return provider.permanentlyDeleteAllMessages(sourceFolderId, dto.mailbox);
     });
 
     if (email && this.dragonfly.enabled) {
@@ -444,10 +465,11 @@ export class MailService {
   async markStar(dto: StarMailDto) {
     const email = await this.getEmailFromSession();
 
-    await this.withProvider(async () => {
+    await this.withProvider(async (provider) => {
       if (dto.all && dto.folder) {
         const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessagesStar(folderId, true, dto.mailbox);
+        this.ensureProviderMethod(provider, 'markAllMessagesStar');
+        await provider.markAllMessagesStar(folderId, true, dto.mailbox);
 
         if (email && this.dragonfly.enabled) {
           const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
@@ -455,7 +477,8 @@ export class MailService {
           await this.dragonfly.del(key);
         }
       } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.markMessagesStar(dto.ids, true);
+        this.ensureProviderMethod(provider, 'markMessagesStar');
+        await provider.markMessagesStar(dto.ids, true);
 
         if (email && this.dragonfly.enabled) {
           const folders = new Map<string, string | undefined>();
@@ -478,7 +501,7 @@ export class MailService {
         }
       } else {
         throw new BadRequestException(
-          'Payload khong hop le. Can ids hoac all + folder',
+          'Payload không hợp lệ. Cần ids hoặc all + folder',
         );
       }
     });
@@ -493,10 +516,11 @@ export class MailService {
   async unmarkStar(dto: StarMailDto) {
     const email = await this.getEmailFromSession();
 
-    await this.withProvider(async () => {
+    await this.withProvider(async (provider) => {
       if (dto.all && dto.folder) {
         const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessagesStar(folderId, false, dto.mailbox);
+        this.ensureProviderMethod(provider, 'markAllMessagesStar');
+        await provider.markAllMessagesStar(folderId, false, dto.mailbox);
 
         if (email && this.dragonfly.enabled) {
           const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
@@ -504,7 +528,8 @@ export class MailService {
           await this.dragonfly.del(key);
         }
       } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.markMessagesStar(dto.ids, false);
+        this.ensureProviderMethod(provider, 'markMessagesStar');
+        await provider.markMessagesStar(dto.ids, false);
 
         if (email && this.dragonfly.enabled) {
           const folders = new Map<string, string | undefined>();
@@ -527,7 +552,7 @@ export class MailService {
         }
       } else {
         throw new BadRequestException(
-          'Payload khong hop le. Can ids hoac all + folder',
+          'Payload không hợp lệ. Cần ids hoặc all + folder',
         );
       }
     });
@@ -541,8 +566,9 @@ export class MailService {
 
   async replyMessage(dto: ReplyMailDto) {
     this.validateAttachmentsSize(dto.attachments);
-    const result = await this.withProvider(() =>
-      this.provider.replyMessage({
+    const result = await this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'replyMessage');
+      return provider.replyMessage({
         messageId: dto.messageId,
         html: dto.html,
         text: dto.text,
@@ -552,8 +578,8 @@ export class MailService {
           contentType: att.contentType,
           content: att.content,
         })),
-      }),
-    );
+      });
+    });
 
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
@@ -566,8 +592,9 @@ export class MailService {
 
   async forwardMessage(dto: ForwardMailDto) {
     this.validateAttachmentsSize(dto.attachments);
-    const result = await this.withProvider(() =>
-      this.provider.forwardMessage({
+    const result = await this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'forwardMessage');
+      return provider.forwardMessage({
         messageId: dto.messageId,
         to: dto.to,
         cc: dto.cc,
@@ -579,8 +606,8 @@ export class MailService {
           contentType: att.contentType,
           content: att.content,
         })),
-      }),
-    );
+      });
+    });
 
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
@@ -594,16 +621,16 @@ export class MailService {
   async reportJunk(dto: ReportJunkDto) {
     const email = await this.getEmailFromSession();
 
-    await this.withProvider(async () => {
+    await this.withProvider(async (provider) => {
       // 1. Thực hiện xử lý trên Exchange via Provider
-      await this.provider.markAsJunk(dto.ids, dto.isJunk, true);
+      await provider.markAsJunk(dto.ids, dto.isJunk, true);
 
       // 2. Ghi log báo cáo spam nếu hành động là "đánh dấu thư rác"
       if (dto.isJunk && email && dto.ids && dto.ids.length > 0) {
         for (const messageId of dto.ids) {
           try {
             // Lấy thông tin người gửi để ghi log
-            const msg = await this.provider.getMessage(messageId);
+            const msg = await provider.getMessage(messageId);
             if (msg && msg.from) {
               await this.moderationService.reportSpam(
                 email,
@@ -639,38 +666,70 @@ export class MailService {
   }
 
   async getConversationMessages(messageId: string, maxItems: number = 50) {
-    return this.withProvider(() =>
-      this.provider.getConversationMessages(messageId, maxItems),
-    );
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'getConversationMessages');
+      return provider.getConversationMessages(messageId, maxItems);
+    });
   }
 
   // ─── CALENDAR & REMINDERS ────────────────────────────────────────────────────────
 
-  async createEvent(payload: any) {
-    return this.withProvider(() => this.provider.createEvent(payload));
+  async createEvent(payload: {
+    subject: string;
+    body: string;
+    start: string;
+    end: string;
+    location?: string;
+    isAllDayEvent?: boolean;
+    isReminderSet?: boolean;
+    reminderMinutesBeforeStart?: number;
+    mailbox?: string;
+  }) {
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'createEvent');
+      return provider.createEvent(payload);
+    });
   }
 
   async getEvents(startDate: string, endDate: string) {
-    return this.withProvider(() => this.provider.getEvents(startDate, endDate));
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'getEvents');
+      return provider.getEvents(startDate, endDate);
+    });
   }
 
   async getEventDetails(eventId: string) {
-    return this.withProvider(() => this.provider.getEventDetails(eventId));
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'getEventDetails');
+      return provider.getEventDetails(eventId);
+    });
   }
 
   async updateEvent(eventId: string, payload: any) {
-    return this.withProvider(() => this.provider.updateEvent(eventId, payload));
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'updateEvent');
+      return provider.updateEvent(eventId, payload);
+    });
   }
 
   async deleteEvent(eventId: string) {
-    return this.withProvider(() => this.provider.deleteEvent(eventId));
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'deleteEvent');
+      return provider.deleteEvent(eventId);
+    });
   }
 
   async getActiveReminders() {
-    return this.withProvider(() => this.provider.getActiveReminders());
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'getActiveReminders');
+      return provider.getActiveReminders();
+    });
   }
 
   async dismissReminder(eventId: string) {
-    return this.withProvider(() => this.provider.dismissReminder(eventId));
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'dismissReminder');
+      return provider.dismissReminder(eventId);
+    });
   }
 }

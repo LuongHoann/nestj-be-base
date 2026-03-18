@@ -5,6 +5,7 @@ import * as nodemailer from 'nodemailer';
 type SmtpCredentials = {
   email: string;
   password: string;
+  authIdentity?: string;
 };
 
 type MailboxTransporter = {
@@ -53,7 +54,8 @@ export class SmtpSenderService implements OnModuleDestroy {
   private async getOrCreateTransporter(
     credentials: SmtpCredentials,
   ): Promise<MailboxTransporter> {
-    const existing = this.transporters.get(credentials.email);
+    const transporterKey = credentials.authIdentity || credentials.email;
+    const existing = this.transporters.get(transporterKey);
 
     if (existing && existing.password === credentials.password) {
       return existing;
@@ -64,7 +66,7 @@ export class SmtpSenderService implements OnModuleDestroy {
         existing.transporter.close();
       } catch (error) {
         this.logger.warn(
-          `Failed to close old SMTP transporter for ${credentials.email}: ${error.message}`,
+          `Failed to close old SMTP transporter for ${transporterKey}: ${error.message}`,
         );
       }
     }
@@ -79,8 +81,8 @@ export class SmtpSenderService implements OnModuleDestroy {
       lastUsedAt: Date.now(),
     };
 
-    this.transporters.set(credentials.email, entry);
-    this.logger.log(`Initialized SMTP pool for ${credentials.email}`);
+    this.transporters.set(transporterKey, entry);
+    this.logger.log(`Initialized SMTP pool for ${transporterKey}`);
     return entry;
   }
 
@@ -122,7 +124,7 @@ export class SmtpSenderService implements OnModuleDestroy {
       secure,
       requireTLS: true,
       auth: {
-        user: credentials.email,
+        user: credentials.authIdentity || credentials.email,
         pass: credentials.password,
       },
       tls: {

@@ -15,6 +15,7 @@ export type ScriptAction =
 export class ScriptRunnerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ScriptRunnerService.name);
   private readonly timeoutMs: number;
+  private readonly workerEnabled: boolean;
 
   private workerProcess: ChildProcess | null = null;
   private responseReader: readline.Interface | null = null;
@@ -24,39 +25,60 @@ export class ScriptRunnerService implements OnModuleInit, OnModuleDestroy {
   > = new Map();
   private requestCounter = 0;
   private isWorkerReady = false;
+  private workerCommand: string | null = null;
+  private restartTimer: NodeJS.Timeout | null = null;
+  private pythonMissingDetected = false;
 
   constructor(private readonly configService: ConfigService) {
     this.timeoutMs = this.configService.get<number>(
       'MAILBOX_SCRIPT_TIMEOUT_MS',
       120000,
     );
+    this.workerEnabled =
+      this.configService.get<string>('MAILBOX_WORKER_ENABLED') !== 'false';
   }
 
   onModuleInit() {
-    this.startWorker();
+    if (!this.workerEnabled) {
+      this.logger.log('Mailbox worker is disabled by configuration');
+      return;
+    }
+
+    void this.startWorker();
   }
 
   onModuleDestroy() {
     this.stopWorker();
   }
 
-  private startWorker() {
-    const workerPath = path.resolve('./scripts/mailbox/exchange-worker.py');
-    const isWin = process.platform === 'win32';
-    // Thử lần lượt các lệnh Python phổ biến
-    const commandsToTry = isWin ? ['python', 'py', 'python3'] : ['python3', 'python'];
-    
-    this.trySpawnWorker(commandsToTry, workerPath);
-  }
-
-  private trySpawnWorker(cmds: string[], workerPath: string) {
-    if (cmds.length === 0) {
-      this.isWorkerReady = false;
-      this.logger.error('❌ FATAL: Không tìm thấy lệnh Python nào (python, py, python3) trên hệ thống!');
+  private async startWorker() {
+    if (!this.workerEnabled || this.workerProcess) {
       return;
     }
 
-    const currentCmd = cmds[0];
+    const workerPath = path.resolve('./scripts/mailbox/exchange-worker.py');
+    const isWin = process.platform === 'win32';
+    const configuredCommand = this.configService.get<string>('MAILBOX_PYTHON_CMD');
+    const commandsToTry = configuredCommand
+      ? [configuredCommand]
+      : isWin
+        ? ['py', 'python', 'python3']
+        : ['python3', 'python'];
+
+    const resolvedCommand = await this.resolvePythonCommand(commandsToTry);
+    if (!resolvedCommand) {
+      this.logger.warn(
+        'Mailbox worker is disabled because no usable Python interpreter was found',
+      );
+      return;
+    }
+
+    this.workerCommand = resolvedCommand;
+    this.trySpawnWorker(resolvedCommand, workerPath);
+  }
+
+  private trySpawnWorker(currentCmd: string, workerPath: string) {
+    this.pythonMissingDetected = false;
     this.logger.log(`🚀 Đang khởi động Exchange Worker với: ${currentCmd}`);
 
     try {
@@ -66,13 +88,8 @@ export class ScriptRunnerService implements OnModuleInit, OnModuleDestroy {
       });
 
       child.on('error', (err: any) => {
-        if (err.code === 'ENOENT') {
-          // Lệnh không tồn tại, thử lệnh tiếp theo trong danh sách
-          this.trySpawnWorker(cmds.slice(1), workerPath);
-        } else {
-          this.logger.error(`❌ Worker process error (${currentCmd}): ${err.message}`);
-          this.isWorkerReady = false;
-        }
+        this.logger.error(`❌ Worker process error (${currentCmd}): ${err.message}`);
+        this.isWorkerReady = false;
       });
 
       child.on('spawn', () => {
@@ -83,17 +100,71 @@ export class ScriptRunnerService implements OnModuleInit, OnModuleDestroy {
       });
 
       child.on('close', (code) => {
-        if (this.isWorkerReady) {
+        const missingPython = this.pythonMissingDetected || code === 9009;
+        const wasReady = this.isWorkerReady;
+
+        this.isWorkerReady = false;
+        this.workerProcess = null;
+        this.cleanupWorker();
+
+        if (missingPython) {
+          this.logger.error(
+            `Mailbox worker disabled because Python is not available for command '${currentCmd}'`,
+          );
+          return;
+        }
+
+        if (wasReady) {
           this.logger.warn(`⚠️ Exchange Worker đã thoát (code: ${code}). Tự khởi động lại sau 5s...`);
-          this.isWorkerReady = false;
-          this.cleanupWorker();
-          setTimeout(() => this.startWorker(), 5000);
+          this.restartTimer = setTimeout(() => {
+            this.restartTimer = null;
+            void this.startWorker();
+          }, 5000);
         }
       });
     } catch (error) {
       this.logger.error(`❌ Lỗi khi spawn worker: ${error.message}`);
-      this.trySpawnWorker(cmds.slice(1), workerPath);
     }
+  }
+
+  private async resolvePythonCommand(commands: string[]): Promise<string | null> {
+    for (const command of commands) {
+      const isUsable = await this.isPythonCommandUsable(command);
+      if (isUsable) {
+        return command;
+      }
+    }
+
+    return null;
+  }
+
+  private isPythonCommandUsable(command: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const probe = spawn(command, ['--version'], {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      let output = '';
+
+      probe.stdout?.on('data', (chunk) => {
+        output += chunk.toString();
+      });
+
+      probe.stderr?.on('data', (chunk) => {
+        output += chunk.toString();
+      });
+
+      probe.on('error', () => resolve(false));
+      probe.on('close', (code) => {
+        const normalized = output.toLowerCase();
+        const missingAlias =
+          normalized.includes('python was not found') ||
+          normalized.includes('microsoft store') ||
+          normalized.includes('app execution aliases');
+        resolve(code === 0 && normalized.includes('python') && !missingAlias);
+      });
+    });
   }
 
   private setupWorkerCommunication() {
@@ -126,7 +197,20 @@ export class ScriptRunnerService implements OnModuleInit, OnModuleDestroy {
 
     this.workerProcess.stderr?.on('data', (chunk) => {
       const msg = chunk.toString().trim();
-      if (msg) this.logger.debug(`[Worker Debug]: ${msg}`);
+      if (!msg) {
+        return;
+      }
+
+      const normalized = msg.toLowerCase();
+      if (
+        normalized.includes('python was not found') ||
+        normalized.includes('microsoft store') ||
+        normalized.includes('app execution aliases')
+      ) {
+        this.pythonMissingDetected = true;
+      }
+
+      this.logger.debug(`[Worker Debug]: ${msg}`);
     });
   }
 
@@ -145,6 +229,10 @@ export class ScriptRunnerService implements OnModuleInit, OnModuleDestroy {
 
   private stopWorker() {
     this.isWorkerReady = false;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
     if (this.workerProcess) {
       this.workerProcess.stdin?.end();
       this.workerProcess.kill();

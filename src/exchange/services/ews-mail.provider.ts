@@ -138,9 +138,6 @@ const LIST_PROPS = new PropertySet(
   EmailMessageSchema.IsRead,
   ItemSchema.HasAttachments,
   ItemSchema.Categories,
-  PR_FLAG_STATUS,
-  PR_SENDER_SMTP_ADDRESS,
-  PR_SENT_REPRESENTING_SMTP_ADDRESS,
 );
 
 /** Dùng khi load chi tiết message */
@@ -215,7 +212,11 @@ export class EwsMailProvider implements IMailProvider {
   private readonly logger = new Logger(EwsMailProvider.name);
   private service: ExchangeService | null = null;
   private email: string | null = null;
-  private credentials: { email: string; password: string } | null = null;
+  private credentials: {
+    email: string;
+    password: string;
+    authIdentity?: string;
+  } | null = null;
 
   constructor(
     private readonly configService: ConfigService,
@@ -223,7 +224,7 @@ export class EwsMailProvider implements IMailProvider {
     private readonly authService: ExchangeAuthService,
     private readonly smtpSenderService: SmtpSenderService,
     @Inject(REQUEST) private readonly request: any,
-  ) {}
+  ) { }
 
   private parseEmailAddress(value: string): { name: string; email: string } {
     const trimmed = value?.trim?.() ?? '';
@@ -278,31 +279,39 @@ export class EwsMailProvider implements IMailProvider {
       throw new UnauthorizedException('Password not found in credentials');
 
     this.email = creds.email;
-    this.credentials = { email: creds.email, password: creds.password };
+    this.credentials = {
+      email: creds.email,
+      password: creds.password,
+      authIdentity: creds.authIdentity,
+    };
+
+    const cfg = this.ewsConfig;
+    if (!cfg.url) throw new Error('EWS_URL is not configured');
+
+    if (!cfg.tlsRejectUnauthorized) {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    }
+
+    // Exchange 2019 on-premises tương thích với ExchangeVersion.Exchange2016
+    const version =
+      ExchangeVersion[cfg.version as keyof typeof ExchangeVersion] ??
+      ExchangeVersion.Exchange2016;
 
     // Kiểm tra global service cache để tránh tạo quá nhiều connections (lỗi concurrent limit)
     let service = globalExchangeServices.get(creds.email);
 
     if (!service) {
-      const cfg = this.ewsConfig;
-      if (!cfg.url) throw new Error('EWS_URL is not configured');
-
-      if (!cfg.tlsRejectUnauthorized) {
-        process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-      }
-
-      // Exchange 2019 on-premises tương thích với ExchangeVersion.Exchange2016
-      const version =
-        ExchangeVersion[cfg.version as keyof typeof ExchangeVersion] ??
-        ExchangeVersion.Exchange2016;
-
       service = new ExchangeService(version);
-      service.Url = new Uri(cfg.url);
-      service.Credentials = new WebCredentials(creds.email, creds.password);
-
-      // Lưu lại để dùng chung
       globalExchangeServices.set(creds.email, service);
     }
+
+    // Luôn cập nhật endpoint và credentials hiện tại để tránh tái sử dụng phiên
+    // EWS cũ với password đã lỗi thời sau khi user đăng nhập lại.
+    service.Url = new Uri(cfg.url);
+    service.Credentials = new WebCredentials(
+      creds.authIdentity || creds.email,
+      creds.password,
+    );
 
     this.service = service;
   }
@@ -905,23 +914,15 @@ export class EwsMailProvider implements IMailProvider {
         DETAIL_PROPS,
       );
     } catch (err) {
-      if (
-        String(err?.message || '').includes(
-          'extended property attribute combination is invalid',
-        )
-      ) {
-        // Fallback to basic properties if extended properties are rejected by server
-        const basicProps = new PropertySet(
-          BasePropertySet.FirstClassProperties,
-        );
-        message = await EmailMessage.Bind(
-          this.service,
-          new ItemId(itemId),
-          basicProps,
-        );
-      } else {
-        throw err;
-      }
+      this.logger.warn(
+        `getMessage fallback without extended properties: ${err?.message}`,
+      );
+      const basicProps = new PropertySet(BasePropertySet.FirstClassProperties);
+      message = await EmailMessage.Bind(
+        this.service,
+        new ItemId(itemId),
+        basicProps,
+      );
     }
 
     if (!(message as any).IsRead) {
@@ -1431,7 +1432,7 @@ export class EwsMailProvider implements IMailProvider {
           att.content,
         );
         if (file && att.contentType) file.ContentType = att.contentType;
-      } catch (_) {}
+      } catch (_) { }
     }
 
     // Gửi thẳng, lưu bản sao vào SentItems — không qua bước Save/FindItems/Bind
@@ -1476,7 +1477,7 @@ export class EwsMailProvider implements IMailProvider {
       for (const r of recipients.GetEnumerator?.() ?? []) {
         out.push(r.Name || r.Address || '');
       }
-    } catch (_) {}
+    } catch (_) { }
     return out.join('; ');
   }
 
@@ -1594,7 +1595,7 @@ export class EwsMailProvider implements IMailProvider {
           att.content,
         );
         if (file && att.contentType) file.ContentType = att.contentType;
-      } catch (_) {}
+      } catch (_) { }
     }
 
     // Gửi trực tiếp và lưu Sent Items, không cần Save() sang Draft để tránh race condition
@@ -2265,7 +2266,7 @@ export class EwsMailProvider implements IMailProvider {
     if (
       payload.email &&
       this.normalizeEmail(payload.email) !==
-        this.normalizeEmail(this.getContactPrimaryEmail(contact))
+      this.normalizeEmail(this.getContactPrimaryEmail(contact))
     ) {
       const existing = await this.findContactByEmail(payload.email);
       if (existing && existing.Id?.UniqueId !== contact.Id?.UniqueId) {
