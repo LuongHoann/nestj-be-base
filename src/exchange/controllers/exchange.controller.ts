@@ -96,11 +96,6 @@ export class ExchangeController {
       tokens.accessToken,
       buildAuthCookieOptions(3600000),
     );
-    res.cookie(
-      'access_token',
-      tokens.appAccessToken,
-      buildAuthCookieOptions(900000),
-    );
 
     return tokens;
   }
@@ -129,7 +124,6 @@ export class ExchangeController {
 
     const clearOptions = buildAuthCookieOptions(0);
     res.clearCookie('exchange_session', clearOptions);
-    res.clearCookie('access_token', clearOptions);
     return { success: true, message: 'Dang xuat thanh cong' };
   }
 

@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { JwtModule } from '@nestjs/jwt';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { ExchangeController } from './controllers/exchange.controller';
 import { ContactsController } from './controllers/contacts.controller';
@@ -22,27 +21,13 @@ import { SecurityPolicy } from '../database/entities/security-policy.entity';
 
 @Module({
   imports: [
-    
     CacheModule,
-    
     CommonModule,
     MikroOrmModule.forFeature([SpamReport, GlobalBlocklist, SecurityPolicy]),
-  ,
-    JwtModule.registerAsync({
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        secret:
-          configService.get<string>('JWT_SECRET') ||
-          'your-secret-key-change-in-production',
-        signOptions: {
-          expiresIn: configService.get<any>('JWT_EXPIRES_IN') || '15m',
-        },
-      }),
-    }),
   ],
   controllers: [
-    ExchangeController, 
-    ContactsController, 
+    ExchangeController,
+    ContactsController,
     NotesController,
     AdminModerationController,
   ],

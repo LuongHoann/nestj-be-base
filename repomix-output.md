@@ -53,6 +53,7 @@ mikro-orm.config.ts
 MOVE_MAIL_API.md
 nest-cli.json
 package.json
+scripts/dev-clean.mjs
 scripts/mailbox/create-mailbox.ps1
 scripts/mailbox/create-mailbox.py
 scripts/mailbox/delete-mailbox.ps1
@@ -78,6 +79,7 @@ src/audit/audit-log.interceptor.ts
 src/audit/audit.controller.ts
 src/audit/audit.module.ts
 src/audit/audit.service.ts
+src/auth/auth-cookie.util.ts
 src/auth/auth.controller.ts
 src/auth/auth.module.ts
 src/auth/auth.service.ts
@@ -109,10 +111,14 @@ src/database/entities/global-blocklist.entity.ts
 src/database/entities/organization-unit.entity.ts
 src/database/entities/permission.entity.ts
 src/database/entities/role.entity.ts
+src/database/entities/rss-article.entity.ts
+src/database/entities/rss-feed.entity.ts
 src/database/entities/security-policy.entity.ts
 src/database/entities/shared-mailbox-member.entity.ts
 src/database/entities/shared-mailbox.entity.ts
 src/database/entities/spam-report.entity.ts
+src/database/entities/user-rss-state.entity.ts
+src/database/entities/user-rss-subscription.entity.ts
 src/database/entities/user.entity.ts
 src/database/migrations/.snapshot-postgres.json
 src/database/migrations/Migration20260204095049.ts
@@ -167,6 +173,15 @@ src/organization/organization.dto.ts
 src/organization/organization.module.ts
 src/organization/organization.service.spec.ts
 src/organization/organization.service.ts
+src/rss/dto/rss-articles-query.dto.ts
+src/rss/dto/rss-scope-query.dto.ts
+src/rss/dto/subscribe-rss-feed.dto.ts
+src/rss/rss-crawler.service.ts
+src/rss/rss-queue.service.ts
+src/rss/rss.constants.ts
+src/rss/rss.controller.ts
+src/rss/rss.module.ts
+src/rss/rss.service.ts
 src/shared-mailbox/shared-mailbox.controller.ts
 src/shared-mailbox/shared-mailbox.dto.ts
 src/shared-mailbox/shared-mailbox.module.ts
@@ -191,1590 +206,1260 @@ tsconfig.json
 
 # Files
 
-## File: docs/RSPAMD_SSH_SYNC_GUIDE.md
-````markdown
-# Hướng dẫn cấu hình kết nối SSH cho Rspamd Sync
+## File: scripts/dev-clean.mjs
+````javascript
+import { execFileSync } from 'node:child_process';
 
-Tài liệu này hướng dẫn cách Admin cấu hình **SSH Private Key** để Node.js Backend có thể tự động đăng nhập vào máy chủ Gateway (Rspamd) `10.10.20.70` và cập nhật các file whitelist/blacklist, sau đó reload container thông qua lệnh `docker compose`.
+const repoRoot = process.cwd();
+const repoRootPattern = repoRoot.replace(/'/g, "''");
+const currentPid = process.pid;
 
----
+function runPowerShell(command) {
+  return execFileSync('powershell', ['-NoProfile', '-Command', command], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
 
-## 1. Cấu hình biến môi trường trên Backend
+function stopProcess(processId) {
+  try {
+    execFileSync(
+      'powershell',
+      ['-NoProfile', '-Command', `Stop-Process -Id ${processId} -Force`],
+      {
+        cwd: repoRoot,
+        stdio: 'ignore',
+      },
+    );
+    console.log(`[dev-clean] Stopped stale backend process ${processId}.`);
+  } catch {
+    console.log(
+      `[dev-clean] Skipped backend process ${processId}; it already exited.`,
+    );
+  }
+}
 
-Backend sẽ cần các biến môi trường sau trong file `.env` để kết nối SSH. Đảm bảo bạn đã thêm vào file `.env` của `nestjs-base-be`:
-
-```env
-# ==============================================================================
-# RSPAMD SSH SYNC CONFIGURATION
-# ==============================================================================
-# Địa chỉ IP/Hostname của máy chủ chạy thư mục Rspamd
-RSPAMD_SSH_HOST=10.10.20.70
-# Port SSH (mặc định là 22)
-RSPAMD_SSH_PORT=22
-# User đăng nhập (thường là root do cần quyền sửa file và chạy docker compose)
-RSPAMD_SSH_USER=root
-# Đường dẫn absolute tới file Private Key (.pem, .key) hoặc id_rsa trên máy chạy Backend Nodejs.
-# Lưu ý: Cần dùng Window Path (C:\\Users\\...) hoặc đường dẫn tương đối từ gốc project Backend.
-RSPAMD_SSH_PRIVATE_KEY_PATH=./secrets/rspamd-ssh-key.pem
-
-# Tuỳ chọn: Mật khẩu giải mã Private Key (Nếu có passphrase)
-# RSPAMD_SSH_PASSPHRASE=
-
-# Đường dẫn GỐC của project Mail Gateway trên máy chủ 10.10.20.70
-RSPAMD_PROJECT_PATH=/root/webmail_exchange/mail-gateway
-```
-
-## 2. Thiết lập Private Key cho NodeJS
-
-Do hệ thống sử dụng **SSH Private Key**, mã nguồn Backend cần có file key để kết nối. Bạn thực hiện các bước sau:
-
-**Bước 2.1**: Tại máy chủ phát triển (máy đang chạy NestJS / Windows), tạo một thư mục tên `secrets` ở gốc `nestjs-base-be`:
-```bash
-mkdir secrets
-```
-
-**Bước 2.2**: Copy file private key (thường là `id_rsa` hoặc file `.pem` bạn dùng để login vào `10.10.20.70`) và dán vào thư mục `secrets`. Ví dụ:
-```
-nestjs-base-be/
- ├── secrets/
- │   └── rspamd-ssh-key.pem 
-```
-
-**Bước 2.3**: Đảm bảo file key KHÔNG được push lên git. Trong file `.gitignore` của máy Backend, bạn hãy kiểm tra xem thư mục `secrets/` đã được ignore chưa:
-```gitignore
-# Thêm dòng này vào .gitignore
-secrets/
-*.pem
-*.key
-```
-
-## 3. Xác thực khóa Public tại máu chủ Rspamd (10.10.20.70)
-
-Chỉ cần làm bước này NẾU máy chủ `10.10.20.70` chưa cấu hình sẵn private/public key hoặc key mới sinh. Đảm bảo rằng nội dung Public Key (ví dụ `id_rsa.pub` tương ứng với private key) đã được thêm vào file `~/.ssh/authorized_keys` của tài khoản `root` trên server `10.10.20.70`!
-
----
-
-## 4. Cách hệ thống Reload Rspamd tự động
-
-Sau khi API tại file Backend hoàn tất thao tác `echo` / `sed` thêm bớt email/domain vào file cấu hình trên server remote, SSH Client từ NodeJS sẽ thực thi ngay câu lệnh sau để tự động Reload `rspamd`:
-```bash
-docker exec -t rspamd rspamadm control reload
-```
-*(Ghi chú: Đã bỏ cờ `-i` để lệnh có thể chạy ngầm tốt nhất qua SSH non-interactive)*
-
-Từ thời điểm này luật kiểm duyệt chặn (black)/gỡ (white) sẽ có hiệu lực ngay lập tức. CSDL PostgreSQL của dự án sẽ đóng vai trò Audit lưu trữ thông tin quản trị và giao diện UI Web. File Remote sẽ là Nguồn cấu hình chạy thực tế của Gateway.
-````
-
-## File: src/audit/audit.controller.ts
-````typescript
-import {
-  Controller,
-  Get,
-  Query,
-  Delete,
-  ParseIntPipe,
-  UseGuards,
-} from '@nestjs/common';
-import { AuditLogService } from './audit.service';
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
-import { AuditAction } from '../common/decorators/audit-action.decorator';
-import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
-
-@ApiTags('Audit Logs')
-@Controller('audit-logs')
-@UseGuards(ExchangeAuthGuard)
-@ApiBearerAuth('jwt')
-export class AuditController {
-  constructor(private readonly auditLogService: AuditLogService) {}
-
-  @Get()
-  @ApiOperation({ summary: 'Lấy danh sách audit logs' })
-  @ApiQuery({ name: 'search', required: false, description: 'Tìm theo text' })
-  @ApiQuery({ name: 'fromDate', required: false, description: 'Từ ngày' })
-  @ApiQuery({ name: 'toDate', required: false, description: 'Đến ngày' })
-  @ApiQuery({ name: 'page', required: false, description: 'Trang' })
-  @ApiQuery({ name: 'pageSize', required: false, description: 'Số lượng / trang' })
-  async getLogs(
-    @Query('search') search?: string,
-    @Query('fromDate') fromDate?: string,
-    @Query('toDate') toDate?: string,
-    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
-    @Query('pageSize', new ParseIntPipe({ optional: true })) pageSize = 25,
-  ) {
-    const limit = pageSize;
-    const offset = (page - 1) * limit;
-
-    const result = await this.auditLogService.findLogs({
-      search,
-      fromDate,
-      toDate,
-      limit,
-      offset,
-    });
-
-    return {
-      success: true,
-      items: result.data,
-      total: result.total,
-      page,
-      pageSize: limit,
-    };
+function main() {
+  if (process.platform !== 'win32') {
+    return;
   }
 
-  @Delete('cleanup')
-  @AuditAction('Dọn dẹp nhật ký hệ thống')
-  @ApiOperation({ summary: 'Dọn dẹp logs cũ' })
-  @ApiQuery({ name: 'months', required: true, description: 'Số tháng muốn giữ lại (1, 3, 6, 12)' })
-  async cleanup(@Query('months', ParseIntPipe) months: number) {
-    const result = await this.auditLogService.cleanupLogs(months);
-    return {
-      success: true,
-      message: `Đã xóa ${result.deletedCount} bản ghi logs cũ hơn ${months} tháng`,
-      deletedCount: result.deletedCount,
-    };
+  const command = [
+    `$repo = '${repoRootPattern}';`,
+    `$currentPid = ${currentPid};`,
+    '$repoProcessIds = Get-CimInstance Win32_Process |',
+    '  Where-Object {',
+    "    $_.Name -eq 'node.exe' -and",
+    '    $_.ProcessId -ne $currentPid -and',
+    '    $_.CommandLine -like "*$repo*" -and',
+    "    ($_.CommandLine -like '*@nestjs*' -or $_.CommandLine -like '*nest start*' -or $_.CommandLine -like '*dist\\src\\main*')",
+    '  } |',
+    '  Select-Object -ExpandProperty ProcessId;',
+    '$portProcessIds = Get-NetTCPConnection -LocalPort 3005 -State Listen -ErrorAction SilentlyContinue |',
+    '  ForEach-Object {',
+    '    $procId = $_.OwningProcess;',
+    '    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $procId";',
+    '    if ($proc -and $proc.Name -eq \'node.exe\' -and $proc.CommandLine -like "*$repo*") { $procId }',
+    '  };',
+    '($repoProcessIds + $portProcessIds) | Sort-Object -Unique',
+  ].join(' ');
+
+  const output = runPowerShell(command);
+  const processIds = output
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .filter((value) => /^\d+$/.test(value));
+
+  for (const value of processIds) {
+    stopProcess(value);
   }
+}
+
+try {
+  main();
+} catch (error) {
+  console.error('[dev-clean] Failed to clean backend dev state.');
+  console.error(error instanceof Error ? error.message : error);
+  process.exit(1);
 }
 ````
 
-## File: src/common/decorators/audit-action.decorator.ts
+## File: src/auth/auth-cookie.util.ts
 ````typescript
-import { SetMetadata } from '@nestjs/common';
+import type { CookieOptions } from 'express';
 
-export const AUDIT_ACTION_KEY = 'audit_action';
-export const AuditAction = (action: string) => SetMetadata(AUDIT_ACTION_KEY, action);
+const parseSameSite = (): CookieOptions['sameSite'] => {
+  const value = (process.env.COOKIE_SAME_SITE ?? 'lax').toLowerCase();
+
+  if (value === 'strict' || value === 'lax' || value === 'none') {
+    return value;
+  }
+
+  return 'lax';
+};
+
+const parseSecure = (sameSite: CookieOptions['sameSite']) => {
+  if (process.env.COOKIE_SECURE === 'true') {
+    return true;
+  }
+
+  if (process.env.COOKIE_SECURE === 'false') {
+    return false;
+  }
+
+  return sameSite === 'none' || process.env.NODE_ENV === 'production';
+};
+
+export const buildAuthCookieOptions = (maxAge: number): CookieOptions => {
+  const sameSite = parseSameSite();
+
+  return {
+    httpOnly: true,
+    secure: parseSecure(sameSite),
+    sameSite,
+    maxAge,
+    path: '/',
+  };
+};
 ````
 
-## File: src/database/entities/global-blocklist.entity.ts
+## File: src/database/entities/rss-article.entity.ts
 ````typescript
-import { Entity, PrimaryKey, Property, Unique } from '@mikro-orm/core';
+import { Entity, PrimaryKey, Property, ManyToOne, Index } from '@mikro-orm/core';
+import { randomUUID } from 'crypto';
+import { RssFeed } from './rss-feed.entity';
 
-/**
- * Entity lưu trữ danh sách chặn toàn cục (Global Blacklist).
- * Dữ liệu ở đây là nguồn chính để rebuild sang Redis.
- */
-@Entity({ tableName: 'global_blocklist' })
-export class GlobalBlocklist {
-  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
-  id!: string;
+@Entity({ tableName: 'rss_articles' })
+export class RssArticle {
+  @PrimaryKey({ type: 'uuid' })
+  id: string = randomUUID();
 
-  @Property()
-  @Unique()
-  senderEmail: string;
+  @ManyToOne(() => RssFeed, { nullable: true })
+  @Index()
+  feed?: RssFeed;
 
-  @Property()
-  blockedBy: string; // Email của Admin thực hiện chặn
+  @Index()
+  @Property({ nullable: true, length: 1024, unique: true })
+  guid?: string;
+
+  @Index()
+  @Property({ nullable: true, length: 2048, unique: true })
+  link?: string;
 
   @Property({ nullable: true })
-  reason?: string;
+  title?: string;
 
-  @Property()
-  createdAt: Date = new Date();
+  @Property({ type: 'text' })
+  summary: string = '';
 
-  constructor(senderEmail: string, blockedBy: string, reason?: string) {
-    this.senderEmail = senderEmail;
-    this.blockedBy = blockedBy;
-    this.reason = reason;
-  }
-}
-````
-
-## File: src/database/entities/organization-unit.entity.ts
-````typescript
-import {
-  Entity,
-  PrimaryKey,
-  Property,
-  ManyToOne,
-  OneToMany,
-  Collection,
-  Enum,
-} from '@mikro-orm/core';
-
-export enum UnitLevel {
-  BO = 'BO',             // Cấp 1: Bộ Giáo Dục và Đào Tạo
-  DON_VI = 'DON_VI',     // Cấp 2: Cục, Vụ, Viện
-  PHONG_BAN = 'PHONG_BAN' // Cấp 3: Các phòng trực thuộc Cục, Vụ, Viện
-}
-
-@Entity({ tableName: 'organization_units' })
-export class OrganizationUnit {
-  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
-  id!: string;
-
-  @Property()
-  name!: string;
+  @Property({ default: false })
+  isRead: boolean = false;
 
   @Property({ nullable: true })
-  code?: string;
+  readAt?: Date;
 
-  @Enum({ items: () => UnitLevel })
-  level!: UnitLevel;
-
-  @ManyToOne(() => OrganizationUnit, { nullable: true })
-  parent?: OrganizationUnit;
-
-  @OneToMany(() => OrganizationUnit, (unit) => unit.parent)
-  children = new Collection<OrganizationUnit>(this);
+  @Property({ nullable: true })
+  publishedAt?: Date;
 
   @Property({ onCreate: () => new Date() })
-  createdAt = new Date();
+  createdAt: Date = new Date();
 
   @Property({ onUpdate: () => new Date() })
-  updatedAt = new Date();
+  updatedAt: Date = new Date();
 }
 ````
 
-## File: src/database/entities/security-policy.entity.ts
+## File: src/database/entities/rss-feed.entity.ts
 ````typescript
-import { Entity, PrimaryKey, Property, Enum } from '@mikro-orm/core';
+import { Entity, PrimaryKey, Property, Index } from '@mikro-orm/core';
+import { randomUUID } from 'crypto';
 
-export enum SecurityPolicyType {
-  WHITELIST = 'WHITELIST',
-  BLACKLIST = 'BLACKLIST',
-}
+@Entity({ tableName: 'rss_feeds' })
+export class RssFeed {
+  @PrimaryKey({ type: 'uuid' })
+  id: string = randomUUID();
 
-export enum SecurityTargetType {
-  DOMAIN = 'DOMAIN',
-  EMAIL = 'EMAIL',
-}
-
-/**
- * Entity lưu trữ các chính sách bảo mật mở rộng.
- * Dùng để cấu hình Whitelist/Blacklist theo Domain hoặc Email.
- */
-@Entity({ tableName: 'security_policies' })
-export class SecurityPolicy {
-  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
-  id!: string;
-
-  @Enum({ items: () => SecurityPolicyType })
-  type!: SecurityPolicyType;
-
-  @Enum({ items: () => SecurityTargetType })
-  targetType!: SecurityTargetType;
-
-  @Property()
-  value!: string; // Email address or Domain name
-
-  @Property()
-  createdBy!: string; // Email của Admin tạo rule
+  @Property({ unique: true })
+  @Index()
+  url!: string;
 
   @Property({ nullable: true })
-  reason?: string;
-
-  @Property()
-  createdAt: Date = new Date();
-
-  constructor(
-    type: SecurityPolicyType,
-    targetType: SecurityTargetType,
-    value: string,
-    createdBy: string,
-    reason?: string,
-  ) {
-    this.type = type;
-    this.targetType = targetType;
-    this.value = value;
-    this.createdBy = createdBy;
-    this.reason = reason;
-  }
-}
-````
-
-## File: src/database/entities/spam-report.entity.ts
-````typescript
-import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
-
-/**
- * Entity lưu trữ thông tin báo cáo thư rác từ người dùng.
- * BẮT BUỘC: Dùng để Admin kiểm duyệt và quyết định chặn Global.
- */
-@Entity({ tableName: 'spam_reports' })
-export class SpamReport {
-  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
-  id!: string;
-
-  @Property()
-  reporterEmail: string;
-
-  @Property()
-  senderEmail: string;
-
-  @Property()
-  messageId: string;
-
-  @Property()
-  createdAt: Date = new Date();
-
-  constructor(reporterEmail: string, senderEmail: string, messageId: string) {
-    this.reporterEmail = reporterEmail;
-    this.senderEmail = senderEmail;
-    this.messageId = messageId;
-  }
-}
-````
-
-## File: src/database/migrations/Migration20260316070430.ts
-````typescript
-import { Migration } from '@mikro-orm/migrations';
-
-export class Migration20260316070430 extends Migration {
-
-  override async up(): Promise<void> {
-    this.addSql(`create table "global_blocklist" ("id" varchar(255) not null, "sender_email" varchar(255) not null, "blocked_by" varchar(255) not null, "reason" varchar(255) null, "created_at" timestamptz not null, constraint "global_blocklist_pkey" primary key ("id"));`);
-    this.addSql(`alter table "global_blocklist" add constraint "global_blocklist_sender_email_unique" unique ("sender_email");`);
-
-    this.addSql(`create table "shared_mailboxes" ("id" varchar(255) not null, "name" varchar(255) not null, "email" varchar(255) not null, "display_name" varchar(255) not null, "exchange_guid" varchar(255) null, "is_active" boolean not null default true, "created_by" varchar(255) null, "created_at" timestamptz not null, "updated_at" timestamptz not null, constraint "shared_mailboxes_pkey" primary key ("id"));`);
-    this.addSql(`alter table "shared_mailboxes" add constraint "shared_mailboxes_email_unique" unique ("email");`);
-
-    this.addSql(`create table "shared_mailbox_members" ("id" varchar(255) not null, "mailbox_id" varchar(255) not null, "user_id" varchar(255) not null, "role" varchar(255) not null default 'MEMBER', "added_by" varchar(255) null, "created_at" timestamptz not null, "updated_at" timestamptz not null, constraint "shared_mailbox_members_pkey" primary key ("id"));`);
-    this.addSql(`alter table "shared_mailbox_members" add constraint "shared_mailbox_members_mailbox_id_user_id_unique" unique ("mailbox_id", "user_id");`);
-
-    this.addSql(`create table "spam_reports" ("id" varchar(255) not null, "reporter_email" varchar(255) not null, "sender_email" varchar(255) not null, "message_id" varchar(255) not null, "created_at" timestamptz not null, constraint "spam_reports_pkey" primary key ("id"));`);
-
-    this.addSql(`alter table "shared_mailbox_members" add constraint "shared_mailbox_members_mailbox_id_foreign" foreign key ("mailbox_id") references "shared_mailboxes" ("id") on update cascade;`);
-  }
-
-  override async down(): Promise<void> {
-    this.addSql(`alter table "shared_mailbox_members" drop constraint "shared_mailbox_members_mailbox_id_foreign";`);
-
-    this.addSql(`drop table if exists "global_blocklist" cascade;`);
-
-    this.addSql(`drop table if exists "shared_mailboxes" cascade;`);
-
-    this.addSql(`drop table if exists "shared_mailbox_members" cascade;`);
-
-    this.addSql(`drop table if exists "spam_reports" cascade;`);
-  }
-
-}
-````
-
-## File: src/database/migrations/Migration20260316070909.ts
-````typescript
-import { Migration } from '@mikro-orm/migrations';
-
-export class Migration20260316070909 extends Migration {
-
-  override async up(): Promise<void> {
-    this.addSql(`alter table "global_blocklist" alter column "id" drop default;`);
-    this.addSql(`alter table "global_blocklist" alter column "id" type uuid using ("id"::text::uuid);`);
-    this.addSql(`alter table "global_blocklist" alter column "id" set default gen_random_uuid();`);
-
-    this.addSql(`alter table "spam_reports" alter column "id" drop default;`);
-    this.addSql(`alter table "spam_reports" alter column "id" type uuid using ("id"::text::uuid);`);
-    this.addSql(`alter table "spam_reports" alter column "id" set default gen_random_uuid();`);
-  }
-
-  override async down(): Promise<void> {
-    this.addSql(`alter table "global_blocklist" alter column "id" type text using ("id"::text);`);
-
-    this.addSql(`alter table "spam_reports" alter column "id" type text using ("id"::text);`);
-
-    this.addSql(`alter table "global_blocklist" alter column "id" drop default;`);
-    this.addSql(`alter table "global_blocklist" alter column "id" type varchar(255) using ("id"::varchar(255));`);
-
-    this.addSql(`alter table "spam_reports" alter column "id" drop default;`);
-    this.addSql(`alter table "spam_reports" alter column "id" type varchar(255) using ("id"::varchar(255));`);
-  }
-
-}
-````
-
-## File: src/database/migrations/Migration20260317011911.ts
-````typescript
-import { Migration } from '@mikro-orm/migrations';
-
-export class Migration20260317011911 extends Migration {
-
-  override async up(): Promise<void> {
-    this.addSql(`create table "security_policies" ("id" uuid not null default gen_random_uuid(), "type" text check ("type" in ('WHITELIST', 'BLACKLIST')) not null, "target_type" text check ("target_type" in ('DOMAIN', 'EMAIL')) not null, "value" varchar(255) not null, "created_by" varchar(255) not null, "reason" varchar(255) null, "created_at" timestamptz not null, constraint "security_policies_pkey" primary key ("id"));`);
-
-    this.addSql(`alter table "audit_logs" drop constraint "audit_logs_user_id_foreign";`);
-
-    this.addSql(`alter table "shared_mailbox_members" drop constraint "shared_mailbox_members_mailbox_id_foreign";`);
-
-    this.addSql(`alter table "user_roles" drop constraint "user_roles_user_id_foreign";`);
-
-    this.addSql(`drop index "audit_log_user_id_index";`);
-    this.addSql(`alter table "audit_logs" drop column "user_id";`);
-
-    this.addSql(`alter table "audit_logs" add column "user_email" varchar(255) null;`);
-    this.addSql(`create index "audit_log_user_email_index" on "audit_logs" ("user_email");`);
-
-    this.addSql(`alter table "shared_mailboxes" alter column "id" drop default;`);
-    this.addSql(`alter table "shared_mailboxes" alter column "id" type uuid using ("id"::text::uuid);`);
-    this.addSql(`alter table "shared_mailboxes" alter column "id" set default gen_random_uuid();`);
-
-    this.addSql(`alter table "shared_mailbox_members" alter column "id" drop default;`);
-    this.addSql(`alter table "shared_mailbox_members" alter column "id" type uuid using ("id"::text::uuid);`);
-    this.addSql(`alter table "shared_mailbox_members" alter column "id" set default gen_random_uuid();`);
-    this.addSql(`alter table "shared_mailbox_members" alter column "mailbox_id" drop default;`);
-    this.addSql(`alter table "shared_mailbox_members" alter column "mailbox_id" type uuid using ("mailbox_id"::text::uuid);`);
-    this.addSql(`alter table "shared_mailbox_members" alter column "user_id" drop default;`);
-    this.addSql(`alter table "shared_mailbox_members" alter column "user_id" type uuid using ("user_id"::text::uuid);`);
-    this.addSql(`alter table "shared_mailbox_members" add constraint "shared_mailbox_members_mailbox_id_foreign" foreign key ("mailbox_id") references "shared_mailboxes" ("id") on update cascade;`);
-
-    this.addSql(`alter table "users" alter column "id" drop default;`);
-    this.addSql(`alter table "users" alter column "id" type uuid using ("id"::text::uuid);`);
-    this.addSql(`alter table "users" alter column "id" set default gen_random_uuid();`);
-
-    this.addSql(`alter table "user_roles" alter column "user_id" drop default;`);
-    this.addSql(`alter table "user_roles" alter column "user_id" type uuid using ("user_id"::text::uuid);`);
-    this.addSql(`alter table "user_roles" add constraint "user_roles_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade on delete cascade;`);
-  }
-
-  override async down(): Promise<void> {
-    this.addSql(`drop table if exists "security_policies" cascade;`);
-
-    this.addSql(`alter table "shared_mailboxes" alter column "id" type text using ("id"::text);`);
-
-    this.addSql(`alter table "shared_mailbox_members" alter column "id" type text using ("id"::text);`);
-    this.addSql(`alter table "shared_mailbox_members" alter column "mailbox_id" type text using ("mailbox_id"::text);`);
-    this.addSql(`alter table "shared_mailbox_members" alter column "user_id" type text using ("user_id"::text);`);
-
-    this.addSql(`alter table "shared_mailbox_members" drop constraint "shared_mailbox_members_mailbox_id_foreign";`);
-
-    this.addSql(`alter table "users" alter column "id" type text using ("id"::text);`);
-
-    this.addSql(`alter table "user_roles" alter column "user_id" type text using ("user_id"::text);`);
-
-    this.addSql(`alter table "user_roles" drop constraint "user_roles_user_id_foreign";`);
-
-    this.addSql(`alter table "shared_mailboxes" alter column "id" drop default;`);
-    this.addSql(`alter table "shared_mailboxes" alter column "id" type varchar(255) using ("id"::varchar(255));`);
-
-    this.addSql(`alter table "shared_mailbox_members" alter column "id" drop default;`);
-    this.addSql(`alter table "shared_mailbox_members" alter column "id" type varchar(255) using ("id"::varchar(255));`);
-    this.addSql(`alter table "shared_mailbox_members" alter column "mailbox_id" type varchar(255) using ("mailbox_id"::varchar(255));`);
-    this.addSql(`alter table "shared_mailbox_members" alter column "user_id" type varchar(255) using ("user_id"::varchar(255));`);
-    this.addSql(`alter table "shared_mailbox_members" add constraint "shared_mailbox_members_mailbox_id_foreign" foreign key ("mailbox_id") references "shared_mailboxes" ("id") on update cascade;`);
-
-    this.addSql(`alter table "users" alter column "id" drop default;`);
-    this.addSql(`alter table "users" alter column "id" type varchar(255) using ("id"::varchar(255));`);
-
-    this.addSql(`drop index "audit_log_user_email_index";`);
-    this.addSql(`alter table "audit_logs" drop column "user_email";`);
-
-    this.addSql(`alter table "audit_logs" add column "user_id" varchar(255) null;`);
-    this.addSql(`alter table "audit_logs" add constraint "audit_logs_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade on delete set null;`);
-    this.addSql(`create index "audit_log_user_id_index" on "audit_logs" ("user_id");`);
-
-    this.addSql(`alter table "user_roles" alter column "user_id" type varchar(255) using ("user_id"::varchar(255));`);
-    this.addSql(`alter table "user_roles" add constraint "user_roles_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade on delete cascade;`);
-  }
-
-}
-````
-
-## File: src/database/migrations/Migration20260317044849.ts
-````typescript
-import { Migration } from '@mikro-orm/migrations';
-
-export class Migration20260317044849 extends Migration {
-
-  override async up(): Promise<void> {
-    this.addSql(`create table "organization_units" ("id" uuid not null default gen_random_uuid(), "name" varchar(255) not null, "code" varchar(255) null, "level" text check ("level" in ('BO', 'DON_VI', 'PHONG_BAN')) not null, "parent_id" uuid null, "created_at" timestamptz not null, "updated_at" timestamptz not null, constraint "organization_units_pkey" primary key ("id"));`);
-
-    this.addSql(`alter table "organization_units" add constraint "organization_units_parent_id_foreign" foreign key ("parent_id") references "organization_units" ("id") on update cascade on delete set null;`);
-
-    this.addSql(`alter table "shared_mailboxes" add column "org_unit_id" uuid null;`);
-    this.addSql(`alter table "shared_mailboxes" add constraint "shared_mailboxes_org_unit_id_foreign" foreign key ("org_unit_id") references "organization_units" ("id") on update cascade on delete set null;`);
-
-    this.addSql(`alter table "users" add column "org_unit_id" uuid null, add column "unit_admin_level" text check ("unit_admin_level" in ('BO', 'DON_VI', 'PHONG_BAN')) null;`);
-    this.addSql(`alter table "users" add constraint "users_org_unit_id_foreign" foreign key ("org_unit_id") references "organization_units" ("id") on update cascade on delete set null;`);
-  }
-
-  override async down(): Promise<void> {
-    this.addSql(`alter table "organization_units" drop constraint "organization_units_parent_id_foreign";`);
-
-    this.addSql(`alter table "shared_mailboxes" drop constraint "shared_mailboxes_org_unit_id_foreign";`);
-
-    this.addSql(`alter table "users" drop constraint "users_org_unit_id_foreign";`);
-
-    this.addSql(`drop table if exists "organization_units" cascade;`);
-
-    this.addSql(`alter table "shared_mailboxes" drop column "org_unit_id";`);
-
-    this.addSql(`alter table "users" drop column "org_unit_id", drop column "unit_admin_level";`);
-  }
-
-}
-````
-
-## File: src/exchange/controllers/admin-moderation.controller.ts
-````typescript
-import {
-  Controller,
-  Post,
-  Body,
-  Get,
-  UseGuards,
-  Delete,
-  Param,
-  Query,
-  Req,
-} from '@nestjs/common';
-import { SpamModerationService } from '../services/spam-moderation.service';
-import {
-  ApiBearerAuth,
-  ApiBody,
-  ApiOperation,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
-import { SecurityPolicyType, SecurityTargetType } from '../../database/entities/security-policy.entity';
-import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
-
-@ApiTags('Admin Moderation')
-@ApiBearerAuth()
-@UseGuards(ExchangeAuthGuard) // Giả định admin cũng dùng JWT chung hoặc có cơ chế phân quyền Role sau này
-@Controller('admin/moderation')
-export class AdminModerationController {
-  constructor(private readonly moderationService: SpamModerationService) {}
-
-  @Post('global-block')
-  @ApiOperation({ summary: 'Chặn một địa chỉ email trên toàn hệ thống (Legacy)' })
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        email: { type: 'string' },
-        reason: { type: 'string' },
-      },
-      required: ['email'],
-    },
-  })
-  async blockGlobal(@Body() dto: { email: string; reason?: string }, @Req() req: any) {
-    const adminEmail = req.user.email;
-    return this.moderationService.blockGlobal(dto.email, adminEmail, dto.reason);
-  }
-
-  @Delete('global-block/:email')
-  @ApiOperation({ summary: 'Bỏ chặn một địa chỉ email (Legacy)' })
-  async unblockGlobal(@Param('email') email: string) {
-    return this.moderationService.unblockGlobal(email);
-  }
-
-  @Post('rebuild-blacklist')
-  @ApiOperation({ summary: 'Rebuild lại danh sách chặn trong Redis từ Database' })
-  async rebuildBlacklist() {
-    await this.moderationService.ensureRedisCache();
-    return { success: true, message: 'Rebuild triggered' };
-  }
-
-  // ================= SECURITY POLICIES (WHITELIST/BLACKLIST) =================
-
-  @Get('security-policies')
-  @ApiOperation({ summary: 'Lấy danh sách các chính sách bảo mật' })
-  @ApiQuery({ name: 'type', enum: SecurityPolicyType })
-  @ApiQuery({ name: 'targetType', enum: SecurityTargetType })
-  async getPolicies(
-    @Query('type') type: SecurityPolicyType,
-    @Query('targetType') targetType: SecurityTargetType,
-  ) {
-    const policies = await this.moderationService.getPolicies(type, targetType);
-    return { success: true, data: policies };
-  }
-
-  @Post('security-policies')
-  @ApiOperation({ summary: 'Thêm mới một chính sách bảo mật' })
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        type: { type: 'string', enum: ['WHITELIST', 'BLACKLIST'] },
-        targetType: { type: 'string', enum: ['DOMAIN', 'EMAIL'] },
-        value: { type: 'string' },
-        reason: { type: 'string' },
-      },
-      required: ['type', 'targetType', 'value'],
-    },
-  })
-  async addPolicy(
-    @Body() dto: { type: SecurityPolicyType; targetType: SecurityTargetType; value: string; reason?: string },
-    @Req() req: any,
-  ) {
-    const adminEmail = req.user?.upn || 'admin@system.local';
-    return this.moderationService.addPolicy(
-      dto.type,
-      dto.targetType,
-      dto.value,
-      adminEmail,
-      dto.reason,
-    );
-  }
-
-  @Delete('security-policies/:id')
-  @ApiOperation({ summary: 'Xóa một chính sách bảo mật' })
-  async removePolicy(@Param('id') id: string) {
-    return this.moderationService.removePolicy(id);
-  }
-}
-````
-
-## File: src/exchange/services/rspamd-sync.service.ts
-````typescript
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { Client } from 'ssh2';
-import * as fs from 'fs';
-
-@Injectable()
-export class RspamdSyncService implements OnModuleInit {
-  private readonly logger = new Logger(RspamdSyncService.name);
-  
-  private sshConfig: any;
-  private rspamdLocalDPath: string;
-
-  constructor(private readonly config: ConfigService) {}
-
-  onModuleInit() {
-    const host = this.config.get<string>('RSPAMD_SSH_HOST');
-    const port = this.config.get<number>('RSPAMD_SSH_PORT', 22);
-    const username = this.config.get<string>('RSPAMD_SSH_USER', 'root');
-    const privateKeyPath = this.config.get<string>('RSPAMD_SSH_PRIVATE_KEY_PATH');
-    const projectPath = this.config.get<string>('RSPAMD_PROJECT_PATH') || '/root/webmail_exchange/mail-gateway';
-    
-    this.rspamdLocalDPath = `${projectPath}/rspamd/local.d`;
-
-    if (!host || !privateKeyPath) {
-      this.logger.warn('RSPAMD_SSH_HOST or RSPAMD_SSH_PRIVATE_KEY_PATH is missing. SSH Sync will be offline.');
-      return;
-    }
-
-    try {
-      const privateKey = fs.readFileSync(privateKeyPath, 'utf8');
-      this.sshConfig = {
-        host,
-        port,
-        username,
-        privateKey,
-        readyTimeout: 10000,
-      };
-      this.logger.log(`RspamdSyncService configured for SSH to ${host}:${port} as ${username}. Target path: ${this.rspamdLocalDPath}`);
-    } catch (err) {
-      this.logger.error(`Failed to read SSH private key from ${privateKeyPath}: ${err.message}`);
-    }
-  }
-
-  /**
-   * Thực thi một lệnh qua SSH
-   */
-  private async execCommand(command: string): Promise<string> {
-    if (!this.sshConfig) {
-      throw new Error('SSH Service is not properly configured.');
-    }
-
-    return new Promise((resolve, reject) => {
-      const conn = new Client();
-      let output = '';
-      let errorOutput = '';
-
-      conn
-        .on('ready', () => {
-          this.logger.debug(`SSH Client ready. Executing: ${command}`);
-          conn.exec(command, (err, stream) => {
-            if (err) {
-              conn.end();
-              return reject(err);
-            }
-            stream
-              .on('close', (code: any, signal: any) => {
-                conn.end();
-                if (code !== 0) {
-                  return reject(new Error(`Command failed with code ${code}. Error: ${errorOutput}`));
-                }
-                resolve(output.trim());
-              })
-              .on('data', (data: any) => {
-                output += data;
-              })
-              .stderr.on('data', (data: any) => {
-                errorOutput += data;
-              });
-          });
-        })
-        .on('error', (err) => {
-          this.logger.error(`SSH Connection Error: ${err.message}`);
-          reject(err);
-        })
-        .connect(this.sshConfig);
-    });
-  }
-
-  /**
-   * Thêm một policy (domain/email) vào file cấu hình
-   * Hàm này sẽ kiểm tra xem giá trị đã tồn tại chưa bằng grep trước khi thêm vào
-   */
-  async appendToPolicyFile(fileName: string, value: string): Promise<void> {
-    const filePath = `${this.rspamdLocalDPath}/${fileName}`;
-    // Kiểm tra đã tồn tại hay chưa, nếu chưa thì thêm mới vào.
-    const command = `grep -q -F -x "${value}" ${filePath} || echo "${value}" >> ${filePath}`;
-    await this.execCommand(command);
-  }
-
-  /**
-   * Xoá một policy khỏi file cấu hình
-   */
-  async removeFromPolicyFile(fileName: string, value: string): Promise<void> {
-    const filePath = `${this.rspamdLocalDPath}/${fileName}`;
-    // Sử dụng sed để xoá chính xác dòng đó. Escape `/` nếu có trong chuỗi (ít gặp ở email/domain nhưng an toàn)
-    const escapedValue = value.replace(/\//g, '\\/');
-    const command = `sed -i '/^${escapedValue}$/d' ${filePath}`;
-    await this.execCommand(command);
-  }
-
-  /**
-   * Sync toàn bộ mảng dữ liệu đè vào file (dành cho Force Sync)
-   */
-  async syncFullFile(fileName: string, values: string[]): Promise<void> {
-    const filePath = `${this.rspamdLocalDPath}/${fileName}`;
-    // Ghi toàn bộ nội dung mảng thành chuỗi phân ranh bằng newline, dùng printf để ghi đè vào file
-    const joined = values.join('\\n');
-    const command = `printf "${joined}\\n" > ${filePath}`;
-    await this.execCommand(command);
-  }
-
-  /**
-   * Reload Rspamd (Apply thay đổi file map)
-   */
-  async reloadRspamd(): Promise<void> {
-    const command = `docker exec -t rspamd rspamadm control reload`;
-    try {
-      await this.execCommand(command);
-      this.logger.log('Reloaded rspamd successfully.');
-    } catch (err) {
-      this.logger.error(`Failed to reload rspamd: ${err.message}`);
-      throw err;
-    }
-  }
-}
-````
-
-## File: src/exchange/services/spam-moderation.service.ts
-````typescript
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { InjectRepository } from '@mikro-orm/nestjs';
-import { EntityRepository } from '@mikro-orm/postgresql';
-import { Cron, CronExpression } from '@nestjs/schedule';
-import { SpamReport } from '../../database/entities/spam-report.entity';
-import { GlobalBlocklist } from '../../database/entities/global-blocklist.entity';
-import {
-  SecurityPolicy,
-  SecurityPolicyType,
-  SecurityTargetType,
-} from '../../database/entities/security-policy.entity';
-import { DragonflyService } from '../../common/cache/dragonfly.service';
-import { ConfigService } from '@nestjs/config';
-import { RspamdSyncService } from './rspamd-sync.service';
-
-@Injectable()
-export class SpamModerationService implements OnModuleInit {
-  private readonly logger = new Logger(SpamModerationService.name);
-  
-  // Redis keys
-  private readonly globalBlacklistKey: string;
-  private readonly wlDomainKey: string;
-  private readonly wlEmailKey: string;
-  private readonly blDomainKey: string;
-  private readonly blEmailKey: string;
-  private readonly lockKey: string;
-
-  constructor(
-    @InjectRepository(SpamReport)
-    private readonly spamReportRepo: EntityRepository<SpamReport>,
-    @InjectRepository(GlobalBlocklist)
-    private readonly blocklistRepo: EntityRepository<GlobalBlocklist>,
-    @InjectRepository(SecurityPolicy)
-    private readonly policyRepo: EntityRepository<SecurityPolicy>,
-    private readonly cache: DragonflyService,
-    private readonly config: ConfigService,
-    private readonly rspamdSync: RspamdSyncService,
-  ) {
-    this.globalBlacklistKey = this.config.get<string>('REDIS_BLACKLIST_KEY', 'rspamd:global_blacklist');
-    this.wlDomainKey = this.config.get<string>('REDIS_WL_DOMAIN_KEY', 'rspamd:whitelist:domain');
-    this.wlEmailKey = this.config.get<string>('REDIS_WL_EMAIL_KEY', 'rspamd:whitelist:email');
-    this.blDomainKey = this.config.get<string>('REDIS_BL_DOMAIN_KEY', 'rspamd:blacklist:domain');
-    this.blEmailKey = this.config.get<string>('REDIS_BL_EMAIL_KEY', 'rspamd:blacklist:email');
-    
-    this.lockKey = 'security:rebuild:lock';
-  }
-
-  async onModuleInit() {
-    await this.ensureRedisCache();
-  }
-
-  // ============== SPAM REPORT ==============
-  async reportSpam(reporterEmail: string, senderEmail: string, messageId: string) {
-    try {
-      const report = new SpamReport(reporterEmail, senderEmail, messageId);
-      await this.spamReportRepo.getEntityManager().persistAndFlush(report);
-      this.logger.log(`Spam reported by ${reporterEmail} for sender ${senderEmail}`);
-      return { success: true };
-    } catch (error) {
-      this.logger.error(`Failed to report spam: ${error.message}`);
-      throw error;
-    }
-  }
-
-  // ============== GLOBAL BLOCKLIST (Legacy) ==============
-  async blockGlobal(senderEmail: string, adminEmail: string, reason?: string) {
-    try {
-      let block = await this.blocklistRepo.findOne({ senderEmail });
-      if (!block) {
-        block = new GlobalBlocklist(senderEmail, adminEmail, reason);
-        await this.blocklistRepo.getEntityManager().persistAndFlush(block);
-      }
-      await this.cache.sadd(this.globalBlacklistKey, senderEmail);
-      this.logger.log(`Global block added for ${senderEmail} by ${adminEmail}`);
-      return { success: true };
-    } catch (error) {
-      this.logger.error(`Failed to block global: ${error.message}`);
-      throw error;
-    }
-  }
-
-  async unblockGlobal(senderEmail: string) {
-    try {
-      const block = await this.blocklistRepo.findOne({ senderEmail });
-      if (block) {
-        await this.blocklistRepo.getEntityManager().removeAndFlush(block);
-      }
-      await this.cache.srem(this.globalBlacklistKey, senderEmail);
-      this.logger.log(`Global block removed for ${senderEmail}`);
-      return { success: true };
-    } catch (error) {
-      this.logger.error(`Failed to unblock global: ${error.message}`);
-      throw error;
-    }
-  }
-
-  // ============== SECURITY POLICIES ==============
-  
-  getRedisKeyForPolicy(type: SecurityPolicyType, targetType: SecurityTargetType): string {
-    if (type === SecurityPolicyType.WHITELIST) {
-      return targetType === SecurityTargetType.DOMAIN ? this.wlDomainKey : this.wlEmailKey;
-    } else {
-      return targetType === SecurityTargetType.DOMAIN ? this.blDomainKey : this.blEmailKey;
-    }
-  }
-
-  getFileNameForPolicy(type: SecurityPolicyType, targetType: SecurityTargetType): string {
-    if (type === SecurityPolicyType.WHITELIST) {
-      return targetType === SecurityTargetType.DOMAIN ? 'global_whitelist_domains.map' : 'global_whitelist.map';
-    } else {
-      return targetType === SecurityTargetType.DOMAIN ? 'global_blacklist_domains.map' : 'global_blacklist.map';
-    }
-  }
-
-  async getPolicies(type: SecurityPolicyType, targetType: SecurityTargetType) {
-    return this.policyRepo.find(
-      { type, targetType },
-      { orderBy: { createdAt: 'DESC' } }
-    );
-  }
-
-  async addPolicy(
-    type: SecurityPolicyType,
-    targetType: SecurityTargetType,
-    value: string,
-    adminEmail: string,
-    reason?: string,
-  ) {
-    const em = this.policyRepo.getEntityManager().fork(); // Create a fork for transaction
-    
-    try {
-      const existing = await em.findOne(SecurityPolicy, { type, targetType, value });
-      if (existing) {
-        return { success: false, message: 'Chính sách này đã tồn tại trong hệ thống.' };
-      }
-
-      const policy = new SecurityPolicy(type, targetType, value, adminEmail, reason);
-      await em.persistAndFlush(policy);
-
-      const redisKey = this.getRedisKeyForPolicy(type, targetType);
-      await this.cache.sadd(redisKey, value);
-      
-      // Update Remote File via SSH
-      const fileName = this.getFileNameForPolicy(type, targetType);
-      try {
-        await this.rspamdSync.appendToPolicyFile(fileName, value);
-        await this.rspamdSync.reloadRspamd();
-        this.logger.log(`SSH Sync: Synced ${value} to ${fileName} and reloaded rspamd`);
-      } catch (sshErr) {
-        this.logger.error(`SSH Sync failed on addPolicy. Rolling back DB & Redis... Details: ${sshErr.message}`);
-        
-        // --- ROLLBACK LOGIC ---
-        await em.removeAndFlush(policy); // Rollback DB
-        await this.cache.srem(redisKey, value); // Rollback Redis
-        
-        throw new Error(`Đồng bộ luật chặn email sang hệ thống Rspamd thất bại. Chi tiết lỗi: ${sshErr.message}`);
-      }
-
-      this.logger.log(`Security policy added: [${type}] ${targetType}=${value}`);
-      return { success: true };
-    } catch (error) {
-      this.logger.error(`Failed to add policy: ${error.message}`);
-      throw error;
-    }
-  }
-
-  async removePolicy(id: string) {
-    const em = this.policyRepo.getEntityManager().fork();
-    
-    try {
-      const policy = await em.findOne(SecurityPolicy, { id });
-      if (policy) {
-        await em.removeAndFlush(policy);
-        
-        const redisKey = this.getRedisKeyForPolicy(policy.type, policy.targetType);
-        await this.cache.srem(redisKey, policy.value);
-
-        // Remove from Remote File via SSH
-        const fileName = this.getFileNameForPolicy(policy.type, policy.targetType);
-        try {
-          await this.rspamdSync.removeFromPolicyFile(fileName, policy.value);
-          await this.rspamdSync.reloadRspamd();
-          this.logger.log(`SSH Sync: Removed ${policy.value} from ${fileName} and reloaded rspamd`);
-        } catch (sshErr) {
-          this.logger.error(`SSH Sync failed on removePolicy. Rolling back DB & Redis... Details: ${sshErr.message}`);
-          
-          // --- ROLLBACK LOGIC ---
-          // Khôi phục lại dữ liệu vì thao tác xóa file thất bại
-          const restoredPolicy = new SecurityPolicy(policy.type, policy.targetType, policy.value, policy.createdBy, policy.reason);
-          restoredPolicy.id = policy.id; // Giữ nguyên ID cũ
-          restoredPolicy.createdAt = policy.createdAt; // Giữ nguyên thời gian tạo
-          await em.persistAndFlush(restoredPolicy);
-          await this.cache.sadd(redisKey, policy.value);
-          
-          throw new Error(`Xoá cấu hình trên Gateway thất bại (${sshErr.message}). Quy tắc đã được khôi phục trên hệ thống.`);
-        }
-
-        this.logger.log(`Security policy removed: ${policy.id}`);
-      }
-      return { success: true };
-    } catch (error) {
-      this.logger.error(`Failed to remove policy: ${error.message}`);
-      throw error;
-    }
-  }
-
-  // ============== SYNC & HEALING ==============
-  
-  async ensureRedisCache() {
-    const lock = await this.cache.setIfNotExist(this.lockKey, '1', 30);
-    if (!lock) {
-      return;
-    }
-
-    try {
-      // Rebuild Global Blocklist
-      if (!(await this.cache.exists(this.globalBlacklistKey))) {
-        const globalBlocks = await this.blocklistRepo.findAll();
-        if (globalBlocks.length > 0) {
-          const emails = globalBlocks.map(item => item.senderEmail);
-          await this.cache.sadd(this.globalBlacklistKey, ...emails);
-        }
-      }
-
-      // Rebuild Security Policies
-      const policies = await this.policyRepo.findAll();
-      
-      const keysConfig = [
-        { type: SecurityPolicyType.WHITELIST, targetType: SecurityTargetType.DOMAIN, key: this.wlDomainKey },
-        { type: SecurityPolicyType.WHITELIST, targetType: SecurityTargetType.EMAIL, key: this.wlEmailKey },
-        { type: SecurityPolicyType.BLACKLIST, targetType: SecurityTargetType.DOMAIN, key: this.blDomainKey },
-        { type: SecurityPolicyType.BLACKLIST, targetType: SecurityTargetType.EMAIL, key: this.blEmailKey },
-      ];
-
-      for (const config of keysConfig) {
-        if (!(await this.cache.exists(config.key))) {
-          const values = policies
-            .filter(p => p.type === config.type && p.targetType === config.targetType)
-            .map(p => p.value);
-            
-          if (values.length > 0) {
-            await this.cache.sadd(config.key, ...values);
-          }
-        }
-      }
-
-      this.logger.log('Redis cache verified and rebuilt if necessary.');
-    } catch (error) {
-      this.logger.error(`Failed to rebuild Redis cache: ${error.message}`);
-    } finally {
-      await this.cache.del(this.lockKey);
-    }
-  }
-
-  async forceSyncAllToRemote() {
-    try {
-      this.logger.log('Starting Force Sync of all Security Policies to Remote Rspamd');
-      const policies = await this.policyRepo.findAll();
-      
-      const fileConfig = [
-        { type: SecurityPolicyType.WHITELIST, targetType: SecurityTargetType.DOMAIN, fileName: 'global_whitelist_domains' },
-        { type: SecurityPolicyType.WHITELIST, targetType: SecurityTargetType.EMAIL, fileName: 'global_whitelist' },
-        { type: SecurityPolicyType.BLACKLIST, targetType: SecurityTargetType.DOMAIN, fileName: 'global_blacklist_domains' },
-        { type: SecurityPolicyType.BLACKLIST, targetType: SecurityTargetType.EMAIL, fileName: 'global_blacklist' },
-      ];
-
-      for (const config of fileConfig) {
-        const values = policies
-          .filter(p => p.type === config.type && p.targetType === config.targetType)
-          .map(p => p.value);
-        
-        await this.rspamdSync.syncFullFile(config.fileName, values);
-        this.logger.log(`SSH Force Sync: Updated ${config.fileName} with ${values.length} records`);
-      }
-
-      await this.rspamdSync.reloadRspamd();
-      this.logger.log('Force Sync completed and rspamd reloaded');
-      return { success: true };
-    } catch (error) {
-      this.logger.error(`Force Sync to Remote failed: ${error.message}`);
-      throw error;
-    }
-  }
-
-  @Cron('0 */15 * * * *')
-  async handleCron() {
-    this.logger.debug('Running 15-minute scheduled moderation tasks');
-    await this.ensureRedisCache();
-    // Optional: We can also run ForceSync randomly or daily if requested.
-  }
-}
-````
-
-## File: src/organization/organization.controller.spec.ts
-````typescript
-import { Test, TestingModule } from '@nestjs/testing';
-import { OrganizationController } from './organization.controller';
-
-describe('OrganizationController', () => {
-  let controller: OrganizationController;
-
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      controllers: [OrganizationController],
-    }).compile();
-
-    controller = module.get<OrganizationController>(OrganizationController);
-  });
-
-  it('should be defined', () => {
-    expect(controller).toBeDefined();
-  });
-});
-````
-
-## File: src/organization/organization.controller.ts
-````typescript
-import {
-  Controller,
-  Get,
-  Post,
-  Body,
-  Patch,
-  Param,
-  Delete,
-  UseGuards,
-  Req,
-  Query,
-} from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiCookieAuth, ApiQuery } from '@nestjs/swagger';
-import { OrganizationService } from './organization.service';
-import { CreateOrganizationUnitDto, UpdateOrganizationUnitDto } from './organization.dto';
-import { ExchangeAuthGuard } from '../auth/guards/exchange-auth.guard';
-
-@ApiTags('Organization Units')
-@ApiCookieAuth('exchange_session')
-@ApiBearerAuth()
-@UseGuards(ExchangeAuthGuard)
-@Controller('api/organization-units')
-export class OrganizationController {
-  constructor(private readonly orgService: OrganizationService) {}
-
-  @Get('tree')
-  @ApiOperation({ summary: 'Lấy cấu trúc Cây Đơn vị (Phân quyền theo Admin)' })
-  getTree(@Req() req: any) {
-    const userEmail = req.user.email;
-    return this.orgService.getTree(userEmail);
-  }
-
-  @Post()
-  @ApiOperation({ summary: 'Tạo mới Đơn vị / Phòng ban' })
-  create(@Body() createDto: CreateOrganizationUnitDto, @Req() req: any) {
-    const adminEmail = req.user.email;
-    return this.orgService.create(createDto, adminEmail);
-  }
-
-  @Patch(':id')
-  @ApiOperation({ summary: 'Cập nhật Tên, Mã Đơn vị' })
-  update(
-    @Param('id') id: string,
-    @Body() updateDto: UpdateOrganizationUnitDto,
-    @Req() req: any,
-  ) {
-    const adminEmail = req.user.email;
-    return this.orgService.update(id, updateDto, adminEmail);
-  }
-
-  @Delete(':id')
-  @ApiOperation({ summary: 'Xóa một Đơn vị / Phòng ban (Nếu không có Unit con)' })
-  remove(@Param('id') id: string, @Req() req: any) {
-    const adminEmail = req.user.email;
-    return this.orgService.remove(id, adminEmail);
-  }
-
-  @Get('users/search')
-  @ApiOperation({ summary: 'Tìm kiếm User theo Email (Auto-complete)' })
-  @ApiQuery({ name: 'q', required: true, description: 'Từ khóa email' })
-  searchUsers(@Query('q') q: string, @Req() req: any) {
-    return this.orgService.searchUsers(q, req.user.email);
-  }
-
-  @Get(':id/users')
-  @ApiOperation({ summary: 'Lấy các User thuộc về 1 Đơn vị cụ thể (Có phân trang)' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'pageSize', required: false, type: Number })
-  @ApiQuery({ name: 'search', required: false, type: String })
-  getUsersByUnit(
-    @Param('id') unitId: string, 
-    @Query('page') page: string,
-    @Query('pageSize') pageSize: string,
-    @Query('search') search: string,
-    @Req() req: any
-  ) {
-    return this.orgService.getUsersByUnit(
-      unitId, 
-      req.user.email,
-      page ? parseInt(page) : 1,
-      pageSize ? parseInt(pageSize) : 10,
-      search
-    );
-  }
-
-  @Patch('users/:userId/assign')
-  @ApiOperation({ summary: 'Gán User vào Đơn vị / Phòng ban' })
-  assignUser(
-    @Param('userId') userId: string,
-    @Body('orgUnitId') unitId: string | null,
-    @Req() req: any
-  ) {
-    return this.orgService.assignUser(userId, unitId, req.user.email);
-  }
-}
-````
-
-## File: src/organization/organization.dto.ts
-````typescript
-import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsEnum, IsOptional, IsUUID } from 'class-validator';
-import { UnitLevel } from '../database/entities/organization-unit.entity';
-
-export class CreateOrganizationUnitDto {
-  @ApiProperty({ example: 'Phòng Kỹ thuật' })
-  @IsString()
-  @IsNotEmpty()
-  name!: string;
-
-  @ApiProperty({ example: 'KT01', required: false })
-  @IsString()
-  @IsOptional()
-  code?: string;
-
-  @ApiProperty({ enum: UnitLevel })
-  @IsEnum(UnitLevel)
-  level!: UnitLevel;
-
-  @ApiProperty({ description: 'ID của Đơn vị cha', required: false })
-  @IsUUID()
-  @IsOptional()
-  parentId?: string;
-}
-
-export class UpdateOrganizationUnitDto {
-  @ApiProperty({ example: 'Phòng Công nghệ', required: false })
-  @IsString()
-  @IsOptional()
   name?: string;
 
-  @ApiProperty({ example: 'CN01', required: false })
-  @IsString()
-  @IsOptional()
-  code?: string;
+  @Property({ fieldName: 'title', nullable: true })
+  legacyTitle?: string;
+
+  @Property({ default: true })
+  isActive: boolean = true;
+
+  @Property({ onCreate: () => new Date() })
+  createdAt: Date = new Date();
+
+  @Property({ onUpdate: () => new Date() })
+  updatedAt: Date = new Date();
 }
 ````
 
-## File: src/organization/organization.module.ts
+## File: src/database/entities/user-rss-state.entity.ts
+````typescript
+import { Entity, ManyToOne, PrimaryKey, Property, Unique } from '@mikro-orm/core';
+import { randomUUID } from 'crypto';
+import { User } from './user.entity';
+import { RssArticle } from './rss-article.entity';
+
+@Entity({ tableName: 'user_rss_states' })
+@Unique({ properties: ['user', 'article'] })
+export class UserRssState {
+  @PrimaryKey({ type: 'uuid' })
+  id: string = randomUUID();
+
+  @ManyToOne(() => User, { fieldName: 'user_id' })
+  user!: User;
+
+  @ManyToOne(() => RssArticle, { fieldName: 'article_id' })
+  article!: RssArticle;
+
+  @Property({ fieldName: 'is_read', default: false })
+  isRead: boolean = false;
+
+  @Property({ fieldName: 'is_starred', default: false })
+  isStarred: boolean = false;
+
+  @Property({ fieldName: 'updated_at', onCreate: () => new Date(), onUpdate: () => new Date() })
+  updatedAt: Date = new Date();
+}
+````
+
+## File: src/database/entities/user-rss-subscription.entity.ts
+````typescript
+import { Entity, ManyToOne, PrimaryKey, Property, Unique } from '@mikro-orm/core';
+import { randomUUID } from 'crypto';
+import { User } from './user.entity';
+import { RssFeed } from './rss-feed.entity';
+
+@Entity({ tableName: 'user_rss_subscriptions' })
+@Unique({ properties: ['user', 'feed'] })
+export class UserRssSubscription {
+  @PrimaryKey({ type: 'uuid' })
+  id: string = randomUUID();
+
+  @ManyToOne(() => User, { fieldName: 'user_id' })
+  user!: User;
+
+  @ManyToOne(() => RssFeed, { fieldName: 'feed_id' })
+  feed!: RssFeed;
+
+  @Property({ fieldName: 'folder_name', nullable: true })
+  folderName?: string;
+
+  @Property({ fieldName: 'created_at', onCreate: () => new Date() })
+  createdAt: Date = new Date();
+}
+````
+
+## File: src/rss/dto/rss-articles-query.dto.ts
+````typescript
+import { Transform } from 'class-transformer';
+import { IsInt, IsOptional, IsUUID, Max, Min } from 'class-validator';
+
+export class RssArticlesQueryDto {
+  @IsOptional()
+  scope?: 'server';
+
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number = 20;
+
+  @IsOptional()
+  @IsUUID()
+  feedId?: string;
+}
+````
+
+## File: src/rss/dto/rss-scope-query.dto.ts
+````typescript
+import { IsIn, IsOptional } from 'class-validator';
+
+export class RssScopeQueryDto {
+  @IsOptional()
+  @IsIn(['server'])
+  scope?: 'server';
+}
+````
+
+## File: src/rss/dto/subscribe-rss-feed.dto.ts
+````typescript
+import { IsNotEmpty, IsOptional, IsString, IsUrl, MaxLength } from 'class-validator';
+
+export class SubscribeRssFeedDto {
+  @IsUrl({ require_tld: false })
+  @IsNotEmpty()
+  url!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  name?: string;
+}
+````
+
+## File: src/rss/rss-crawler.service.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
+import { EntityManager } from '@mikro-orm/core';
+import { RssFeed } from '../database/entities/rss-feed.entity';
+import { RssQueueService } from './rss-queue.service';
+
+@Injectable()
+export class RssCrawlerService {
+  private readonly logger = new Logger(RssCrawlerService.name);
+
+  constructor(
+    private readonly em: EntityManager,
+    private readonly rssQueueService: RssQueueService,
+  ) { }
+
+  @Cron('0 */30 * * * *', {
+    name: 'rss-news-pooling',
+    timeZone: 'UTC',
+  })
+  async crawlFeeds(): Promise<void> {
+    this.logger.log('Starting RSS news pooling');
+
+    const feedRows = await this.em.find(RssFeed, {});
+    const uniqueFeeds = new Map<string, RssFeed>();
+
+    for (const feed of feedRows) {
+      const normalizedUrl = feed.url?.trim();
+      if (!normalizedUrl) {
+        continue;
+      }
+
+      if (!uniqueFeeds.has(normalizedUrl)) {
+        uniqueFeeds.set(normalizedUrl, feed);
+      }
+    }
+
+    for (const [url, feed] of uniqueFeeds) {
+      try {
+        await this.rssQueueService.enqueueFeedCrawl(feed);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`RSS queue enqueue failed for ${url}: ${message}`);
+      }
+    }
+
+    this.logger.log(
+      `Finished RSS crawl enqueue. feeds=${uniqueFeeds.size}`,
+    );
+  }
+}
+````
+
+## File: src/rss/rss-queue.service.ts
+````typescript
+import { EntityManager } from '@mikro-orm/core';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { JobsOptions, Queue, Worker } from 'bullmq';
+import { load } from 'cheerio';
+import Parser from 'rss-parser';
+import sanitizeHtml from 'sanitize-html';
+import { RssArticle } from '../database/entities/rss-article.entity';
+import { RssFeed } from '../database/entities/rss-feed.entity';
+import {
+    RSS_ARTICLE_PERSIST_JOB,
+    RSS_ARTICLE_QUEUE,
+    RSS_FEED_CRAWL_JOB,
+    RSS_FEED_QUEUE,
+} from './rss.constants';
+
+type FeedCrawlJobData = {
+    feedId: string;
+    url: string;
+};
+
+type ArticlePersistJobData = {
+    feedId: string;
+    guid?: string;
+    link?: string;
+    title?: string;
+    summary: string;
+    publishedAt?: string;
+};
+
+@Injectable()
+export class RssQueueService implements OnModuleInit, OnModuleDestroy {
+    private readonly logger = new Logger(RssQueueService.name);
+    private readonly parser = new Parser({ timeout: 15000 });
+    private readonly articleContentMinimumLength = 600;
+    private readonly queueEnabled: boolean;
+    private readonly connection?: {
+        host: string;
+        port: number;
+        password?: string;
+        maxRetriesPerRequest: null;
+        enableReadyCheck: boolean;
+    };
+    private readonly feedJobOptions: JobsOptions = {
+        removeOnComplete: 100,
+        removeOnFail: 100,
+        attempts: 3,
+        backoff: {
+            type: 'exponential',
+            delay: 5000,
+        },
+    };
+    private readonly articleJobOptions: JobsOptions = {
+        removeOnComplete: 500,
+        removeOnFail: 500,
+        attempts: 2,
+        backoff: {
+            type: 'fixed',
+            delay: 2000,
+        },
+    };
+
+    private feedQueue: Queue<FeedCrawlJobData> | null = null;
+    private articleQueue: Queue<ArticlePersistJobData> | null = null;
+    private feedWorker: Worker<FeedCrawlJobData> | null = null;
+    private articleWorker: Worker<ArticlePersistJobData> | null = null;
+
+    constructor(
+        private readonly em: EntityManager,
+        private readonly configService: ConfigService,
+    ) {
+        const enabled =
+            this.configService.get<string>('DRAGONFLY_ENABLED') === 'true';
+        this.queueEnabled = enabled;
+
+        if (enabled) {
+            this.connection = {
+                host: this.configService.get<string>('DRAGONFLY_HOST') || 'localhost',
+                port: Number(this.configService.get<string>('DRAGONFLY_PORT') || 6379),
+                password:
+                    this.configService.get<string>('DRAGONFLY_PASSWORD') || undefined,
+                maxRetriesPerRequest: null,
+                enableReadyCheck: false,
+            };
+        }
+    }
+
+    async onModuleInit(): Promise<void> {
+        if (!this.queueEnabled || !this.connection) {
+            this.logger.warn(
+                'Redis queue is disabled. RSS jobs will run inline on the API/Cron process.',
+            );
+            return;
+        }
+
+        this.feedQueue = new Queue<FeedCrawlJobData>(RSS_FEED_QUEUE, {
+            connection: this.connection,
+            defaultJobOptions: this.feedJobOptions,
+        });
+
+        this.articleQueue = new Queue<ArticlePersistJobData>(RSS_ARTICLE_QUEUE, {
+            connection: this.connection,
+            defaultJobOptions: this.articleJobOptions,
+        });
+
+        this.feedWorker = new Worker<FeedCrawlJobData>(
+            RSS_FEED_QUEUE,
+            async (job) => this.processFeedJob(job.data),
+            {
+                connection: this.connection,
+                concurrency: 2,
+            },
+        );
+
+        this.articleWorker = new Worker<ArticlePersistJobData>(
+            RSS_ARTICLE_QUEUE,
+            async (job) => this.processArticleJob(job.data),
+            {
+                connection: this.connection,
+                concurrency: 1,
+            },
+        );
+
+        this.feedWorker.on('failed', (job, error) => {
+            this.logger.warn(
+                `RSS feed job failed (${job?.id ?? 'unknown'}): ${error.message}`,
+            );
+        });
+
+        this.articleWorker.on('failed', (job, error) => {
+            this.logger.warn(
+                `RSS article job failed (${job?.id ?? 'unknown'}): ${error.message}`,
+            );
+        });
+
+        this.logger.log('RSS Redis queues are ready');
+    }
+
+    async onModuleDestroy(): Promise<void> {
+        await this.feedWorker?.close();
+        await this.articleWorker?.close();
+        await this.feedQueue?.close();
+        await this.articleQueue?.close();
+    }
+
+    async enqueueFeedCrawl(feed: RssFeed): Promise<void> {
+        const url = feed.url?.trim();
+        if (!url) {
+            return;
+        }
+
+        const payload: FeedCrawlJobData = {
+            feedId: feed.id,
+            url,
+        };
+
+        if (!this.feedQueue) {
+            await this.processFeedJob(payload);
+            return;
+        }
+
+        await this.feedQueue.add(RSS_FEED_CRAWL_JOB, payload, this.feedJobOptions);
+    }
+
+    private async processFeedJob(data: FeedCrawlJobData): Promise<void> {
+        const em = this.em.fork();
+        const feed = await em.findOne(RssFeed, { id: data.feedId });
+
+        if (!feed?.isActive) {
+            return;
+        }
+
+        const parsedFeed = await this.parser.parseURL(data.url);
+        const feedTitle = parsedFeed.title?.trim();
+        if (feedTitle) {
+            feed.name = feedTitle;
+            feed.legacyTitle = feedTitle;
+            feed.updatedAt = new Date();
+            await em.flush();
+        }
+
+        for (const item of parsedFeed.items ?? []) {
+            const guid = this.normalize(item.guid);
+            const link = this.normalize(item.link);
+
+            if (!guid && !link) {
+                continue;
+            }
+
+            const payload: ArticlePersistJobData = {
+                feedId: feed.id,
+                guid,
+                link,
+                title: this.normalize(item.title),
+                summary: this.buildArticleContent(item),
+                publishedAt: this.parseDate(item.pubDate)?.toISOString(),
+            };
+
+            if (!this.articleQueue) {
+                await this.processArticleJob(payload);
+                continue;
+            }
+
+            const dedupeKey = guid ? `guid:${guid}` : `link:${link}`;
+            await this.articleQueue.add(RSS_ARTICLE_PERSIST_JOB, payload, {
+                ...this.articleJobOptions,
+                jobId: `article:${feed.id}:${dedupeKey}`,
+            });
+        }
+    }
+
+    private async processArticleJob(data: ArticlePersistJobData): Promise<void> {
+        const em = this.em.fork();
+        const feed = await em.findOne(RssFeed, { id: data.feedId });
+
+        if (!feed) {
+            return;
+        }
+
+        const resolvedSummary = await this.resolveArticleContent(data);
+
+        const where =
+            data.guid && data.link
+                ? { $or: [{ guid: data.guid }, { link: data.link }] }
+                : data.guid
+                    ? { guid: data.guid }
+                    : { link: data.link };
+
+        const existingArticle = await em.findOne(RssArticle, where);
+        if (existingArticle) {
+            const nextSummary = resolvedSummary;
+            const shouldUpdateSummary =
+                nextSummary.length > (existingArticle.summary?.trim()?.length ?? 0);
+            const shouldUpdateTitle =
+                !!data.title && data.title !== existingArticle.title;
+            const shouldUpdatePublishedAt =
+                !!data.publishedAt && !existingArticle.publishedAt;
+
+            if (shouldUpdateSummary || shouldUpdateTitle || shouldUpdatePublishedAt) {
+                if (shouldUpdateSummary) {
+                    existingArticle.summary = nextSummary;
+                }
+                if (shouldUpdateTitle) {
+                    existingArticle.title = data.title;
+                }
+                if (shouldUpdatePublishedAt) {
+                    existingArticle.publishedAt = new Date(data.publishedAt!);
+                }
+                existingArticle.updatedAt = new Date();
+                await em.flush();
+            }
+
+            return;
+        }
+
+        const article = em.create(RssArticle, {
+            feed,
+            guid: data.guid,
+            link: data.link,
+            title: data.title,
+            summary: resolvedSummary,
+            isRead: false,
+            publishedAt: data.publishedAt ? new Date(data.publishedAt) : undefined,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+        });
+
+        await em.persistAndFlush(article);
+    }
+
+    private buildArticleContent(item: Parser.Item): string {
+        const rawItem = item as Record<string, unknown>;
+        const rawCandidates = [
+            rawItem['content:encoded'],
+            item.content,
+            rawItem.description,
+            item.contentSnippet,
+        ];
+
+        for (const candidate of rawCandidates) {
+            const normalized = this.toSanitizedText(candidate);
+            if (normalized) {
+                return normalized;
+            }
+        }
+
+        return '';
+    }
+
+    private toSanitizedText(rawValue: unknown): string {
+        const rawText = typeof rawValue === 'string' ? rawValue : '';
+        if (!rawText.trim()) {
+            return '';
+        }
+
+        const normalizedBreaks = rawText
+            .replace(/<\s*br\s*\/?>/gi, '\n')
+            .replace(/<\s*\/p\s*>/gi, '\n\n')
+            .replace(/<\s*\/div\s*>/gi, '\n');
+
+        const sanitized = sanitizeHtml(normalizedBreaks, {
+            allowedTags: [],
+            allowedAttributes: {},
+        })
+            .replace(/\r/g, '')
+            .replace(/\n{3,}/g, '\n\n')
+            .replace(/[ \t]+/g, ' ')
+            .trim();
+
+        return sanitized;
+    }
+
+    private async resolveArticleContent(data: ArticlePersistJobData): Promise<string> {
+        const feedContent = data.summary?.trim() ?? '';
+
+        if (!data.link) {
+            return feedContent;
+        }
+
+        if (feedContent.length >= this.articleContentMinimumLength) {
+            return feedContent;
+        }
+
+        const articleContent = await this.fetchArticleContent(data.link);
+        if (!articleContent) {
+            return feedContent;
+        }
+
+        return articleContent.length > feedContent.length ? articleContent : feedContent;
+    }
+
+    private async fetchArticleContent(url: string): Promise<string> {
+        try {
+            const response = await fetch(url, {
+                headers: {
+                    'User-Agent': 'SimaxWebMailRSSBot/1.0 (+http://localhost)',
+                    Accept: 'text/html,application/xhtml+xml',
+                },
+                signal: AbortSignal.timeout(15000),
+            });
+
+            if (!response.ok) {
+                this.logger.warn(`Cannot fetch article content ${url}: ${response.status}`);
+                return '';
+            }
+
+            const html = await response.text();
+            return this.extractMainArticleText(html);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.logger.warn(`Cannot fetch article content ${url}: ${message}`);
+            return '';
+        }
+    }
+
+    private extractMainArticleText(html: string): string {
+        if (!html.trim()) {
+            return '';
+        }
+
+        const $ = load(html);
+        $('script, style, noscript, iframe, svg, nav, footer, header, aside, form').remove();
+
+        const candidates = ['article', 'main', '[role="main"]', '.article-content', '.entry-content', '.post-content', '.content-detail'];
+        let bestText = '';
+
+        for (const selector of candidates) {
+            $(selector).each((_, element) => {
+                const text = this.extractElementText($, $(element));
+                if (text.length > bestText.length) {
+                    bestText = text;
+                }
+            });
+        }
+
+        if (!bestText) {
+            bestText = this.extractElementText($, $('body'));
+        }
+
+        return bestText;
+    }
+
+    private extractElementText($: ReturnType<typeof load>, root: ReturnType<ReturnType<typeof load>>): string {
+        const paragraphs = root
+            .find('p, h1, h2, h3, li, blockquote')
+            .map((_, element) => this.toSanitizedText($(element).html() ?? $(element).text()))
+            .get()
+            .filter(Boolean);
+
+        if (paragraphs.length > 0) {
+            return paragraphs.join('\n\n').trim();
+        }
+
+        return this.toSanitizedText(root.html() ?? root.text());
+    }
+
+    private parseDate(pubDate?: string): Date | undefined {
+        if (!pubDate) {
+            return undefined;
+        }
+
+        const parsed = new Date(pubDate);
+        return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    }
+
+    private normalize(value?: string): string | undefined {
+        const normalized = value?.trim();
+        return normalized ? normalized : undefined;
+    }
+}
+````
+
+## File: src/rss/rss.constants.ts
+````typescript
+export const RSS_FEED_QUEUE = 'rss-feed-crawl';
+export const RSS_ARTICLE_QUEUE = 'rss-article-persist';
+
+export const RSS_FEED_CRAWL_JOB = 'rss-feed-crawl-job';
+export const RSS_ARTICLE_PERSIST_JOB = 'rss-article-persist-job';
+````
+
+## File: src/rss/rss.controller.ts
+````typescript
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import { ApiHeader, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { ExchangeAuthGuard } from '../auth/guards/exchange-auth.guard';
+import { SubscribeRssFeedDto } from './dto/subscribe-rss-feed.dto';
+import { RssArticlesQueryDto } from './dto/rss-articles-query.dto';
+import { RssScopeQueryDto } from './dto/rss-scope-query.dto';
+import { RssService } from './rss.service';
+
+@ApiTags('Webmail RSS')
+@Controller(['webmail/rss', 'api/rss', 'rss'])
+@UseGuards(ExchangeAuthGuard)
+@ApiHeader({ name: 'Cookie', description: 'exchange_session cookie' })
+export class RssController {
+  constructor(private readonly rssService: RssService) { }
+
+  @Get('sidebar')
+  @ApiOperation({ summary: 'Lay sidebar RSS feeds' })
+  @ApiQuery({ name: 'scope', required: false, enum: ['server'] })
+  async getSidebar(
+    @CurrentUser() user: { id: string; email: string },
+    @Query() query: RssScopeQueryDto,
+  ) {
+    return this.rssService.getSidebar(user.id, query.scope);
+  }
+
+  @Get('articles')
+  @ApiOperation({ summary: 'Lay danh sach RSS articles co phan trang' })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'feedId', required: false })
+  @ApiQuery({ name: 'scope', required: false, enum: ['server'] })
+  async getArticles(
+    @CurrentUser() user: { id: string; email: string },
+    @Query() query: RssArticlesQueryDto,
+  ) {
+    return this.rssService.getArticles(
+      user.id,
+      query.page,
+      query.limit,
+      query.feedId,
+      query.scope,
+    );
+  }
+
+  @Post('subscribe')
+  @ApiOperation({ summary: 'Dang ky RSS feed moi' })
+  async subscribe(
+    @CurrentUser() user: { id: string; email: string },
+    @Body() dto: SubscribeRssFeedDto,
+  ) {
+    return this.rssService.subscribe(user.id, dto);
+  }
+
+  @Delete('feeds/:feedId')
+  @ApiOperation({ summary: 'Bo theo doi RSS feed' })
+  async unsubscribe(
+    @CurrentUser() user: { id: string; email: string },
+    @Param('feedId') feedId: string,
+  ) {
+    return this.rssService.unsubscribe(user.id, feedId);
+  }
+
+  @Put('articles/:id/read')
+  @ApiOperation({ summary: 'Danh dau RSS article da doc' })
+  async markArticleAsRead(
+    @CurrentUser() user: { id: string; email: string },
+    @Param('id') id: string,
+  ) {
+    return this.rssService.markArticleAsRead(user.id, id);
+  }
+}
+````
+
+## File: src/rss/rss.module.ts
 ````typescript
 import { Module } from '@nestjs/common';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
-import { OrganizationController } from './organization.controller';
-import { OrganizationService } from './organization.service';
-import { OrganizationUnit } from '../database/entities/organization-unit.entity';
-import { User } from '../database/entities/user.entity';
-import { AuditLog } from '../database/entities/audit-log.entity';
-import { ExchangeModule } from '../exchange/exchange.module';
+import { AuthModule } from '../auth/auth.module';
+import { RssFeed } from '../database/entities/rss-feed.entity';
+import { RssArticle } from '../database/entities/rss-article.entity';
+import { UserRssSubscription } from '../database/entities/user-rss-subscription.entity';
+import { UserRssState } from '../database/entities/user-rss-state.entity';
+import { RssCrawlerService } from './rss-crawler.service';
+import { RssController } from './rss.controller';
+import { RssQueueService } from './rss-queue.service';
+import { RssService } from './rss.service';
 
 @Module({
   imports: [
-    MikroOrmModule.forFeature([OrganizationUnit, User, AuditLog]),
-    ExchangeModule,
+    MikroOrmModule.forFeature([
+      RssFeed,
+      RssArticle,
+      UserRssSubscription,
+      UserRssState,
+    ]),
+    AuthModule,
   ],
-  controllers: [OrganizationController],
-  providers: [OrganizationService],
-  exports: [OrganizationService],
+  controllers: [RssController],
+  providers: [RssCrawlerService, RssQueueService, RssService],
+  exports: [RssCrawlerService, RssQueueService, RssService],
 })
-export class OrganizationModule {}
+export class RssModule { }
 ````
 
-## File: src/organization/organization.service.spec.ts
+## File: src/rss/rss.service.ts
 ````typescript
-import { Test, TestingModule } from '@nestjs/testing';
-import { OrganizationService } from './organization.service';
-
-describe('OrganizationService', () => {
-  let service: OrganizationService;
-
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [OrganizationService],
-    }).compile();
-
-    service = module.get<OrganizationService>(OrganizationService);
-  });
-
-  it('should be defined', () => {
-    expect(service).toBeDefined();
-  });
-});
-````
-
-## File: src/organization/organization.service.ts
-````typescript
-import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
-import { EntityManager } from '@mikro-orm/core';
-import { OrganizationUnit, UnitLevel } from '../database/entities/organization-unit.entity';
+import { EntityManager, FilterQuery } from '@mikro-orm/core';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import Parser from 'rss-parser';
+import { RssFeed } from '../database/entities/rss-feed.entity';
+import { RssArticle } from '../database/entities/rss-article.entity';
+import { UserRssSubscription } from '../database/entities/user-rss-subscription.entity';
+import { UserRssState } from '../database/entities/user-rss-state.entity';
 import { User } from '../database/entities/user.entity';
-import { CreateOrganizationUnitDto, UpdateOrganizationUnitDto } from './organization.dto';
-import { AuditLog } from '../database/entities/audit-log.entity';
+import { RssQueueService } from './rss-queue.service';
+import { SubscribeRssFeedDto } from './dto/subscribe-rss-feed.dto';
 
 @Injectable()
-export class OrganizationService {
-  constructor(private readonly em: EntityManager) {}
+export class RssService {
+  private readonly parser = new Parser({ timeout: 15000 });
+  private readonly logger = new Logger(RssService.name);
 
-  async getTree(userEmail: string) {
-    const user = await this.em.findOne(User, { email: userEmail }, { populate: ['orgUnit'] as any });
-    if (!user) throw new NotFoundException('User not found');
+  constructor(
+    private readonly em: EntityManager,
+    private readonly rssQueueService: RssQueueService,
+  ) { }
 
-    // Scoped RBAC logic: Nếu không có unitAdminLevel nhưng cũng không có orgUnit -> Super Admin (BO)
-    const adminLevel = user.unitAdminLevel || (!user.orgUnit ? UnitLevel.BO : null);
-    
-    // Nếu là admin cấp Bộ hoặc SuperAdmin không bị giới hạn orgUnit -> Lấy toàn bộ cây
-    if (adminLevel === UnitLevel.BO || !user.orgUnit) {
-      const allUnits = await this.em.find(OrganizationUnit, {}, { orderBy: { level: 'ASC', name: 'ASC' } });
-      return this.buildTree(allUnits);
-    }
+  async getSidebar(userId: string, scope?: 'server') {
+    this.assertSupportedScope(scope);
 
-    // Nếu là admin cấp Đơn Vị (Vụ/Cục) -> Chỉ lấy Đơn vị của họ và các phòng trực thuộc
-    if (adminLevel === UnitLevel.DON_VI) {
-      if (!user.orgUnit) return []; // An toàn
+    const subscriptions = await this.em.find(
+      UserRssSubscription,
+      { user: userId },
+      {
+        populate: ['feed'],
+        orderBy: { createdAt: 'DESC' },
+      },
+    );
 
-      const orgs = await this.em.find(OrganizationUnit, {
-        $or: [
-          { id: user.orgUnit.id }, // Chính Đơn vị đó
-          { parent: user.orgUnit.id } // Các phòng trực thuộc Đơn vị
-        ]
-      }, { orderBy: { level: 'ASC', name: 'ASC' } });
-      
-      return this.buildTree(orgs);
-    }
+    const channels = await Promise.all(
+      subscriptions.map(async (subscription) => {
+        const feed = subscription.feed;
+        const totalArticles = await this.em.count(RssArticle, {
+          feed: { id: feed.id },
+        });
+        const readStates = await this.em.count(UserRssState, {
+          user: { id: userId },
+          article: { feed: { id: feed.id } },
+          isRead: true,
+        });
 
-    // Nếu là Cấp Phòng Ban hoặc Nhân viên bình thường -> Có thể trả về rỗng hoặc chỉ thông tin phòng ban hiện tại
-     if (adminLevel === UnitLevel.PHONG_BAN) {
-        if (!user.orgUnit) return [];
-        const orgs = await this.em.find(OrganizationUnit, { id: user.orgUnit.id });
-        return this.buildTree(orgs);
-     }
+        return {
+          id: feed.id,
+          name: feed.name || feed.legacyTitle || feed.url,
+          url: feed.url,
+          unreadCount: Math.max(totalArticles - readStates, 0),
+        };
+      }),
+    );
 
-    return [];
+    return { scope: scope ?? 'user', channels, total: channels.length };
   }
 
-  private buildTree(units: OrganizationUnit[]): any[] {
-    const unitMap = new Map();
-    const tree: any[] = [];
+  async getArticles(
+    userId: string,
+    page = 1,
+    limit = 20,
+    feedId?: string,
+    scope?: 'server',
+  ) {
+    this.assertSupportedScope(scope);
 
-    // Khởi tạo map
-    units.forEach(unit => {
-      unitMap.set(unit.id, { ...unit, children: [] });
+    const subscriptionWhere: FilterQuery<UserRssSubscription> = {
+      user: { id: userId },
+    };
+
+    if (feedId) {
+      subscriptionWhere.feed = { id: feedId };
+    }
+
+    const subscriptions = await this.em.find(UserRssSubscription, subscriptionWhere, {
+      populate: ['feed'],
     });
 
-    // Lắp ráp cây
-    units.forEach(unit => {
-      const node = unitMap.get(unit.id);
-      if (unit.parent) {
-         // Nếu parent có trong mảng trả về (vì có thể query bị cắt nhánh)
-         const parentNode = unitMap.get(unit.parent.id);
-         if (parentNode) {
-            parentNode.children.push(node);
-         } else {
-            tree.push(node); // Nếu cha không load được, tự lên rễ
-         }
-      } else {
-        tree.push(node);
-      }
-    });
-
-    return tree;
-  }
-
-  async create(dto: CreateOrganizationUnitDto, adminEmail: string) {
-    const adminUser = await this.em.findOne(User, { email: adminEmail }, { populate: ['orgUnit'] as any });
-    if (!adminUser) throw new NotFoundException('User not found');
-
-    const adminLevel = adminUser.unitAdminLevel || (!adminUser.orgUnit ? UnitLevel.BO : null);
-
-    // Xác thực quyền:
-    if (adminLevel !== UnitLevel.BO && adminLevel !== UnitLevel.DON_VI) {
-      throw new ForbiddenException('Bạn không có quyền tạo đơn vị.');
+    const feedIds = subscriptions.map((subscription) => subscription.feed.id);
+    if (feedIds.length === 0) {
+      return {
+        scope: scope ?? 'user',
+        data: [],
+        page: 1,
+        limit,
+        total: 0,
+        totalPages: 0,
+      };
     }
 
-    let parentUnit: OrganizationUnit | null = null;
+    const safePage = Number.isFinite(page) && page > 0 ? page : 1;
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 100) : 20;
+    const offset = (safePage - 1) * safeLimit;
+    const where: FilterQuery<RssArticle> = {
+      feed: { id: { $in: feedIds } },
+    };
 
-    if (dto.parentId) {
-      parentUnit = await this.em.findOne(OrganizationUnit, { id: dto.parentId });
-      if (!parentUnit) throw new NotFoundException('Đơn vị cha không tồn tại');
-      
-      // Admin Đơn vị chỉ được phép tạo Phòng ban dưới Đơn vị của mình
-      if (adminLevel === UnitLevel.DON_VI) {
-         if (parentUnit.id !== adminUser.orgUnit?.id) {
-           throw new ForbiddenException('Bạn chỉ được tạo Phòng ban trực thuộc Đơn vị của mình.');
-         }
-         if (dto.level !== UnitLevel.PHONG_BAN) {
-           throw new BadRequestException('Bạn chỉ được phép tạo Cấp Phòng Ban.');
-         }
-      }
+    const [articles, total] = await this.em.findAndCount(
+      RssArticle,
+      where,
+      {
+        offset,
+        limit: safeLimit,
+        orderBy: {
+          publishedAt: 'DESC',
+          createdAt: 'DESC',
+        },
+        populate: ['feed'],
+      },
+    );
 
-      // Logic Cấp bậc cố định
-      if (dto.level === UnitLevel.BO && parentUnit) {
-         throw new BadRequestException('Cấp Bộ phải là cấp cao nhất (Không có cha).');
-      }
-      if (dto.level === UnitLevel.DON_VI && parentUnit.level !== UnitLevel.BO) {
-         throw new BadRequestException('Cấp Đơn vị (Cục/Vụ) phải thuộc trực tiếp cấp Bộ.');
-      }
-      if (dto.level === UnitLevel.PHONG_BAN && parentUnit.level !== UnitLevel.DON_VI) {
-         throw new BadRequestException('Cấp Phòng ban phải thuộc trực tiếp cấp Đơn vị (Cục/Vụ).');
-      }
-    } else {
-      // Không có parent
-      if (dto.level !== UnitLevel.BO) {
-        throw new BadRequestException('Chỉ Cấp Bộ mới được phép không có đơn vị cha.');
-      }
-      if (adminLevel !== UnitLevel.BO) {
-        throw new ForbiddenException('Bạn không có quyền tạo cấp Bộ.');
-      }
-    }
-
-    const newUnit = this.em.create(OrganizationUnit, {
-      name: dto.name,
-      code: dto.code || undefined,
-      level: dto.level,
-      parent: parentUnit || undefined,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    } as any);
-    await this.em.persistAndFlush(newUnit);
-
-    const audit = this.em.create(AuditLog, {
-      collection: 'organization_units',
-      targetId: newUnit.id,
-      action: 'CREATE',
-      userEmail: adminEmail,
-      details: { name: dto.name, level: dto.level },
-      timestamp: new Date(),
-    });
-
-    await this.em.persistAndFlush(audit);
-    return newUnit;
-  }
-
-  async update(id: string, dto: UpdateOrganizationUnitDto, adminEmail: string) {
-    const unit = await this.em.findOne(OrganizationUnit, { id }, { populate: ['parent'] as any });
-    if (!unit) throw new NotFoundException('Không tìm thấy đơn vị.');
-
-    const adminUser = await this.em.findOne(User, { email: adminEmail }, { populate: ['orgUnit'] as any });
-    const adminLevel = adminUser ? (adminUser.unitAdminLevel || (!adminUser.orgUnit ? UnitLevel.BO : null)) : null;
-
-    // Phân quyền sửa
-    if (adminLevel === UnitLevel.DON_VI) {
-       // UnitAdmin chỉ được sửa phòng ban của mình hoặc sửa Đơn vị của chính mình
-       const isSelf = unit.id === adminUser?.orgUnit?.id;
-       const isChild = unit.parent?.id === adminUser?.orgUnit?.id;
-       if (!isSelf && !isChild) {
-          throw new ForbiddenException('Bạn không có thẩm quyền sửa đơn vị này.');
-       }
-    } else if (adminLevel !== UnitLevel.BO) {
-       throw new ForbiddenException('Bạn không có quyền sửa đổi cơ cấu.');
-    }
-
-    if (dto.name) unit.name = dto.name;
-    if (dto.code) unit.code = dto.code;
-    unit.updatedAt = new Date();
-
-    const audit = this.em.create(AuditLog, {
-      collection: 'organization_units',
-      targetId: unit.id,
-      action: 'UPDATE',
-      userEmail: adminEmail,
-      details: dto,
-      timestamp: new Date(),
-    });
-
-    await this.em.persistAndFlush([unit, audit]);
-    return unit;
-  }
-
-  async remove(id: string, adminEmail: string) {
-    const unit = await this.em.findOne(OrganizationUnit, { id }, { populate: ['children'] as any });
-    if (!unit) throw new NotFoundException('Không tìm thấy đơn vị.');
-
-    if (unit.children.length > 0) {
-      throw new BadRequestException('Không thể xoá đơn vị đang có đơn vị con. Hãy dọn dẹp đơn vị con trước.');
-    }
-
-    const adminUser = await this.em.findOne(User, { email: adminEmail }, { populate: ['orgUnit'] as any });
-    const adminLevel = adminUser ? (adminUser.unitAdminLevel || (!adminUser.orgUnit ? UnitLevel.BO : null)) : null;
-
-    // Phân quyền sửa
-    if (adminLevel === UnitLevel.DON_VI) {
-       // UnitAdmin chỉ được xóa phòng ban của đơn vị mình
-       if (unit.parent?.id !== adminUser?.orgUnit?.id) {
-          throw new ForbiddenException('Bạn không có quyền xóa đơn vị này.');
-       }
-    } else if (adminLevel !== UnitLevel.BO) {
-       throw new ForbiddenException('Bạn không có quyền xóa cơ cấu tổ chức.');
-    }
-
-    // TODO: Cần kiểm tra xem có User hoặc SharedMailbox nào đang thuộc về Unit này nữa không.
-    // Tạm thời bỏ qua hoặc throw Error nếu có entity liên quan.
-    const usersCount = await this.em.count(User, { orgUnit: id });
-    const mailboxesCount = await this.em.count('SharedMailbox', { orgUnit: id }); // Tránh circular depend
-
-    if (usersCount > 0 || mailboxesCount > 0) {
-       throw new BadRequestException('Đang có Tài khoản User hoặc Mailbox dùng chung thuộc Đơn vị này. Không thể xóa.');
-    }
-
-    const audit = this.em.create(AuditLog, {
-      collection: 'organization_units',
-      targetId: unit.id,
-      action: 'DELETE',
-      userEmail: adminEmail,
-      details: { name: unit.name },
-      timestamp: new Date(),
-    });
-
-    await this.em.begin();
-    try {
-      this.em.remove(unit);
-      await this.em.persistAndFlush(audit);
-      await this.em.commit();
-      return { success: true };
-    } catch (e) {
-      await this.em.rollback();
-      throw new BadRequestException('Không thể xoá vào lúc này.');
-    }
-  }
-
-  // --- Users & Mailbox scoped management ---
-
-  async searchUsers(query: string, adminEmail: string) {
-    if (!query || query.length < 2) return [];
-
-    const adminUser = await this.em.findOne(User, { email: adminEmail }, { populate: ['orgUnit'] as any });
-    // Nếu có Scoped Role, trong tương lai có thể chặn search ra người ngoại bang. Hiện tại Admin được phép search email.
-    
-    const users = await this.em.find(User, {
-       email: { $ilike: `%${query}%` }
-    }, { limit: 20 });
-    
-    return users.map(u => ({
-       id: u.id,
-       email: u.email,
-       name: u.name,
-       orgUnit: u.orgUnit ? { id: u.orgUnit.id, name: u.orgUnit.name } : null
-    }));
-  }
-
-  async getUsersByUnit(unitId: string, adminEmail: string, page = 1, pageSize = 10, search?: string) {
-    const query: any = { orgUnit: unitId };
-    
-    // Nếu có search, tìm theo email hoặc tên
-    if (search && search.trim() !== '') {
-      query.$or = [
-        { email: { $ilike: `%${search}%` } },
-        { name: { $ilike: `%${search}%` } }
-      ];
-    }
-
-    const [users, total] = await this.em.findAndCount(User, query, {
-      limit: pageSize,
-      offset: (page - 1) * pageSize,
-      orderBy: { createdAt: 'DESC' } // hoặc orderBy email
-    });
+    const articleIds = articles.map((article) => article.id);
+    const states = articleIds.length
+      ? await this.em.find(UserRssState, {
+        user: { id: userId },
+        article: { id: { $in: articleIds } },
+      })
+      : [];
+    const stateByArticleId = new Map(
+      states.map((state) => [state.article.id, state]),
+    );
 
     return {
-      items: users.map(u => ({
-        id: u.id,
-        email: u.email,
-        name: u.name,
-        unitAdminLevel: u.unitAdminLevel
-      })),
-      total
+      scope: scope ?? 'user',
+      data: articles.map((article) => {
+        const state = stateByArticleId.get(article.id);
+
+        return {
+          id: article.id,
+          from:
+            article.feed?.name ||
+            article.feed?.legacyTitle ||
+            article.feed?.url ||
+            'RSS Feed',
+          subject: article.title || '(No title)',
+          preview: article.summary,
+          isRead: state?.isRead ?? false,
+          isStarred: state?.isStarred ?? false,
+          receivedAt: article.publishedAt || article.createdAt,
+          originalLink: article.link,
+          feedId: article.feed?.id,
+        };
+      }),
+      page: safePage,
+      limit: safeLimit,
+      total,
+      totalPages: Math.ceil(total / safeLimit) || 1,
     };
   }
 
-  async assignUser(userId: string, unitId: string | null, adminEmail: string) {
-    const targetUser = await this.em.findOne(User, { id: userId });
-    if (!targetUser) throw new NotFoundException('User không tồn tại');
+  private assertSupportedScope(scope?: 'server') {
+    if (scope && scope !== 'server') {
+      throw new BadRequestException('Only scope=server is supported for RSS');
+    }
+  }
 
-    const adminUser = await this.em.findOne(User, { email: adminEmail }, { populate: ['orgUnit'] as any });
-    // RBAC check: Bạn chỉ có thể gán người dùng vào Unit của bạn hoặc con của bạn.
-    
-    if (unitId) {
-       const unitToAssign = await this.em.findOne(OrganizationUnit, { id: unitId }, { populate: ['parent'] as any });
-       if (!unitToAssign) throw new NotFoundException('Organization Unit không tồn tại');
-       
-       if (adminUser?.unitAdminLevel === UnitLevel.DON_VI) {
-          if (unitToAssign.id !== adminUser.orgUnit?.id && unitToAssign.parent?.id !== adminUser.orgUnit?.id) {
-             throw new ForbiddenException('Bạn không được gán User sang Tổ chức ngoại bang.');
-          }
-       }
-       targetUser.orgUnit = unitToAssign;
-    } else {
-       targetUser.orgUnit = undefined;
+  async subscribe(userId: string, dto: SubscribeRssFeedDto) {
+    const user = await this.em.findOne(User, { id: userId });
+    if (!user) {
+      throw new NotFoundException('User not found');
     }
 
-    const audit = this.em.create(AuditLog, {
-      collection: 'users',
-      targetId: targetUser.id,
-      action: 'UPDATE_ORG_UNIT',
-      userEmail: adminEmail,
-      details: {
-        newOrgUnit: unitId
-      },
-      timestamp: new Date()
+    const normalizedUrl = dto.url.trim();
+    let parsedFeedTitle: string | undefined;
+
+    try {
+      const parsedFeed = await this.parser.parseURL(normalizedUrl);
+      parsedFeedTitle = parsedFeed.title?.trim() || undefined;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new BadRequestException(`Invalid RSS feed URL: ${message}`);
+    }
+
+    const existing = await this.em.findOne(RssFeed, {
+      url: normalizedUrl,
     });
 
-    await this.em.persistAndFlush([targetUser, audit]);
-    return { success: true };
+    if (existing) {
+      existing.name = dto.name?.trim() || parsedFeedTitle || existing.name;
+      existing.legacyTitle =
+        dto.name?.trim() || parsedFeedTitle || existing.legacyTitle;
+      existing.isActive = true;
+      existing.updatedAt = new Date();
+
+      await this.em.flush();
+      await this.ensureUserSubscription(user, existing);
+      await this.enqueueFeedCrawlSafely(existing);
+      return {
+        success: true,
+        subscribed: true,
+        feed: this.toFeedResponse(existing),
+      };
+    }
+
+    const feed = this.em.create(RssFeed, {
+      url: normalizedUrl,
+      name: dto.name?.trim() || parsedFeedTitle,
+      legacyTitle: dto.name?.trim() || parsedFeedTitle || normalizedUrl,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await this.em.persistAndFlush(feed);
+    await this.ensureUserSubscription(user, feed);
+    await this.enqueueFeedCrawlSafely(feed);
+    return {
+      success: true,
+      subscribed: true,
+      feed: this.toFeedResponse(feed),
+    };
+  }
+
+  async unsubscribe(userId: string, feedId: string) {
+    const subscription = await this.em.findOne(
+      UserRssSubscription,
+      {
+        user: { id: userId },
+        feed: { id: feedId },
+      },
+      { populate: ['feed'] },
+    );
+
+    if (!subscription) {
+      throw new NotFoundException('RSS subscription not found');
+    }
+
+    const articleIds = await this.em.find(
+      RssArticle,
+      { feed: { id: feedId } },
+      { fields: ['id'] as never },
+    );
+
+    if (articleIds.length > 0) {
+      await this.em.nativeDelete(UserRssState, {
+        user: { id: userId },
+        article: { id: { $in: articleIds.map((article) => article.id) } },
+      });
+    }
+
+    await this.em.removeAndFlush(subscription);
+
+    return {
+      success: true,
+      unsubscribed: true,
+      feedId,
+    };
+  }
+
+  async markArticleAsRead(userId: string, id: string) {
+    const article = await this.em.findOne(RssArticle, { id }, { populate: ['feed'] });
+
+    if (!article) {
+      throw new NotFoundException('RSS article not found');
+    }
+
+    const subscription = await this.em.findOne(UserRssSubscription, {
+      user: { id: userId },
+      feed: { id: article.feed?.id },
+    });
+
+    if (!subscription) {
+      throw new NotFoundException('RSS article not found for current user');
+    }
+
+    const existingState = await this.em.findOne(UserRssState, {
+      user: { id: userId },
+      article: { id },
+    });
+
+    if (existingState) {
+      existingState.isRead = true;
+      existingState.updatedAt = new Date();
+      await this.em.flush();
+
+      return {
+        success: true,
+        articleId: id,
+        isRead: true,
+      };
+    }
+
+    const state = this.em.create(UserRssState, {
+      user: { id: userId } as any,
+      article: { id } as any,
+      isRead: true,
+      isStarred: false,
+      updatedAt: new Date(),
+    });
+
+    await this.em.persistAndFlush(state);
+
+    return {
+      success: true,
+      articleId: id,
+      isRead: true,
+    };
+  }
+
+  private async ensureUserSubscription(user: User, feed: RssFeed): Promise<void> {
+    const existingSubscription = await this.em.findOne(UserRssSubscription, {
+      user: { id: user.id },
+      feed: { id: feed.id },
+    });
+
+    if (existingSubscription) {
+      return;
+    }
+
+    try {
+      const subscription = this.em.create(UserRssSubscription, {
+        user,
+        feed,
+        createdAt: new Date(),
+      });
+
+      await this.em.persistAndFlush(subscription);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.includes('user_rss_subscriptions_user_id_feed_id_key') ||
+        message.includes('duplicate key value')
+      ) {
+        this.logger.warn(
+          `RSS subscription already exists for user=${user.id} feed=${feed.id}`,
+        );
+        return;
+      }
+
+      throw error;
+    }
+  }
+
+  private async enqueueFeedCrawlSafely(feed: RssFeed): Promise<void> {
+    try {
+      await this.rssQueueService.enqueueFeedCrawl(feed);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`RSS crawl enqueue failed for ${feed.url}: ${message}`);
+    }
+  }
+
+  private toFeedResponse(feed: RssFeed) {
+    return {
+      id: feed.id,
+      url: feed.url,
+      name: feed.name,
+      legacyTitle: feed.legacyTitle,
+      isActive: feed.isActive,
+    };
   }
 }
 ````
@@ -2768,6 +2453,80 @@ Ghi chu:
 - `docs/PERMANENT_DELETE_MAIL_API.md`
 ````
 
+## File: docs/RSPAMD_SSH_SYNC_GUIDE.md
+````markdown
+# Hướng dẫn cấu hình kết nối SSH cho Rspamd Sync
+
+Tài liệu này hướng dẫn cách Admin cấu hình **SSH Private Key** để Node.js Backend có thể tự động đăng nhập vào máy chủ Gateway (Rspamd) `10.10.20.70` và cập nhật các file whitelist/blacklist, sau đó reload container thông qua lệnh `docker compose`.
+
+---
+
+## 1. Cấu hình biến môi trường trên Backend
+
+Backend sẽ cần các biến môi trường sau trong file `.env` để kết nối SSH. Đảm bảo bạn đã thêm vào file `.env` của `nestjs-base-be`:
+
+```env
+# ==============================================================================
+# RSPAMD SSH SYNC CONFIGURATION
+# ==============================================================================
+# Địa chỉ IP/Hostname của máy chủ chạy thư mục Rspamd
+RSPAMD_SSH_HOST=10.10.20.70
+# Port SSH (mặc định là 22)
+RSPAMD_SSH_PORT=22
+# User đăng nhập (thường là root do cần quyền sửa file và chạy docker compose)
+RSPAMD_SSH_USER=root
+# Đường dẫn absolute tới file Private Key (.pem, .key) hoặc id_rsa trên máy chạy Backend Nodejs.
+# Lưu ý: Cần dùng Window Path (C:\\Users\\...) hoặc đường dẫn tương đối từ gốc project Backend.
+RSPAMD_SSH_PRIVATE_KEY_PATH=./secrets/rspamd-ssh-key.pem
+
+# Tuỳ chọn: Mật khẩu giải mã Private Key (Nếu có passphrase)
+# RSPAMD_SSH_PASSPHRASE=
+
+# Đường dẫn GỐC của project Mail Gateway trên máy chủ 10.10.20.70
+RSPAMD_PROJECT_PATH=/root/webmail_exchange/mail-gateway
+```
+
+## 2. Thiết lập Private Key cho NodeJS
+
+Do hệ thống sử dụng **SSH Private Key**, mã nguồn Backend cần có file key để kết nối. Bạn thực hiện các bước sau:
+
+**Bước 2.1**: Tại máy chủ phát triển (máy đang chạy NestJS / Windows), tạo một thư mục tên `secrets` ở gốc `nestjs-base-be`:
+```bash
+mkdir secrets
+```
+
+**Bước 2.2**: Copy file private key (thường là `id_rsa` hoặc file `.pem` bạn dùng để login vào `10.10.20.70`) và dán vào thư mục `secrets`. Ví dụ:
+```
+nestjs-base-be/
+ ├── secrets/
+ │   └── rspamd-ssh-key.pem 
+```
+
+**Bước 2.3**: Đảm bảo file key KHÔNG được push lên git. Trong file `.gitignore` của máy Backend, bạn hãy kiểm tra xem thư mục `secrets/` đã được ignore chưa:
+```gitignore
+# Thêm dòng này vào .gitignore
+secrets/
+*.pem
+*.key
+```
+
+## 3. Xác thực khóa Public tại máu chủ Rspamd (10.10.20.70)
+
+Chỉ cần làm bước này NẾU máy chủ `10.10.20.70` chưa cấu hình sẵn private/public key hoặc key mới sinh. Đảm bảo rằng nội dung Public Key (ví dụ `id_rsa.pub` tương ứng với private key) đã được thêm vào file `~/.ssh/authorized_keys` của tài khoản `root` trên server `10.10.20.70`!
+
+---
+
+## 4. Cách hệ thống Reload Rspamd tự động
+
+Sau khi API tại file Backend hoàn tất thao tác `echo` / `sed` thêm bớt email/domain vào file cấu hình trên server remote, SSH Client từ NodeJS sẽ thực thi ngay câu lệnh sau để tự động Reload `rspamd`:
+```bash
+docker exec -t rspamd rspamadm control reload
+```
+*(Ghi chú: Đã bỏ cờ `-i` để lệnh có thể chạy ngầm tốt nhất qua SSH non-interactive)*
+
+Từ thời điểm này luật kiểm duyệt chặn (black)/gỡ (white) sẽ có hiệu lực ngay lập tức. CSDL PostgreSQL của dự án sẽ đóng vai trò Audit lưu trữ thông tin quản trị và giao diện UI Web. File Remote sẽ là Nguồn cấu hình chạy thực tế của Gateway.
+````
+
 ## File: eslint.config.mjs
 ````javascript
 // @ts-check
@@ -3358,6 +3117,82 @@ export class AppService {
 }
 ````
 
+## File: src/audit/audit.controller.ts
+````typescript
+import {
+  Controller,
+  Get,
+  Query,
+  Delete,
+  ParseIntPipe,
+  UseGuards,
+} from '@nestjs/common';
+import { AuditLogService } from './audit.service';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
+import { AuditAction } from '../common/decorators/audit-action.decorator';
+import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
+
+@ApiTags('Audit Logs')
+@Controller('audit-logs')
+@UseGuards(ExchangeAuthGuard)
+@ApiBearerAuth('jwt')
+export class AuditController {
+  constructor(private readonly auditLogService: AuditLogService) {}
+
+  @Get()
+  @ApiOperation({ summary: 'Lấy danh sách audit logs' })
+  @ApiQuery({ name: 'search', required: false, description: 'Tìm theo text' })
+  @ApiQuery({ name: 'fromDate', required: false, description: 'Từ ngày' })
+  @ApiQuery({ name: 'toDate', required: false, description: 'Đến ngày' })
+  @ApiQuery({ name: 'page', required: false, description: 'Trang' })
+  @ApiQuery({ name: 'pageSize', required: false, description: 'Số lượng / trang' })
+  async getLogs(
+    @Query('search') search?: string,
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string,
+    @Query('page', new ParseIntPipe({ optional: true })) page = 1,
+    @Query('pageSize', new ParseIntPipe({ optional: true })) pageSize = 25,
+  ) {
+    const limit = pageSize;
+    const offset = (page - 1) * limit;
+
+    const result = await this.auditLogService.findLogs({
+      search,
+      fromDate,
+      toDate,
+      limit,
+      offset,
+    });
+
+    return {
+      success: true,
+      items: result.data,
+      total: result.total,
+      page,
+      pageSize: limit,
+    };
+  }
+
+  @Delete('cleanup')
+  @AuditAction('Dọn dẹp nhật ký hệ thống')
+  @ApiOperation({ summary: 'Dọn dẹp logs cũ' })
+  @ApiQuery({ name: 'months', required: true, description: 'Số tháng muốn giữ lại (1, 3, 6, 12)' })
+  async cleanup(@Query('months', ParseIntPipe) months: number) {
+    const result = await this.auditLogService.cleanupLogs(months);
+    return {
+      success: true,
+      message: `Đã xóa ${result.deletedCount} bản ghi logs cũ hơn ${months} tháng`,
+      deletedCount: result.deletedCount,
+    };
+  }
+}
+````
+
 ## File: src/auth/decorators/current-user.decorator.ts
 ````typescript
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
@@ -3420,6 +3255,14 @@ import { DragonflyService } from './dragonfly.service';
   exports: [DragonflyService],
 })
 export class CacheModule {}
+````
+
+## File: src/common/decorators/audit-action.decorator.ts
+````typescript
+import { SetMetadata } from '@nestjs/common';
+
+export const AUDIT_ACTION_KEY = 'audit_action';
+export const AuditAction = (action: string) => SetMetadata(AUDIT_ACTION_KEY, action);
 ````
 
 ## File: src/common/exceptions/invalid-query.exception.ts
@@ -3513,78 +3356,173 @@ export default registerAs('storage', () => ({
 }));
 ````
 
-## File: src/database/entities/shared-mailbox-member.entity.ts
+## File: src/database/entities/global-blocklist.entity.ts
 ````typescript
-import { Entity, PrimaryKey, Property, ManyToOne, Unique } from '@mikro-orm/core';
-import { SharedMailbox } from './shared-mailbox.entity';
+import { Entity, PrimaryKey, Property, Unique } from '@mikro-orm/core';
 
-export enum SharedMailboxRole {
-  OWNER = 'OWNER', // FullAccess + SendAs
-  MEMBER = 'MEMBER', // FullAccess
-}
-
-@Entity({ tableName: 'shared_mailbox_members' })
-@Unique({ properties: ['mailbox', 'userId'] }) // Ngăn chặn duplicate membership
-export class SharedMailboxMember {
+/**
+ * Entity lưu trữ danh sách chặn toàn cục (Global Blacklist).
+ * Dữ liệu ở đây là nguồn chính để rebuild sang Redis.
+ */
+@Entity({ tableName: 'global_blocklist' })
+export class GlobalBlocklist {
   @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
   id!: string;
 
-  @ManyToOne(() => SharedMailbox)
-  mailbox!: SharedMailbox;
+  @Property()
+  @Unique()
+  senderEmail: string;
 
-  @Property({ type: 'uuid' })
-  userId!: string; // Reference to User ID (UUID)
-
-  @Property({ type: 'string' })
-  role: SharedMailboxRole = SharedMailboxRole.MEMBER;
+  @Property()
+  blockedBy: string; // Email của Admin thực hiện chặn
 
   @Property({ nullable: true })
-  addedBy?: string; // Reference to Admin User ID
+  reason?: string;
 
-  @Property({ onCreate: () => new Date() })
+  @Property()
   createdAt: Date = new Date();
 
-  @Property({ onUpdate: () => new Date() })
-  updatedAt: Date = new Date();
+  constructor(senderEmail: string, blockedBy: string, reason?: string) {
+    this.senderEmail = senderEmail;
+    this.blockedBy = blockedBy;
+    this.reason = reason;
+  }
 }
 ````
 
-## File: src/database/entities/shared-mailbox.entity.ts
+## File: src/database/entities/organization-unit.entity.ts
 ````typescript
-import { Entity, PrimaryKey, Property, ManyToOne } from '@mikro-orm/core';
-import { OrganizationUnit } from './organization-unit.entity';
+import {
+  Entity,
+  PrimaryKey,
+  Property,
+  ManyToOne,
+  OneToMany,
+  Collection,
+  Enum,
+} from '@mikro-orm/core';
 
-@Entity({ tableName: 'shared_mailboxes' })
-export class SharedMailbox {
+export enum UnitLevel {
+  BO = 'BO',             // Cấp 1: Bộ Giáo Dục và Đào Tạo
+  DON_VI = 'DON_VI',     // Cấp 2: Cục, Vụ, Viện
+  PHONG_BAN = 'PHONG_BAN' // Cấp 3: Các phòng trực thuộc Cục, Vụ, Viện
+}
+
+@Entity({ tableName: 'organization_units' })
+export class OrganizationUnit {
   @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
   id!: string;
 
   @Property()
   name!: string;
 
-  @Property({ unique: true })
-  email!: string;
-
-  @Property()
-  displayName!: string;
-
   @Property({ nullable: true })
-  exchangeGuid?: string;
+  code?: string;
 
-  @Property({ default: true })
-  isActive: boolean = true;
-
-  @Property({ nullable: true })
-  createdBy?: string;
+  @Enum({ items: () => UnitLevel })
+  level!: UnitLevel;
 
   @ManyToOne(() => OrganizationUnit, { nullable: true })
-  orgUnit?: OrganizationUnit;
+  parent?: OrganizationUnit;
+
+  @OneToMany(() => OrganizationUnit, (unit) => unit.parent)
+  children = new Collection<OrganizationUnit>(this);
 
   @Property({ onCreate: () => new Date() })
   createdAt = new Date();
 
   @Property({ onUpdate: () => new Date() })
   updatedAt = new Date();
+}
+````
+
+## File: src/database/entities/security-policy.entity.ts
+````typescript
+import { Entity, PrimaryKey, Property, Enum } from '@mikro-orm/core';
+
+export enum SecurityPolicyType {
+  WHITELIST = 'WHITELIST',
+  BLACKLIST = 'BLACKLIST',
+}
+
+export enum SecurityTargetType {
+  DOMAIN = 'DOMAIN',
+  EMAIL = 'EMAIL',
+}
+
+/**
+ * Entity lưu trữ các chính sách bảo mật mở rộng.
+ * Dùng để cấu hình Whitelist/Blacklist theo Domain hoặc Email.
+ */
+@Entity({ tableName: 'security_policies' })
+export class SecurityPolicy {
+  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
+  id!: string;
+
+  @Enum({ items: () => SecurityPolicyType })
+  type!: SecurityPolicyType;
+
+  @Enum({ items: () => SecurityTargetType })
+  targetType!: SecurityTargetType;
+
+  @Property()
+  value!: string; // Email address or Domain name
+
+  @Property()
+  createdBy!: string; // Email của Admin tạo rule
+
+  @Property({ nullable: true })
+  reason?: string;
+
+  @Property()
+  createdAt: Date = new Date();
+
+  constructor(
+    type: SecurityPolicyType,
+    targetType: SecurityTargetType,
+    value: string,
+    createdBy: string,
+    reason?: string,
+  ) {
+    this.type = type;
+    this.targetType = targetType;
+    this.value = value;
+    this.createdBy = createdBy;
+    this.reason = reason;
+  }
+}
+````
+
+## File: src/database/entities/spam-report.entity.ts
+````typescript
+import { Entity, PrimaryKey, Property } from '@mikro-orm/core';
+
+/**
+ * Entity lưu trữ thông tin báo cáo thư rác từ người dùng.
+ * BẮT BUỘC: Dùng để Admin kiểm duyệt và quyết định chặn Global.
+ */
+@Entity({ tableName: 'spam_reports' })
+export class SpamReport {
+  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
+  id!: string;
+
+  @Property()
+  reporterEmail: string;
+
+  @Property()
+  senderEmail: string;
+
+  @Property()
+  messageId: string;
+
+  @Property()
+  createdAt: Date = new Date();
+
+  constructor(reporterEmail: string, senderEmail: string, messageId: string) {
+    this.reporterEmail = reporterEmail;
+    this.senderEmail = senderEmail;
+    this.messageId = messageId;
+  }
 }
 ````
 
@@ -3635,12 +3573,311 @@ export class Migration20260312044513 extends Migration {
 }
 ````
 
+## File: src/database/migrations/Migration20260316070430.ts
+````typescript
+import { Migration } from '@mikro-orm/migrations';
+
+export class Migration20260316070430 extends Migration {
+
+  override async up(): Promise<void> {
+    this.addSql(`create table "global_blocklist" ("id" varchar(255) not null, "sender_email" varchar(255) not null, "blocked_by" varchar(255) not null, "reason" varchar(255) null, "created_at" timestamptz not null, constraint "global_blocklist_pkey" primary key ("id"));`);
+    this.addSql(`alter table "global_blocklist" add constraint "global_blocklist_sender_email_unique" unique ("sender_email");`);
+
+    this.addSql(`create table "shared_mailboxes" ("id" varchar(255) not null, "name" varchar(255) not null, "email" varchar(255) not null, "display_name" varchar(255) not null, "exchange_guid" varchar(255) null, "is_active" boolean not null default true, "created_by" varchar(255) null, "created_at" timestamptz not null, "updated_at" timestamptz not null, constraint "shared_mailboxes_pkey" primary key ("id"));`);
+    this.addSql(`alter table "shared_mailboxes" add constraint "shared_mailboxes_email_unique" unique ("email");`);
+
+    this.addSql(`create table "shared_mailbox_members" ("id" varchar(255) not null, "mailbox_id" varchar(255) not null, "user_id" varchar(255) not null, "role" varchar(255) not null default 'MEMBER', "added_by" varchar(255) null, "created_at" timestamptz not null, "updated_at" timestamptz not null, constraint "shared_mailbox_members_pkey" primary key ("id"));`);
+    this.addSql(`alter table "shared_mailbox_members" add constraint "shared_mailbox_members_mailbox_id_user_id_unique" unique ("mailbox_id", "user_id");`);
+
+    this.addSql(`create table "spam_reports" ("id" varchar(255) not null, "reporter_email" varchar(255) not null, "sender_email" varchar(255) not null, "message_id" varchar(255) not null, "created_at" timestamptz not null, constraint "spam_reports_pkey" primary key ("id"));`);
+
+    this.addSql(`alter table "shared_mailbox_members" add constraint "shared_mailbox_members_mailbox_id_foreign" foreign key ("mailbox_id") references "shared_mailboxes" ("id") on update cascade;`);
+  }
+
+  override async down(): Promise<void> {
+    this.addSql(`alter table "shared_mailbox_members" drop constraint "shared_mailbox_members_mailbox_id_foreign";`);
+
+    this.addSql(`drop table if exists "global_blocklist" cascade;`);
+
+    this.addSql(`drop table if exists "shared_mailboxes" cascade;`);
+
+    this.addSql(`drop table if exists "shared_mailbox_members" cascade;`);
+
+    this.addSql(`drop table if exists "spam_reports" cascade;`);
+  }
+
+}
+````
+
+## File: src/database/migrations/Migration20260316070909.ts
+````typescript
+import { Migration } from '@mikro-orm/migrations';
+
+export class Migration20260316070909 extends Migration {
+
+  override async up(): Promise<void> {
+    this.addSql(`alter table "global_blocklist" alter column "id" drop default;`);
+    this.addSql(`alter table "global_blocklist" alter column "id" type uuid using ("id"::text::uuid);`);
+    this.addSql(`alter table "global_blocklist" alter column "id" set default gen_random_uuid();`);
+
+    this.addSql(`alter table "spam_reports" alter column "id" drop default;`);
+    this.addSql(`alter table "spam_reports" alter column "id" type uuid using ("id"::text::uuid);`);
+    this.addSql(`alter table "spam_reports" alter column "id" set default gen_random_uuid();`);
+  }
+
+  override async down(): Promise<void> {
+    this.addSql(`alter table "global_blocklist" alter column "id" type text using ("id"::text);`);
+
+    this.addSql(`alter table "spam_reports" alter column "id" type text using ("id"::text);`);
+
+    this.addSql(`alter table "global_blocklist" alter column "id" drop default;`);
+    this.addSql(`alter table "global_blocklist" alter column "id" type varchar(255) using ("id"::varchar(255));`);
+
+    this.addSql(`alter table "spam_reports" alter column "id" drop default;`);
+    this.addSql(`alter table "spam_reports" alter column "id" type varchar(255) using ("id"::varchar(255));`);
+  }
+
+}
+````
+
+## File: src/database/migrations/Migration20260317011911.ts
+````typescript
+import { Migration } from '@mikro-orm/migrations';
+
+export class Migration20260317011911 extends Migration {
+
+  override async up(): Promise<void> {
+    this.addSql(`create table "security_policies" ("id" uuid not null default gen_random_uuid(), "type" text check ("type" in ('WHITELIST', 'BLACKLIST')) not null, "target_type" text check ("target_type" in ('DOMAIN', 'EMAIL')) not null, "value" varchar(255) not null, "created_by" varchar(255) not null, "reason" varchar(255) null, "created_at" timestamptz not null, constraint "security_policies_pkey" primary key ("id"));`);
+
+    this.addSql(`alter table "audit_logs" drop constraint "audit_logs_user_id_foreign";`);
+
+    this.addSql(`alter table "shared_mailbox_members" drop constraint "shared_mailbox_members_mailbox_id_foreign";`);
+
+    this.addSql(`alter table "user_roles" drop constraint "user_roles_user_id_foreign";`);
+
+    this.addSql(`drop index "audit_log_user_id_index";`);
+    this.addSql(`alter table "audit_logs" drop column "user_id";`);
+
+    this.addSql(`alter table "audit_logs" add column "user_email" varchar(255) null;`);
+    this.addSql(`create index "audit_log_user_email_index" on "audit_logs" ("user_email");`);
+
+    this.addSql(`alter table "shared_mailboxes" alter column "id" drop default;`);
+    this.addSql(`alter table "shared_mailboxes" alter column "id" type uuid using ("id"::text::uuid);`);
+    this.addSql(`alter table "shared_mailboxes" alter column "id" set default gen_random_uuid();`);
+
+    this.addSql(`alter table "shared_mailbox_members" alter column "id" drop default;`);
+    this.addSql(`alter table "shared_mailbox_members" alter column "id" type uuid using ("id"::text::uuid);`);
+    this.addSql(`alter table "shared_mailbox_members" alter column "id" set default gen_random_uuid();`);
+    this.addSql(`alter table "shared_mailbox_members" alter column "mailbox_id" drop default;`);
+    this.addSql(`alter table "shared_mailbox_members" alter column "mailbox_id" type uuid using ("mailbox_id"::text::uuid);`);
+    this.addSql(`alter table "shared_mailbox_members" alter column "user_id" drop default;`);
+    this.addSql(`alter table "shared_mailbox_members" alter column "user_id" type uuid using ("user_id"::text::uuid);`);
+    this.addSql(`alter table "shared_mailbox_members" add constraint "shared_mailbox_members_mailbox_id_foreign" foreign key ("mailbox_id") references "shared_mailboxes" ("id") on update cascade;`);
+
+    this.addSql(`alter table "users" alter column "id" drop default;`);
+    this.addSql(`alter table "users" alter column "id" type uuid using ("id"::text::uuid);`);
+    this.addSql(`alter table "users" alter column "id" set default gen_random_uuid();`);
+
+    this.addSql(`alter table "user_roles" alter column "user_id" drop default;`);
+    this.addSql(`alter table "user_roles" alter column "user_id" type uuid using ("user_id"::text::uuid);`);
+    this.addSql(`alter table "user_roles" add constraint "user_roles_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade on delete cascade;`);
+  }
+
+  override async down(): Promise<void> {
+    this.addSql(`drop table if exists "security_policies" cascade;`);
+
+    this.addSql(`alter table "shared_mailboxes" alter column "id" type text using ("id"::text);`);
+
+    this.addSql(`alter table "shared_mailbox_members" alter column "id" type text using ("id"::text);`);
+    this.addSql(`alter table "shared_mailbox_members" alter column "mailbox_id" type text using ("mailbox_id"::text);`);
+    this.addSql(`alter table "shared_mailbox_members" alter column "user_id" type text using ("user_id"::text);`);
+
+    this.addSql(`alter table "shared_mailbox_members" drop constraint "shared_mailbox_members_mailbox_id_foreign";`);
+
+    this.addSql(`alter table "users" alter column "id" type text using ("id"::text);`);
+
+    this.addSql(`alter table "user_roles" alter column "user_id" type text using ("user_id"::text);`);
+
+    this.addSql(`alter table "user_roles" drop constraint "user_roles_user_id_foreign";`);
+
+    this.addSql(`alter table "shared_mailboxes" alter column "id" drop default;`);
+    this.addSql(`alter table "shared_mailboxes" alter column "id" type varchar(255) using ("id"::varchar(255));`);
+
+    this.addSql(`alter table "shared_mailbox_members" alter column "id" drop default;`);
+    this.addSql(`alter table "shared_mailbox_members" alter column "id" type varchar(255) using ("id"::varchar(255));`);
+    this.addSql(`alter table "shared_mailbox_members" alter column "mailbox_id" type varchar(255) using ("mailbox_id"::varchar(255));`);
+    this.addSql(`alter table "shared_mailbox_members" alter column "user_id" type varchar(255) using ("user_id"::varchar(255));`);
+    this.addSql(`alter table "shared_mailbox_members" add constraint "shared_mailbox_members_mailbox_id_foreign" foreign key ("mailbox_id") references "shared_mailboxes" ("id") on update cascade;`);
+
+    this.addSql(`alter table "users" alter column "id" drop default;`);
+    this.addSql(`alter table "users" alter column "id" type varchar(255) using ("id"::varchar(255));`);
+
+    this.addSql(`drop index "audit_log_user_email_index";`);
+    this.addSql(`alter table "audit_logs" drop column "user_email";`);
+
+    this.addSql(`alter table "audit_logs" add column "user_id" varchar(255) null;`);
+    this.addSql(`alter table "audit_logs" add constraint "audit_logs_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade on delete set null;`);
+    this.addSql(`create index "audit_log_user_id_index" on "audit_logs" ("user_id");`);
+
+    this.addSql(`alter table "user_roles" alter column "user_id" type varchar(255) using ("user_id"::varchar(255));`);
+    this.addSql(`alter table "user_roles" add constraint "user_roles_user_id_foreign" foreign key ("user_id") references "users" ("id") on update cascade on delete cascade;`);
+  }
+
+}
+````
+
+## File: src/database/migrations/Migration20260317044849.ts
+````typescript
+import { Migration } from '@mikro-orm/migrations';
+
+export class Migration20260317044849 extends Migration {
+
+  override async up(): Promise<void> {
+    this.addSql(`create table "organization_units" ("id" uuid not null default gen_random_uuid(), "name" varchar(255) not null, "code" varchar(255) null, "level" text check ("level" in ('BO', 'DON_VI', 'PHONG_BAN')) not null, "parent_id" uuid null, "created_at" timestamptz not null, "updated_at" timestamptz not null, constraint "organization_units_pkey" primary key ("id"));`);
+
+    this.addSql(`alter table "organization_units" add constraint "organization_units_parent_id_foreign" foreign key ("parent_id") references "organization_units" ("id") on update cascade on delete set null;`);
+
+    this.addSql(`alter table "shared_mailboxes" add column "org_unit_id" uuid null;`);
+    this.addSql(`alter table "shared_mailboxes" add constraint "shared_mailboxes_org_unit_id_foreign" foreign key ("org_unit_id") references "organization_units" ("id") on update cascade on delete set null;`);
+
+    this.addSql(`alter table "users" add column "org_unit_id" uuid null, add column "unit_admin_level" text check ("unit_admin_level" in ('BO', 'DON_VI', 'PHONG_BAN')) null;`);
+    this.addSql(`alter table "users" add constraint "users_org_unit_id_foreign" foreign key ("org_unit_id") references "organization_units" ("id") on update cascade on delete set null;`);
+  }
+
+  override async down(): Promise<void> {
+    this.addSql(`alter table "organization_units" drop constraint "organization_units_parent_id_foreign";`);
+
+    this.addSql(`alter table "shared_mailboxes" drop constraint "shared_mailboxes_org_unit_id_foreign";`);
+
+    this.addSql(`alter table "users" drop constraint "users_org_unit_id_foreign";`);
+
+    this.addSql(`drop table if exists "organization_units" cascade;`);
+
+    this.addSql(`alter table "shared_mailboxes" drop column "org_unit_id";`);
+
+    this.addSql(`alter table "users" drop column "org_unit_id", drop column "unit_admin_level";`);
+  }
+
+}
+````
+
 ## File: src/dto/post/update-post.dto.ts
 ````typescript
 import { PartialType } from '@nestjs/mapped-types';
 import { CreatePostDto } from './create-post.dto';
 
 export class UpdatePostDto extends PartialType(CreatePostDto) {}
+````
+
+## File: src/exchange/controllers/admin-moderation.controller.ts
+````typescript
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  UseGuards,
+  Delete,
+  Param,
+  Query,
+  Req,
+} from '@nestjs/common';
+import { SpamModerationService } from '../services/spam-moderation.service';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
+import { SecurityPolicyType, SecurityTargetType } from '../../database/entities/security-policy.entity';
+import { ExchangeAuthGuard } from 'src/auth/guards/exchange-auth.guard';
+
+@ApiTags('Admin Moderation')
+@ApiBearerAuth()
+@UseGuards(ExchangeAuthGuard) // Giả định admin cũng dùng JWT chung hoặc có cơ chế phân quyền Role sau này
+@Controller('admin/moderation')
+export class AdminModerationController {
+  constructor(private readonly moderationService: SpamModerationService) {}
+
+  @Post('global-block')
+  @ApiOperation({ summary: 'Chặn một địa chỉ email trên toàn hệ thống (Legacy)' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        email: { type: 'string' },
+        reason: { type: 'string' },
+      },
+      required: ['email'],
+    },
+  })
+  async blockGlobal(@Body() dto: { email: string; reason?: string }, @Req() req: any) {
+    const adminEmail = req.user.email;
+    return this.moderationService.blockGlobal(dto.email, adminEmail, dto.reason);
+  }
+
+  @Delete('global-block/:email')
+  @ApiOperation({ summary: 'Bỏ chặn một địa chỉ email (Legacy)' })
+  async unblockGlobal(@Param('email') email: string) {
+    return this.moderationService.unblockGlobal(email);
+  }
+
+  @Post('rebuild-blacklist')
+  @ApiOperation({ summary: 'Rebuild lại danh sách chặn trong Redis từ Database' })
+  async rebuildBlacklist() {
+    await this.moderationService.ensureRedisCache();
+    return { success: true, message: 'Rebuild triggered' };
+  }
+
+  // ================= SECURITY POLICIES (WHITELIST/BLACKLIST) =================
+
+  @Get('security-policies')
+  @ApiOperation({ summary: 'Lấy danh sách các chính sách bảo mật' })
+  @ApiQuery({ name: 'type', enum: SecurityPolicyType })
+  @ApiQuery({ name: 'targetType', enum: SecurityTargetType })
+  async getPolicies(
+    @Query('type') type: SecurityPolicyType,
+    @Query('targetType') targetType: SecurityTargetType,
+  ) {
+    const policies = await this.moderationService.getPolicies(type, targetType);
+    return { success: true, data: policies };
+  }
+
+  @Post('security-policies')
+  @ApiOperation({ summary: 'Thêm mới một chính sách bảo mật' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: ['WHITELIST', 'BLACKLIST'] },
+        targetType: { type: 'string', enum: ['DOMAIN', 'EMAIL'] },
+        value: { type: 'string' },
+        reason: { type: 'string' },
+      },
+      required: ['type', 'targetType', 'value'],
+    },
+  })
+  async addPolicy(
+    @Body() dto: { type: SecurityPolicyType; targetType: SecurityTargetType; value: string; reason?: string },
+    @Req() req: any,
+  ) {
+    const adminEmail = req.user?.upn || 'admin@system.local';
+    return this.moderationService.addPolicy(
+      dto.type,
+      dto.targetType,
+      dto.value,
+      adminEmail,
+      dto.reason,
+    );
+  }
+
+  @Delete('security-policies/:id')
+  @ApiOperation({ summary: 'Xóa một chính sách bảo mật' })
+  async removePolicy(@Param('id') id: string) {
+    return this.moderationService.removePolicy(id);
+  }
+}
 ````
 
 ## File: src/exchange/interfaces/contact-note.interface.ts
@@ -3676,6 +3913,440 @@ export interface ExchangeNote {
 export interface ExchangeSearchResult<T> {
   items: T[];
   total: number;
+}
+````
+
+## File: src/exchange/services/rspamd-sync.service.ts
+````typescript
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Client } from 'ssh2';
+import * as fs from 'fs';
+
+@Injectable()
+export class RspamdSyncService implements OnModuleInit {
+  private readonly logger = new Logger(RspamdSyncService.name);
+  
+  private sshConfig: any;
+  private rspamdLocalDPath: string;
+
+  constructor(private readonly config: ConfigService) {}
+
+  onModuleInit() {
+    const host = this.config.get<string>('RSPAMD_SSH_HOST');
+    const port = this.config.get<number>('RSPAMD_SSH_PORT', 22);
+    const username = this.config.get<string>('RSPAMD_SSH_USER', 'root');
+    const privateKeyPath = this.config.get<string>('RSPAMD_SSH_PRIVATE_KEY_PATH');
+    const projectPath = this.config.get<string>('RSPAMD_PROJECT_PATH') || '/root/webmail_exchange/mail-gateway';
+    
+    this.rspamdLocalDPath = `${projectPath}/rspamd/local.d`;
+
+    if (!host || !privateKeyPath) {
+      this.logger.warn('RSPAMD_SSH_HOST or RSPAMD_SSH_PRIVATE_KEY_PATH is missing. SSH Sync will be offline.');
+      return;
+    }
+
+    try {
+      const privateKey = fs.readFileSync(privateKeyPath, 'utf8');
+      this.sshConfig = {
+        host,
+        port,
+        username,
+        privateKey,
+        readyTimeout: 10000,
+      };
+      this.logger.log(`RspamdSyncService configured for SSH to ${host}:${port} as ${username}. Target path: ${this.rspamdLocalDPath}`);
+    } catch (err) {
+      this.logger.error(`Failed to read SSH private key from ${privateKeyPath}: ${err.message}`);
+    }
+  }
+
+  /**
+   * Thực thi một lệnh qua SSH
+   */
+  private async execCommand(command: string): Promise<string> {
+    if (!this.sshConfig) {
+      throw new Error('SSH Service is not properly configured.');
+    }
+
+    return new Promise((resolve, reject) => {
+      const conn = new Client();
+      let output = '';
+      let errorOutput = '';
+
+      conn
+        .on('ready', () => {
+          this.logger.debug(`SSH Client ready. Executing: ${command}`);
+          conn.exec(command, (err, stream) => {
+            if (err) {
+              conn.end();
+              return reject(err);
+            }
+            stream
+              .on('close', (code: any, signal: any) => {
+                conn.end();
+                if (code !== 0) {
+                  return reject(new Error(`Command failed with code ${code}. Error: ${errorOutput}`));
+                }
+                resolve(output.trim());
+              })
+              .on('data', (data: any) => {
+                output += data;
+              })
+              .stderr.on('data', (data: any) => {
+                errorOutput += data;
+              });
+          });
+        })
+        .on('error', (err) => {
+          this.logger.error(`SSH Connection Error: ${err.message}`);
+          reject(err);
+        })
+        .connect(this.sshConfig);
+    });
+  }
+
+  /**
+   * Thêm một policy (domain/email) vào file cấu hình
+   * Hàm này sẽ kiểm tra xem giá trị đã tồn tại chưa bằng grep trước khi thêm vào
+   */
+  async appendToPolicyFile(fileName: string, value: string): Promise<void> {
+    const filePath = `${this.rspamdLocalDPath}/${fileName}`;
+    // Kiểm tra đã tồn tại hay chưa, nếu chưa thì thêm mới vào.
+    const command = `grep -q -F -x "${value}" ${filePath} || echo "${value}" >> ${filePath}`;
+    await this.execCommand(command);
+  }
+
+  /**
+   * Xoá một policy khỏi file cấu hình
+   */
+  async removeFromPolicyFile(fileName: string, value: string): Promise<void> {
+    const filePath = `${this.rspamdLocalDPath}/${fileName}`;
+    // Sử dụng sed để xoá chính xác dòng đó. Escape `/` nếu có trong chuỗi (ít gặp ở email/domain nhưng an toàn)
+    const escapedValue = value.replace(/\//g, '\\/');
+    const command = `sed -i '/^${escapedValue}$/d' ${filePath}`;
+    await this.execCommand(command);
+  }
+
+  /**
+   * Sync toàn bộ mảng dữ liệu đè vào file (dành cho Force Sync)
+   */
+  async syncFullFile(fileName: string, values: string[]): Promise<void> {
+    const filePath = `${this.rspamdLocalDPath}/${fileName}`;
+    // Ghi toàn bộ nội dung mảng thành chuỗi phân ranh bằng newline, dùng printf để ghi đè vào file
+    const joined = values.join('\\n');
+    const command = `printf "${joined}\\n" > ${filePath}`;
+    await this.execCommand(command);
+  }
+
+  /**
+   * Reload Rspamd (Apply thay đổi file map)
+   */
+  async reloadRspamd(): Promise<void> {
+    const command = `docker exec -t rspamd rspamadm control reload`;
+    try {
+      await this.execCommand(command);
+      this.logger.log('Reloaded rspamd successfully.');
+    } catch (err) {
+      this.logger.error(`Failed to reload rspamd: ${err.message}`);
+      throw err;
+    }
+  }
+}
+````
+
+## File: src/exchange/services/spam-moderation.service.ts
+````typescript
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { InjectRepository } from '@mikro-orm/nestjs';
+import { EntityRepository } from '@mikro-orm/postgresql';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { SpamReport } from '../../database/entities/spam-report.entity';
+import { GlobalBlocklist } from '../../database/entities/global-blocklist.entity';
+import {
+  SecurityPolicy,
+  SecurityPolicyType,
+  SecurityTargetType,
+} from '../../database/entities/security-policy.entity';
+import { DragonflyService } from '../../common/cache/dragonfly.service';
+import { ConfigService } from '@nestjs/config';
+import { RspamdSyncService } from './rspamd-sync.service';
+
+@Injectable()
+export class SpamModerationService implements OnModuleInit {
+  private readonly logger = new Logger(SpamModerationService.name);
+  
+  // Redis keys
+  private readonly globalBlacklistKey: string;
+  private readonly wlDomainKey: string;
+  private readonly wlEmailKey: string;
+  private readonly blDomainKey: string;
+  private readonly blEmailKey: string;
+  private readonly lockKey: string;
+
+  constructor(
+    @InjectRepository(SpamReport)
+    private readonly spamReportRepo: EntityRepository<SpamReport>,
+    @InjectRepository(GlobalBlocklist)
+    private readonly blocklistRepo: EntityRepository<GlobalBlocklist>,
+    @InjectRepository(SecurityPolicy)
+    private readonly policyRepo: EntityRepository<SecurityPolicy>,
+    private readonly cache: DragonflyService,
+    private readonly config: ConfigService,
+    private readonly rspamdSync: RspamdSyncService,
+  ) {
+    this.globalBlacklistKey = this.config.get<string>('REDIS_BLACKLIST_KEY', 'rspamd:global_blacklist');
+    this.wlDomainKey = this.config.get<string>('REDIS_WL_DOMAIN_KEY', 'rspamd:whitelist:domain');
+    this.wlEmailKey = this.config.get<string>('REDIS_WL_EMAIL_KEY', 'rspamd:whitelist:email');
+    this.blDomainKey = this.config.get<string>('REDIS_BL_DOMAIN_KEY', 'rspamd:blacklist:domain');
+    this.blEmailKey = this.config.get<string>('REDIS_BL_EMAIL_KEY', 'rspamd:blacklist:email');
+    
+    this.lockKey = 'security:rebuild:lock';
+  }
+
+  async onModuleInit() {
+    await this.ensureRedisCache();
+  }
+
+  // ============== SPAM REPORT ==============
+  async reportSpam(reporterEmail: string, senderEmail: string, messageId: string) {
+    try {
+      const report = new SpamReport(reporterEmail, senderEmail, messageId);
+      await this.spamReportRepo.getEntityManager().persistAndFlush(report);
+      this.logger.log(`Spam reported by ${reporterEmail} for sender ${senderEmail}`);
+      return { success: true };
+    } catch (error) {
+      this.logger.error(`Failed to report spam: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============== GLOBAL BLOCKLIST (Legacy) ==============
+  async blockGlobal(senderEmail: string, adminEmail: string, reason?: string) {
+    try {
+      let block = await this.blocklistRepo.findOne({ senderEmail });
+      if (!block) {
+        block = new GlobalBlocklist(senderEmail, adminEmail, reason);
+        await this.blocklistRepo.getEntityManager().persistAndFlush(block);
+      }
+      await this.cache.sadd(this.globalBlacklistKey, senderEmail);
+      this.logger.log(`Global block added for ${senderEmail} by ${adminEmail}`);
+      return { success: true };
+    } catch (error) {
+      this.logger.error(`Failed to block global: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async unblockGlobal(senderEmail: string) {
+    try {
+      const block = await this.blocklistRepo.findOne({ senderEmail });
+      if (block) {
+        await this.blocklistRepo.getEntityManager().removeAndFlush(block);
+      }
+      await this.cache.srem(this.globalBlacklistKey, senderEmail);
+      this.logger.log(`Global block removed for ${senderEmail}`);
+      return { success: true };
+    } catch (error) {
+      this.logger.error(`Failed to unblock global: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============== SECURITY POLICIES ==============
+  
+  getRedisKeyForPolicy(type: SecurityPolicyType, targetType: SecurityTargetType): string {
+    if (type === SecurityPolicyType.WHITELIST) {
+      return targetType === SecurityTargetType.DOMAIN ? this.wlDomainKey : this.wlEmailKey;
+    } else {
+      return targetType === SecurityTargetType.DOMAIN ? this.blDomainKey : this.blEmailKey;
+    }
+  }
+
+  getFileNameForPolicy(type: SecurityPolicyType, targetType: SecurityTargetType): string {
+    if (type === SecurityPolicyType.WHITELIST) {
+      return targetType === SecurityTargetType.DOMAIN ? 'global_whitelist_domains.map' : 'global_whitelist.map';
+    } else {
+      return targetType === SecurityTargetType.DOMAIN ? 'global_blacklist_domains.map' : 'global_blacklist.map';
+    }
+  }
+
+  async getPolicies(type: SecurityPolicyType, targetType: SecurityTargetType) {
+    return this.policyRepo.find(
+      { type, targetType },
+      { orderBy: { createdAt: 'DESC' } }
+    );
+  }
+
+  async addPolicy(
+    type: SecurityPolicyType,
+    targetType: SecurityTargetType,
+    value: string,
+    adminEmail: string,
+    reason?: string,
+  ) {
+    const em = this.policyRepo.getEntityManager().fork(); // Create a fork for transaction
+    
+    try {
+      const existing = await em.findOne(SecurityPolicy, { type, targetType, value });
+      if (existing) {
+        return { success: false, message: 'Chính sách này đã tồn tại trong hệ thống.' };
+      }
+
+      const policy = new SecurityPolicy(type, targetType, value, adminEmail, reason);
+      await em.persistAndFlush(policy);
+
+      const redisKey = this.getRedisKeyForPolicy(type, targetType);
+      await this.cache.sadd(redisKey, value);
+      
+      // Update Remote File via SSH
+      const fileName = this.getFileNameForPolicy(type, targetType);
+      try {
+        await this.rspamdSync.appendToPolicyFile(fileName, value);
+        await this.rspamdSync.reloadRspamd();
+        this.logger.log(`SSH Sync: Synced ${value} to ${fileName} and reloaded rspamd`);
+      } catch (sshErr) {
+        this.logger.error(`SSH Sync failed on addPolicy. Rolling back DB & Redis... Details: ${sshErr.message}`);
+        
+        // --- ROLLBACK LOGIC ---
+        await em.removeAndFlush(policy); // Rollback DB
+        await this.cache.srem(redisKey, value); // Rollback Redis
+        
+        throw new Error(`Đồng bộ luật chặn email sang hệ thống Rspamd thất bại. Chi tiết lỗi: ${sshErr.message}`);
+      }
+
+      this.logger.log(`Security policy added: [${type}] ${targetType}=${value}`);
+      return { success: true };
+    } catch (error) {
+      this.logger.error(`Failed to add policy: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async removePolicy(id: string) {
+    const em = this.policyRepo.getEntityManager().fork();
+    
+    try {
+      const policy = await em.findOne(SecurityPolicy, { id });
+      if (policy) {
+        await em.removeAndFlush(policy);
+        
+        const redisKey = this.getRedisKeyForPolicy(policy.type, policy.targetType);
+        await this.cache.srem(redisKey, policy.value);
+
+        // Remove from Remote File via SSH
+        const fileName = this.getFileNameForPolicy(policy.type, policy.targetType);
+        try {
+          await this.rspamdSync.removeFromPolicyFile(fileName, policy.value);
+          await this.rspamdSync.reloadRspamd();
+          this.logger.log(`SSH Sync: Removed ${policy.value} from ${fileName} and reloaded rspamd`);
+        } catch (sshErr) {
+          this.logger.error(`SSH Sync failed on removePolicy. Rolling back DB & Redis... Details: ${sshErr.message}`);
+          
+          // --- ROLLBACK LOGIC ---
+          // Khôi phục lại dữ liệu vì thao tác xóa file thất bại
+          const restoredPolicy = new SecurityPolicy(policy.type, policy.targetType, policy.value, policy.createdBy, policy.reason);
+          restoredPolicy.id = policy.id; // Giữ nguyên ID cũ
+          restoredPolicy.createdAt = policy.createdAt; // Giữ nguyên thời gian tạo
+          await em.persistAndFlush(restoredPolicy);
+          await this.cache.sadd(redisKey, policy.value);
+          
+          throw new Error(`Xoá cấu hình trên Gateway thất bại (${sshErr.message}). Quy tắc đã được khôi phục trên hệ thống.`);
+        }
+
+        this.logger.log(`Security policy removed: ${policy.id}`);
+      }
+      return { success: true };
+    } catch (error) {
+      this.logger.error(`Failed to remove policy: ${error.message}`);
+      throw error;
+    }
+  }
+
+  // ============== SYNC & HEALING ==============
+  
+  async ensureRedisCache() {
+    const lock = await this.cache.setIfNotExist(this.lockKey, '1', 30);
+    if (!lock) {
+      return;
+    }
+
+    try {
+      // Rebuild Global Blocklist
+      if (!(await this.cache.exists(this.globalBlacklistKey))) {
+        const globalBlocks = await this.blocklistRepo.findAll();
+        if (globalBlocks.length > 0) {
+          const emails = globalBlocks.map(item => item.senderEmail);
+          await this.cache.sadd(this.globalBlacklistKey, ...emails);
+        }
+      }
+
+      // Rebuild Security Policies
+      const policies = await this.policyRepo.findAll();
+      
+      const keysConfig = [
+        { type: SecurityPolicyType.WHITELIST, targetType: SecurityTargetType.DOMAIN, key: this.wlDomainKey },
+        { type: SecurityPolicyType.WHITELIST, targetType: SecurityTargetType.EMAIL, key: this.wlEmailKey },
+        { type: SecurityPolicyType.BLACKLIST, targetType: SecurityTargetType.DOMAIN, key: this.blDomainKey },
+        { type: SecurityPolicyType.BLACKLIST, targetType: SecurityTargetType.EMAIL, key: this.blEmailKey },
+      ];
+
+      for (const config of keysConfig) {
+        if (!(await this.cache.exists(config.key))) {
+          const values = policies
+            .filter(p => p.type === config.type && p.targetType === config.targetType)
+            .map(p => p.value);
+            
+          if (values.length > 0) {
+            await this.cache.sadd(config.key, ...values);
+          }
+        }
+      }
+
+      this.logger.log('Redis cache verified and rebuilt if necessary.');
+    } catch (error) {
+      this.logger.error(`Failed to rebuild Redis cache: ${error.message}`);
+    } finally {
+      await this.cache.del(this.lockKey);
+    }
+  }
+
+  async forceSyncAllToRemote() {
+    try {
+      this.logger.log('Starting Force Sync of all Security Policies to Remote Rspamd');
+      const policies = await this.policyRepo.findAll();
+      
+      const fileConfig = [
+        { type: SecurityPolicyType.WHITELIST, targetType: SecurityTargetType.DOMAIN, fileName: 'global_whitelist_domains' },
+        { type: SecurityPolicyType.WHITELIST, targetType: SecurityTargetType.EMAIL, fileName: 'global_whitelist' },
+        { type: SecurityPolicyType.BLACKLIST, targetType: SecurityTargetType.DOMAIN, fileName: 'global_blacklist_domains' },
+        { type: SecurityPolicyType.BLACKLIST, targetType: SecurityTargetType.EMAIL, fileName: 'global_blacklist' },
+      ];
+
+      for (const config of fileConfig) {
+        const values = policies
+          .filter(p => p.type === config.type && p.targetType === config.targetType)
+          .map(p => p.value);
+        
+        await this.rspamdSync.syncFullFile(config.fileName, values);
+        this.logger.log(`SSH Force Sync: Updated ${config.fileName} with ${values.length} records`);
+      }
+
+      await this.rspamdSync.reloadRspamd();
+      this.logger.log('Force Sync completed and rspamd reloaded');
+      return { success: true };
+    } catch (error) {
+      this.logger.error(`Force Sync to Remote failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  @Cron('0 */15 * * * *')
+  async handleCron() {
+    this.logger.debug('Running 15-minute scheduled moderation tasks');
+    await this.ensureRedisCache();
+    // Optional: We can also run ForceSync randomly or daily if requested.
+  }
 }
 ````
 
@@ -3750,119 +4421,529 @@ import { MetadataReaderService } from './metadata-reader.service';
 export class MetaModule {}
 ````
 
-## File: src/shared-mailbox/shared-mailbox.controller.ts
+## File: src/organization/organization.controller.spec.ts
+````typescript
+import { Test, TestingModule } from '@nestjs/testing';
+import { OrganizationController } from './organization.controller';
+
+describe('OrganizationController', () => {
+  let controller: OrganizationController;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      controllers: [OrganizationController],
+    }).compile();
+
+    controller = module.get<OrganizationController>(OrganizationController);
+  });
+
+  it('should be defined', () => {
+    expect(controller).toBeDefined();
+  });
+});
+````
+
+## File: src/organization/organization.controller.ts
 ````typescript
 import {
   Controller,
   Get,
   Post,
-  Put,
-  Delete,
   Body,
+  Patch,
   Param,
-  Query,
+  Delete,
   UseGuards,
   Req,
+  Query,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
-import { SharedMailboxService } from './shared-mailbox.service';
-import {
-  CreateSharedMailboxDto,
-  UpdateSharedMailboxDto,
-  AddSharedMailboxMemberDto,
-} from './shared-mailbox.dto';
-import { SharedMailbox } from '../database/entities/shared-mailbox.entity';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiCookieAuth, ApiQuery } from '@nestjs/swagger';
+import { OrganizationService } from './organization.service';
+import { CreateOrganizationUnitDto, UpdateOrganizationUnitDto } from './organization.dto';
 import { ExchangeAuthGuard } from '../auth/guards/exchange-auth.guard';
-import { AuditAction } from '../common/decorators/audit-action.decorator';
 
-@ApiTags('Shared Mailbox')
-@Controller('shared-mailbox')
-@UseGuards(ExchangeAuthGuard)
+@ApiTags('Organization Units')
+@ApiCookieAuth('exchange_session')
 @ApiBearerAuth()
-export class SharedMailboxController {
-  constructor(private readonly sharedMailboxService: SharedMailboxService) {}
+@UseGuards(ExchangeAuthGuard)
+@Controller('api/organization-units')
+export class OrganizationController {
+  constructor(private readonly orgService: OrganizationService) {}
 
-  @Get()
-  @ApiOperation({ summary: 'Lấy danh sách Shared Mailbox (Admin)' })
-  async list(
-    @Query('page') page = 1,
-    @Query('pageSize') pageSize = 10,
-    @Query('search') search?: string,
-  ) {
-    return this.sharedMailboxService.list(Number(page), Number(pageSize), search);
-  }
-
-  @Get('me')
-  @ApiOperation({ summary: 'Lấy danh sách các Shared Mailbox mà user hiện tại được quyền truy cập' })
-  async getMe(@Req() req: any): Promise<SharedMailbox[]> {
-    return this.sharedMailboxService.getForUserByEmail(req.user.email);
+  @Get('tree')
+  @ApiOperation({ summary: 'Lấy cấu trúc Cây Đơn vị (Phân quyền theo Admin)' })
+  getTree(@Req() req: any) {
+    const userEmail = req.user.email;
+    return this.orgService.getTree(userEmail);
   }
 
   @Post()
-  @AuditAction('Tạo Shared Mailbox')
-  @ApiOperation({ summary: 'Tạo Shared Mailbox mới' })
-  async create(@Body() dto: CreateSharedMailboxDto, @Req() req: any) {
-    return this.sharedMailboxService.create(dto, req.user.email);
+  @ApiOperation({ summary: 'Tạo mới Đơn vị / Phòng ban' })
+  create(@Body() createDto: CreateOrganizationUnitDto, @Req() req: any) {
+    const adminEmail = req.user.email;
+    return this.orgService.create(createDto, adminEmail);
   }
 
-  @Get(':id')
-  @ApiOperation({ summary: 'Lấy chi tiết Shared Mailbox' })
-  async get(@Param('id') id: string) {
-    return this.sharedMailboxService.get(id);
-  }
-
-  @Put(':id')
-  @AuditAction('Cập nhật Shared Mailbox')
-  @ApiOperation({ summary: 'Cập nhật thông tin Shared Mailbox' })
-  async update(
+  @Patch(':id')
+  @ApiOperation({ summary: 'Cập nhật Tên, Mã Đơn vị' })
+  update(
     @Param('id') id: string,
-    @Body() dto: UpdateSharedMailboxDto,
+    @Body() updateDto: UpdateOrganizationUnitDto,
     @Req() req: any,
   ) {
-    return this.sharedMailboxService.update(id, dto, req.user.email);
+    const adminEmail = req.user.email;
+    return this.orgService.update(id, updateDto, adminEmail);
   }
 
   @Delete(':id')
-  @AuditAction('Vô hiệu hóa Shared Mailbox')
-  @ApiOperation({ summary: 'Vô hiệu hóa Shared Mailbox' })
-  async disable(@Param('id') id: string, @Req() req: any) {
-    return this.sharedMailboxService.disable(id, req.user.email);
+  @ApiOperation({ summary: 'Xóa một Đơn vị / Phòng ban (Nếu không có Unit con)' })
+  remove(@Param('id') id: string, @Req() req: any) {
+    const adminEmail = req.user.email;
+    return this.orgService.remove(id, adminEmail);
   }
 
-  @Post(':id/restore')
-  @AuditAction('Khôi phục Shared Mailbox')
-  @ApiOperation({ summary: 'Khôi phục Shared Mailbox' })
-  async restore(@Param('id') id: string, @Req() req: any) {
-    return this.sharedMailboxService.restore(id, req.user.email);
+  @Get('users/search')
+  @ApiOperation({ summary: 'Tìm kiếm User theo Email (Auto-complete)' })
+  @ApiQuery({ name: 'q', required: true, description: 'Từ khóa email' })
+  searchUsers(@Query('q') q: string, @Req() req: any) {
+    return this.orgService.searchUsers(q, req.user.email);
   }
 
-  @Delete(':id/permanent')
-  @AuditAction('Xóa vĩnh viễn Shared Mailbox')
-  @ApiOperation({ summary: 'Xóa vĩnh viễn Shared Mailbox' })
-  async permanentDelete(@Param('id') id: string, @Req() req: any) {
-    return this.sharedMailboxService.permanentDelete(id, req.user.email);
-  }
-
-  @Post(':id/members')
-  @AuditAction('Thêm thành viên Shared Mailbox')
-  @ApiOperation({ summary: 'Thêm thành viên vào Shared Mailbox' })
-  async addMember(
-    @Param('id') id: string,
-    @Body() dto: AddSharedMailboxMemberDto,
-    @Req() req: any,
+  @Get(':id/users')
+  @ApiOperation({ summary: 'Lấy các User thuộc về 1 Đơn vị cụ thể (Có phân trang)' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'pageSize', required: false, type: Number })
+  @ApiQuery({ name: 'search', required: false, type: String })
+  getUsersByUnit(
+    @Param('id') unitId: string, 
+    @Query('page') page: string,
+    @Query('pageSize') pageSize: string,
+    @Query('search') search: string,
+    @Req() req: any
   ) {
-    return this.sharedMailboxService.addMember(id, dto, req.user.email);
+    return this.orgService.getUsersByUnit(
+      unitId, 
+      req.user.email,
+      page ? parseInt(page) : 1,
+      pageSize ? parseInt(pageSize) : 10,
+      search
+    );
   }
 
-  @Delete(':id/members/:userId')
-  @AuditAction('Xóa thành viên Shared Mailbox')
-  @ApiOperation({ summary: 'Xóa thành viên khỏi Shared Mailbox' })
-  async removeMember(
-    @Param('id') id: string,
+  @Patch('users/:userId/assign')
+  @ApiOperation({ summary: 'Gán User vào Đơn vị / Phòng ban' })
+  assignUser(
     @Param('userId') userId: string,
-    @Req() req: any,
+    @Body('orgUnitId') unitId: string | null,
+    @Req() req: any
   ) {
-    return this.sharedMailboxService.removeMember(id, userId, req.user.email);
+    return this.orgService.assignUser(userId, unitId, req.user.email);
+  }
+}
+````
+
+## File: src/organization/organization.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+import { IsString, IsNotEmpty, IsEnum, IsOptional, IsUUID } from 'class-validator';
+import { UnitLevel } from '../database/entities/organization-unit.entity';
+
+export class CreateOrganizationUnitDto {
+  @ApiProperty({ example: 'Phòng Kỹ thuật' })
+  @IsString()
+  @IsNotEmpty()
+  name!: string;
+
+  @ApiProperty({ example: 'KT01', required: false })
+  @IsString()
+  @IsOptional()
+  code?: string;
+
+  @ApiProperty({ enum: UnitLevel })
+  @IsEnum(UnitLevel)
+  level!: UnitLevel;
+
+  @ApiProperty({ description: 'ID của Đơn vị cha', required: false })
+  @IsUUID()
+  @IsOptional()
+  parentId?: string;
+}
+
+export class UpdateOrganizationUnitDto {
+  @ApiProperty({ example: 'Phòng Công nghệ', required: false })
+  @IsString()
+  @IsOptional()
+  name?: string;
+
+  @ApiProperty({ example: 'CN01', required: false })
+  @IsString()
+  @IsOptional()
+  code?: string;
+}
+````
+
+## File: src/organization/organization.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
+import { OrganizationController } from './organization.controller';
+import { OrganizationService } from './organization.service';
+import { OrganizationUnit } from '../database/entities/organization-unit.entity';
+import { User } from '../database/entities/user.entity';
+import { AuditLog } from '../database/entities/audit-log.entity';
+import { ExchangeModule } from '../exchange/exchange.module';
+
+@Module({
+  imports: [
+    MikroOrmModule.forFeature([OrganizationUnit, User, AuditLog]),
+    ExchangeModule,
+  ],
+  controllers: [OrganizationController],
+  providers: [OrganizationService],
+  exports: [OrganizationService],
+})
+export class OrganizationModule {}
+````
+
+## File: src/organization/organization.service.spec.ts
+````typescript
+import { Test, TestingModule } from '@nestjs/testing';
+import { OrganizationService } from './organization.service';
+
+describe('OrganizationService', () => {
+  let service: OrganizationService;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [OrganizationService],
+    }).compile();
+
+    service = module.get<OrganizationService>(OrganizationService);
+  });
+
+  it('should be defined', () => {
+    expect(service).toBeDefined();
+  });
+});
+````
+
+## File: src/organization/organization.service.ts
+````typescript
+import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { EntityManager } from '@mikro-orm/core';
+import { OrganizationUnit, UnitLevel } from '../database/entities/organization-unit.entity';
+import { User } from '../database/entities/user.entity';
+import { CreateOrganizationUnitDto, UpdateOrganizationUnitDto } from './organization.dto';
+import { AuditLog } from '../database/entities/audit-log.entity';
+
+@Injectable()
+export class OrganizationService {
+  constructor(private readonly em: EntityManager) {}
+
+  async getTree(userEmail: string) {
+    const user = await this.em.findOne(User, { email: userEmail }, { populate: ['orgUnit'] as any });
+    if (!user) throw new NotFoundException('User not found');
+
+    // Scoped RBAC logic: Nếu không có unitAdminLevel nhưng cũng không có orgUnit -> Super Admin (BO)
+    const adminLevel = user.unitAdminLevel || (!user.orgUnit ? UnitLevel.BO : null);
+    
+    // Nếu là admin cấp Bộ hoặc SuperAdmin không bị giới hạn orgUnit -> Lấy toàn bộ cây
+    if (adminLevel === UnitLevel.BO || !user.orgUnit) {
+      const allUnits = await this.em.find(OrganizationUnit, {}, { orderBy: { level: 'ASC', name: 'ASC' } });
+      return this.buildTree(allUnits);
+    }
+
+    // Nếu là admin cấp Đơn Vị (Vụ/Cục) -> Chỉ lấy Đơn vị của họ và các phòng trực thuộc
+    if (adminLevel === UnitLevel.DON_VI) {
+      if (!user.orgUnit) return []; // An toàn
+
+      const orgs = await this.em.find(OrganizationUnit, {
+        $or: [
+          { id: user.orgUnit.id }, // Chính Đơn vị đó
+          { parent: user.orgUnit.id } // Các phòng trực thuộc Đơn vị
+        ]
+      }, { orderBy: { level: 'ASC', name: 'ASC' } });
+      
+      return this.buildTree(orgs);
+    }
+
+    // Nếu là Cấp Phòng Ban hoặc Nhân viên bình thường -> Có thể trả về rỗng hoặc chỉ thông tin phòng ban hiện tại
+     if (adminLevel === UnitLevel.PHONG_BAN) {
+        if (!user.orgUnit) return [];
+        const orgs = await this.em.find(OrganizationUnit, { id: user.orgUnit.id });
+        return this.buildTree(orgs);
+     }
+
+    return [];
+  }
+
+  private buildTree(units: OrganizationUnit[]): any[] {
+    const unitMap = new Map();
+    const tree: any[] = [];
+
+    // Khởi tạo map
+    units.forEach(unit => {
+      unitMap.set(unit.id, { ...unit, children: [] });
+    });
+
+    // Lắp ráp cây
+    units.forEach(unit => {
+      const node = unitMap.get(unit.id);
+      if (unit.parent) {
+         // Nếu parent có trong mảng trả về (vì có thể query bị cắt nhánh)
+         const parentNode = unitMap.get(unit.parent.id);
+         if (parentNode) {
+            parentNode.children.push(node);
+         } else {
+            tree.push(node); // Nếu cha không load được, tự lên rễ
+         }
+      } else {
+        tree.push(node);
+      }
+    });
+
+    return tree;
+  }
+
+  async create(dto: CreateOrganizationUnitDto, adminEmail: string) {
+    const adminUser = await this.em.findOne(User, { email: adminEmail }, { populate: ['orgUnit'] as any });
+    if (!adminUser) throw new NotFoundException('User not found');
+
+    const adminLevel = adminUser.unitAdminLevel || (!adminUser.orgUnit ? UnitLevel.BO : null);
+
+    // Xác thực quyền:
+    if (adminLevel !== UnitLevel.BO && adminLevel !== UnitLevel.DON_VI) {
+      throw new ForbiddenException('Bạn không có quyền tạo đơn vị.');
+    }
+
+    let parentUnit: OrganizationUnit | null = null;
+
+    if (dto.parentId) {
+      parentUnit = await this.em.findOne(OrganizationUnit, { id: dto.parentId });
+      if (!parentUnit) throw new NotFoundException('Đơn vị cha không tồn tại');
+      
+      // Admin Đơn vị chỉ được phép tạo Phòng ban dưới Đơn vị của mình
+      if (adminLevel === UnitLevel.DON_VI) {
+         if (parentUnit.id !== adminUser.orgUnit?.id) {
+           throw new ForbiddenException('Bạn chỉ được tạo Phòng ban trực thuộc Đơn vị của mình.');
+         }
+         if (dto.level !== UnitLevel.PHONG_BAN) {
+           throw new BadRequestException('Bạn chỉ được phép tạo Cấp Phòng Ban.');
+         }
+      }
+
+      // Logic Cấp bậc cố định
+      if (dto.level === UnitLevel.BO && parentUnit) {
+         throw new BadRequestException('Cấp Bộ phải là cấp cao nhất (Không có cha).');
+      }
+      if (dto.level === UnitLevel.DON_VI && parentUnit.level !== UnitLevel.BO) {
+         throw new BadRequestException('Cấp Đơn vị (Cục/Vụ) phải thuộc trực tiếp cấp Bộ.');
+      }
+      if (dto.level === UnitLevel.PHONG_BAN && parentUnit.level !== UnitLevel.DON_VI) {
+         throw new BadRequestException('Cấp Phòng ban phải thuộc trực tiếp cấp Đơn vị (Cục/Vụ).');
+      }
+    } else {
+      // Không có parent
+      if (dto.level !== UnitLevel.BO) {
+        throw new BadRequestException('Chỉ Cấp Bộ mới được phép không có đơn vị cha.');
+      }
+      if (adminLevel !== UnitLevel.BO) {
+        throw new ForbiddenException('Bạn không có quyền tạo cấp Bộ.');
+      }
+    }
+
+    const newUnit = this.em.create(OrganizationUnit, {
+      name: dto.name,
+      code: dto.code || undefined,
+      level: dto.level,
+      parent: parentUnit || undefined,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as any);
+    await this.em.persistAndFlush(newUnit);
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'organization_units',
+      targetId: newUnit.id,
+      action: 'CREATE',
+      userEmail: adminEmail,
+      details: { name: dto.name, level: dto.level },
+      timestamp: new Date(),
+    });
+
+    await this.em.persistAndFlush(audit);
+    return newUnit;
+  }
+
+  async update(id: string, dto: UpdateOrganizationUnitDto, adminEmail: string) {
+    const unit = await this.em.findOne(OrganizationUnit, { id }, { populate: ['parent'] as any });
+    if (!unit) throw new NotFoundException('Không tìm thấy đơn vị.');
+
+    const adminUser = await this.em.findOne(User, { email: adminEmail }, { populate: ['orgUnit'] as any });
+    const adminLevel = adminUser ? (adminUser.unitAdminLevel || (!adminUser.orgUnit ? UnitLevel.BO : null)) : null;
+
+    // Phân quyền sửa
+    if (adminLevel === UnitLevel.DON_VI) {
+       // UnitAdmin chỉ được sửa phòng ban của mình hoặc sửa Đơn vị của chính mình
+       const isSelf = unit.id === adminUser?.orgUnit?.id;
+       const isChild = unit.parent?.id === adminUser?.orgUnit?.id;
+       if (!isSelf && !isChild) {
+          throw new ForbiddenException('Bạn không có thẩm quyền sửa đơn vị này.');
+       }
+    } else if (adminLevel !== UnitLevel.BO) {
+       throw new ForbiddenException('Bạn không có quyền sửa đổi cơ cấu.');
+    }
+
+    if (dto.name) unit.name = dto.name;
+    if (dto.code) unit.code = dto.code;
+    unit.updatedAt = new Date();
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'organization_units',
+      targetId: unit.id,
+      action: 'UPDATE',
+      userEmail: adminEmail,
+      details: dto,
+      timestamp: new Date(),
+    });
+
+    await this.em.persistAndFlush([unit, audit]);
+    return unit;
+  }
+
+  async remove(id: string, adminEmail: string) {
+    const unit = await this.em.findOne(OrganizationUnit, { id }, { populate: ['children'] as any });
+    if (!unit) throw new NotFoundException('Không tìm thấy đơn vị.');
+
+    if (unit.children.length > 0) {
+      throw new BadRequestException('Không thể xoá đơn vị đang có đơn vị con. Hãy dọn dẹp đơn vị con trước.');
+    }
+
+    const adminUser = await this.em.findOne(User, { email: adminEmail }, { populate: ['orgUnit'] as any });
+    const adminLevel = adminUser ? (adminUser.unitAdminLevel || (!adminUser.orgUnit ? UnitLevel.BO : null)) : null;
+
+    // Phân quyền sửa
+    if (adminLevel === UnitLevel.DON_VI) {
+       // UnitAdmin chỉ được xóa phòng ban của đơn vị mình
+       if (unit.parent?.id !== adminUser?.orgUnit?.id) {
+          throw new ForbiddenException('Bạn không có quyền xóa đơn vị này.');
+       }
+    } else if (adminLevel !== UnitLevel.BO) {
+       throw new ForbiddenException('Bạn không có quyền xóa cơ cấu tổ chức.');
+    }
+
+    // TODO: Cần kiểm tra xem có User hoặc SharedMailbox nào đang thuộc về Unit này nữa không.
+    // Tạm thời bỏ qua hoặc throw Error nếu có entity liên quan.
+    const usersCount = await this.em.count(User, { orgUnit: id });
+    const mailboxesCount = await this.em.count('SharedMailbox', { orgUnit: id }); // Tránh circular depend
+
+    if (usersCount > 0 || mailboxesCount > 0) {
+       throw new BadRequestException('Đang có Tài khoản User hoặc Mailbox dùng chung thuộc Đơn vị này. Không thể xóa.');
+    }
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'organization_units',
+      targetId: unit.id,
+      action: 'DELETE',
+      userEmail: adminEmail,
+      details: { name: unit.name },
+      timestamp: new Date(),
+    });
+
+    await this.em.begin();
+    try {
+      this.em.remove(unit);
+      await this.em.persistAndFlush(audit);
+      await this.em.commit();
+      return { success: true };
+    } catch (e) {
+      await this.em.rollback();
+      throw new BadRequestException('Không thể xoá vào lúc này.');
+    }
+  }
+
+  // --- Users & Mailbox scoped management ---
+
+  async searchUsers(query: string, adminEmail: string) {
+    if (!query || query.length < 2) return [];
+
+    const adminUser = await this.em.findOne(User, { email: adminEmail }, { populate: ['orgUnit'] as any });
+    // Nếu có Scoped Role, trong tương lai có thể chặn search ra người ngoại bang. Hiện tại Admin được phép search email.
+    
+    const users = await this.em.find(User, {
+       email: { $ilike: `%${query}%` }
+    }, { limit: 20 });
+    
+    return users.map(u => ({
+       id: u.id,
+       email: u.email,
+       name: u.name,
+       orgUnit: u.orgUnit ? { id: u.orgUnit.id, name: u.orgUnit.name } : null
+    }));
+  }
+
+  async getUsersByUnit(unitId: string, adminEmail: string, page = 1, pageSize = 10, search?: string) {
+    const query: any = { orgUnit: unitId };
+    
+    // Nếu có search, tìm theo email hoặc tên
+    if (search && search.trim() !== '') {
+      query.$or = [
+        { email: { $ilike: `%${search}%` } },
+        { name: { $ilike: `%${search}%` } }
+      ];
+    }
+
+    const [users, total] = await this.em.findAndCount(User, query, {
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
+      orderBy: { createdAt: 'DESC' } // hoặc orderBy email
+    });
+
+    return {
+      items: users.map(u => ({
+        id: u.id,
+        email: u.email,
+        name: u.name,
+        unitAdminLevel: u.unitAdminLevel
+      })),
+      total
+    };
+  }
+
+  async assignUser(userId: string, unitId: string | null, adminEmail: string) {
+    const targetUser = await this.em.findOne(User, { id: userId });
+    if (!targetUser) throw new NotFoundException('User không tồn tại');
+
+    const adminUser = await this.em.findOne(User, { email: adminEmail }, { populate: ['orgUnit'] as any });
+    // RBAC check: Bạn chỉ có thể gán người dùng vào Unit của bạn hoặc con của bạn.
+    
+    if (unitId) {
+       const unitToAssign = await this.em.findOne(OrganizationUnit, { id: unitId }, { populate: ['parent'] as any });
+       if (!unitToAssign) throw new NotFoundException('Organization Unit không tồn tại');
+       
+       if (adminUser?.unitAdminLevel === UnitLevel.DON_VI) {
+          if (unitToAssign.id !== adminUser.orgUnit?.id && unitToAssign.parent?.id !== adminUser.orgUnit?.id) {
+             throw new ForbiddenException('Bạn không được gán User sang Tổ chức ngoại bang.');
+          }
+       }
+       targetUser.orgUnit = unitToAssign;
+    } else {
+       targetUser.orgUnit = undefined;
+    }
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'users',
+      targetId: targetUser.id,
+      action: 'UPDATE_ORG_UNIT',
+      userEmail: adminEmail,
+      details: {
+        newOrgUnit: unitId
+      },
+      timestamp: new Date()
+    });
+
+    await this.em.persistAndFlush([targetUser, audit]);
+    return { success: true };
   }
 }
 ````
@@ -3947,415 +5028,6 @@ import { SharedMailboxController } from './shared-mailbox.controller';
   exports: [SharedMailboxService],
 })
 export class SharedMailboxModule {}
-````
-
-## File: src/shared-mailbox/shared-mailbox.runner.ts
-````typescript
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import * as path from 'path';
-
-const execAsync = promisify(exec);
-
-export type SharedMailboxAction =
-  | 'create'
-  | 'update'
-  | 'disable'
-  | 'restore'
-  | 'delete'
-  | 'add-permission'
-  | 'remove-permission';
-
-@Injectable()
-export class SharedMailboxScriptRunner {
-  private readonly logger = new Logger(SharedMailboxScriptRunner.name);
-  private readonly timeoutMs: number;
-  private readonly scriptsPath: string;
-
-  constructor(private readonly configService: ConfigService) {
-    this.timeoutMs = parseInt(this.configService.get<string>('MAILBOX_SCRIPT_TIMEOUT_MS', '120000'), 10);
-    this.scriptsPath = path.resolve('./scripts/shared-mailbox');
-  }
-
-  async run(action: SharedMailboxAction, payload: Record<string, any>): Promise<any> {
-    const scriptMap: Record<SharedMailboxAction, string> = {
-      'create': 'create-shared-mailbox.ps1',
-      'update': 'update-shared-mailbox.ps1',
-      'disable': 'disable-shared-mailbox.ps1',
-      'restore': 'update-shared-mailbox.ps1', // Reuse update or create restore script if needed, here just set active
-      'delete': 'delete-shared-mailbox.ps1',
-      'add-permission': 'add-mailbox-permission.ps1',
-      'remove-permission': 'remove-mailbox-permission.ps1',
-    };
-
-    const scriptName = scriptMap[action];
-    if (!scriptName) {
-      throw new Error(`Unsupported action: ${action}`);
-    }
-
-    const scriptPath = path.join(this.scriptsPath, scriptName);
-    
-    // Convert payload to JSON string and escape quotes for PowerShell
-    const jsonPayload = JSON.stringify(payload).replace(/"/g, '\\"');
-    
-    // Command to execute PowerShell script (use pwsh on Linux/Standard, powershell.exe as fallback on Win)
-    const isWin = process.platform === 'win32';
-    const shellCommand = isWin ? 'powershell.exe' : 'pwsh';
-    const command = `${shellCommand} -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}" -InputJson "${jsonPayload}"`;
-
-    this.logger.debug(`Executing PowerShell script via ${shellCommand}: ${scriptName}`);
-
-    try {
-      const { stdout, stderr } = await execAsync(command, { timeout: this.timeoutMs });
-
-      if (stderr) {
-        this.logger.warn(`PowerShell Stderr (${scriptName}): ${stderr}`);
-      }
-
-      // Try to parse JSON output
-      try {
-        const result = JSON.parse(stdout.trim());
-        if (!result.Success && result.Success !== true) {
-           throw new Error(result.Error || 'Unknown error occurred in Script');
-        }
-        return result;
-      } catch (parseError) {
-        this.logger.error(`Failed to parse PowerShell JSON Output: ${stdout}`);
-        throw new Error(`Invalid JSON response from Exchange script: ${parseError.message}`);
-      }
-
-    } catch (error) {
-       this.logger.error(`Execution failed for ${scriptName}: ${error.message}`);
-       throw error;
-    }
-  }
-}
-````
-
-## File: src/shared-mailbox/shared-mailbox.service.ts
-````typescript
-import {
-  Injectable,
-  NotFoundException,
-  ConflictException,
-  BadRequestException,
-  Logger,
-} from '@nestjs/common';
-import { EntityManager, QueryOrder } from '@mikro-orm/core';
-import { SharedMailbox } from '../database/entities/shared-mailbox.entity';
-import { SharedMailboxMember, SharedMailboxRole } from '../database/entities/shared-mailbox-member.entity';
-import { User } from '../database/entities/user.entity';
-import { AuditLog } from '../database/entities/audit-log.entity';
-import { SharedMailboxScriptRunner } from './shared-mailbox.runner';
-import {
-  CreateSharedMailboxDto,
-  UpdateSharedMailboxDto,
-  AddSharedMailboxMemberDto,
-} from './shared-mailbox.dto';
-
-@Injectable()
-export class SharedMailboxService {
-  private readonly logger = new Logger(SharedMailboxService.name);
-
-  constructor(
-    private readonly em: EntityManager,
-    private readonly scriptRunner: SharedMailboxScriptRunner,
-  ) {}
-
-  async list(page: number, pageSize: number, search?: string) {
-    const limit = Math.max(1, Math.min(pageSize || 20, 100));
-    const offset = Math.max(0, (page - 1) * limit);
-
-    const where: any = {};
-    if (search?.trim()) {
-      where.$or = [
-        { email: { $ilike: `%${search}%` } },
-        { name: { $ilike: `%${search}%` } },
-        { displayName: { $ilike: `%${search}%` } },
-      ];
-    }
-
-    const [items, total] = await this.em.findAndCount(SharedMailbox, where, {
-      limit,
-      offset,
-      orderBy: { createdAt: QueryOrder.DESC },
-    });
-
-    return { items, total, page, pageSize: limit };
-  }
-
-  async create(dto: CreateSharedMailboxDto, adminEmail: string) {
-    const existing = await this.em.findOne(SharedMailbox, { email: dto.email });
-    if (existing) {
-      throw new ConflictException('Email already exists');
-    }
-
-    const adminUser = await this.em.findOne(User, { email: adminEmail });
-
-    // Transactional Workflow: Run PS Script first, then save to DB
-    const scriptResult = await this.scriptRunner.run('create', {
-      name: dto.name,
-      email: dto.email,
-      displayName: dto.displayName,
-    });
-
-    const exchangeGuid = scriptResult.Mailbox?.ExchangeGuid;
-
-    const mailbox = this.em.create(SharedMailbox, {
-      name: dto.name,
-      email: dto.email,
-      displayName: dto.displayName,
-      exchangeGuid,
-      createdBy: adminUser?.id || adminEmail,
-      isActive: true,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-
-    const audit = this.em.create(AuditLog, {
-      collection: 'shared_mailbox',
-      targetId: mailbox.id,
-      action: 'CREATE',
-      userEmail: adminEmail,
-      details: { email: dto.email, displayName: dto.displayName },
-      timestamp: new Date(),
-    });
-
-    // Commit to DB after Script is successful
-    await this.em.begin();
-    try {
-      await this.em.persistAndFlush([mailbox, audit]);
-      await this.em.commit();
-      return mailbox;
-    } catch (e) {
-      await this.em.rollback();
-      this.logger.error(`DB Save Failed after PS Create: ${e.message}`, e.stack);
-      throw new BadRequestException('Exchange mailbox created but DB failed to save.');
-    }
-  }
-
-  async addMember(mailboxId: string, dto: AddSharedMailboxMemberDto, adminEmail: string) {
-    const mailbox = await this.em.findOne(SharedMailbox, { id: mailboxId });
-    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
-
-    const targetUser = await this.em.findOne(User, { email: dto.userEmail });
-    if (!targetUser) throw new NotFoundException('Target User not found');
-
-    const adminUser = await this.em.findOne(User, { email: adminEmail });
-
-    const existingMember = await this.em.findOne(SharedMailboxMember, {
-      mailbox,
-      userId: targetUser.id,
-    });
-    if (existingMember) {
-      throw new ConflictException('User is already a member of this Shared Mailbox');
-    }
-
-    // Call PowerShell
-    await this.scriptRunner.run('add-permission', {
-      mailboxEmail: mailbox.email,
-      userEmail: targetUser.email,
-      role: dto.role, // 'OWNER' or 'MEMBER'
-    });
-
-    const member = this.em.create(SharedMailboxMember, {
-      mailbox,
-      userId: targetUser.id,
-      role: dto.role,
-      addedBy: adminUser?.id || adminEmail,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-
-    const audit = this.em.create(AuditLog, {
-      collection: 'shared_mailbox',
-      targetId: mailbox.id,
-      action: 'ADD_MEMBER',
-      userEmail: adminEmail,
-      details: { targetUserId: targetUser.id, targetUserEmail: targetUser.email, role: dto.role },
-      timestamp: new Date(),
-    });
-
-    await this.em.begin();
-    try {
-      await this.em.persistAndFlush([member, audit]);
-      await this.em.commit();
-      return member;
-    } catch (e) {
-      await this.em.rollback();
-      throw new BadRequestException('Failed to save to Database');
-    }
-  }
-
-  async removeMember(mailboxId: string, targetUserId: string, adminEmail: string) {
-    const mailbox = await this.em.findOne(SharedMailbox, { id: mailboxId });
-    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
-
-    const targetUser = await this.em.findOne(User, { id: targetUserId });
-    if (!targetUser) throw new NotFoundException('Target User not found');
-
-    const member = await this.em.findOne(SharedMailboxMember, {
-      mailbox: mailbox.id,
-      userId: targetUser.id,
-    });
-
-    if (!member) throw new NotFoundException('User is not a member of this Shared Mailbox');
-
-    // Call PowerShell to remove both FullAccess and SendAs
-    await this.scriptRunner.run('remove-permission', {
-      mailboxEmail: mailbox.email,
-      userEmail: targetUser.email,
-    });
-
-    const audit = this.em.create(AuditLog, {
-       collection: 'shared_mailbox',
-       targetId: mailbox.id,
-       action: 'REMOVE_MEMBER',
-       userEmail: adminEmail,
-       details: { targetUserId: targetUser.id, targetUserEmail: targetUser.email, previousRole: member.role },
-       timestamp: new Date(),
-    });
-
-    await this.em.begin();
-    try {
-       this.em.remove(member);
-       await this.em.persistAndFlush(audit);
-       await this.em.commit();
-       return { success: true };
-    } catch(e) {
-       await this.em.rollback();
-       throw new BadRequestException('Failed to remove member record from Database');
-    }
-  }
-
-  async get(id: string) {
-    const mailbox = await this.em.findOne(SharedMailbox, { id }, { populate: ['members' as any] });
-    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
-    return mailbox;
-  }
-
-  async update(id: string, dto: UpdateSharedMailboxDto, adminEmail: string) {
-    const mailbox = await this.em.findOne(SharedMailbox, { id });
-    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
-
-    const oldEmail = mailbox.email;
-    const nextEmail = dto.email ?? mailbox.email;
-    const nextDisplayName = dto.displayName ?? mailbox.displayName;
-
-    if (dto.email && dto.email !== oldEmail) {
-      const existing = await this.em.findOne(SharedMailbox, { email: dto.email });
-      if (existing) throw new ConflictException('Email already exists');
-    }
-
-    await this.scriptRunner.run('update', {
-      exchangeGuid: mailbox.exchangeGuid,
-      oldEmail,
-      email: nextEmail,
-      displayName: nextDisplayName,
-    });
-
-    mailbox.email = nextEmail;
-    mailbox.displayName = nextDisplayName;
-
-    const audit = this.em.create(AuditLog, {
-      collection: 'shared_mailbox',
-      targetId: mailbox.id,
-      action: 'UPDATE',
-      userEmail: adminEmail,
-      details: { email: nextEmail, displayName: nextDisplayName },
-      timestamp: new Date(),
-    });
-
-    await this.em.persistAndFlush([mailbox, audit]);
-    return mailbox;
-  }
-
-  async disable(id: string, adminEmail: string) {
-    const mailbox = await this.em.findOne(SharedMailbox, { id });
-    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
-
-    await this.scriptRunner.run('disable', {
-      exchangeGuid: mailbox.exchangeGuid,
-      email: mailbox.email,
-    });
-
-    mailbox.isActive = false;
-
-    const audit = this.em.create(AuditLog, {
-      collection: 'shared_mailbox',
-      targetId: mailbox.id,
-      action: 'DISABLE',
-      userEmail: adminEmail,
-      timestamp: new Date(),
-    });
-
-    await this.em.persistAndFlush([mailbox, audit]);
-    return { success: true };
-  }
-
-  async getForUserByEmail(email: string): Promise<SharedMailbox[]> {
-    const user = await this.em.findOne(User, { email });
-    if (!user) return [];
-    const memberships = await this.em.find(SharedMailboxMember, { userId: user.id }, { populate: ['mailbox'] as any });
-    return memberships.map(m => m.mailbox) as SharedMailbox[];
-  }
-
-  async restore(id: string, adminEmail: string) {
-    const mailbox = await this.em.findOne(SharedMailbox, { id });
-    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
-
-    await this.scriptRunner.run('restore', {
-      exchangeGuid: mailbox.exchangeGuid,
-      email: mailbox.email,
-    });
-
-    mailbox.isActive = true;
-
-    const audit = this.em.create(AuditLog, {
-      collection: 'shared_mailbox',
-      targetId: mailbox.id,
-      action: 'RESTORE',
-      userEmail: adminEmail,
-      timestamp: new Date(),
-    });
-
-    await this.em.persistAndFlush([mailbox, audit]);
-    return { success: true };
-  }
-
-  async permanentDelete(id: string, adminEmail: string) {
-    const mailbox = await this.em.findOne(SharedMailbox, { id });
-    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
-
-    await this.scriptRunner.run('delete', {
-      exchangeGuid: mailbox.exchangeGuid,
-      email: mailbox.email,
-    });
-
-    const audit = this.em.create(AuditLog, {
-      collection: 'shared_mailbox',
-      targetId: mailbox.id,
-      action: 'PERMANENT_DELETE',
-      userEmail: adminEmail,
-      timestamp: new Date(),
-    });
-
-    await this.em.begin();
-    try {
-      // Remove all members first due to FK or orphan removal
-      await this.em.nativeDelete(SharedMailboxMember, { mailbox: mailbox.id });
-      this.em.remove(mailbox);
-      await this.em.persistAndFlush(audit);
-      await this.em.commit();
-      return { success: true };
-    } catch (e) {
-      await this.em.rollback();
-      throw new BadRequestException('Failed to delete from Database');
-    }
-  }
-}
 ````
 
 ## File: src/storage/storage.service.ts
@@ -6541,39 +7213,6 @@ try {
 }
 ````
 
-## File: src/audit/audit.module.ts
-````typescript
-import { Module, forwardRef } from '@nestjs/common';
-import { MikroOrmModule } from '@mikro-orm/nestjs';
-import { APP_INTERCEPTOR } from '@nestjs/core';
-import { AuditLog } from '../database/entities/audit-log.entity';
-import { AuditLogService } from './audit.service';
-import { AuditLogInterceptor } from './audit-log.interceptor';
-import { CommonModule } from '../common/common.module';
-import { AuditController } from './audit.controller';
-import { AuthModule } from '../auth/auth.module';
-import { ExchangeAuthService } from '../exchange/services/exchange-auth.service';
-
-@Module({
-  imports: [
-    MikroOrmModule.forFeature([AuditLog]),
-    CommonModule,
-    forwardRef(() => AuthModule),
-  ],
-  providers: [
-    AuditLogService,
-    ExchangeAuthService,
-    {
-      provide: APP_INTERCEPTOR,
-      useClass: AuditLogInterceptor,
-    },
-  ],
-  controllers: [AuditController],
-  exports: [AuditLogService],
-})
-export class AuditLogModule {}
-````
-
 ## File: src/auth/dto/login.dto.ts
 ````typescript
 import { IsEmail, IsString, MinLength } from 'class-validator';
@@ -6608,12 +7247,7 @@ import { RequestContext } from '../context/request.context';
 export class RequestContextInterceptor implements NestInterceptor {
   constructor(
     @Inject(RequestContext) private readonly requestContext: RequestContext,
-  ) {
-    console.log(
-      '🏗️ RequestContextInterceptor created, requestContext:',
-      !!this.requestContext,
-    );
-  }
+  ) { }
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
     const request = context.switchToHttp().getRequest();
@@ -6625,43 +7259,6 @@ export class RequestContextInterceptor implements NestInterceptor {
 
     return next.handle();
   }
-}
-````
-
-## File: src/database/entities/audit-log.entity.ts
-````typescript
-import {
-  Entity,
-  PrimaryKey,
-  Property,
-  ManyToOne,
-  Index,
-} from '@mikro-orm/core';
-import { User } from './user.entity';
-
-@Entity({ tableName: 'audit_logs' })
-@Index({ properties: ['collection', 'targetId'] })
-export class AuditLog {
-  @PrimaryKey({ type: 'bigint' })
-  id!: string;
-
-  @Property({ length: 255, nullable: true, index: 'audit_log_user_email_index' })
-  userEmail?: string;
-
-  @Property({ length: 100, index: 'audit_log_collection_index' })
-  collection!: string;
-
-  @Property({ length: 50 })
-  action!: string;
-
-  @Property({ length: 255, index: 'audit_log_target_id_index' })
-  targetId!: string;
-
-  @Property({ type: 'json', nullable: true })
-  details?: Record<string, any>;
-
-  @Property({ onCreate: () => new Date() })
-  timestamp = new Date();
 }
 ````
 
@@ -6752,6 +7349,81 @@ export class File {
    */
   @Property({ onUpdate: () => new Date() })
   updatedAt: Date = new Date();
+}
+````
+
+## File: src/database/entities/shared-mailbox-member.entity.ts
+````typescript
+import { Entity, PrimaryKey, Property, ManyToOne, Unique } from '@mikro-orm/core';
+import { SharedMailbox } from './shared-mailbox.entity';
+
+export enum SharedMailboxRole {
+  OWNER = 'OWNER', // FullAccess + SendAs
+  MEMBER = 'MEMBER', // FullAccess
+}
+
+@Entity({ tableName: 'shared_mailbox_members' })
+@Unique({ properties: ['mailbox', 'userId'] }) // Ngăn chặn duplicate membership
+export class SharedMailboxMember {
+  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
+  id!: string;
+
+  @ManyToOne(() => SharedMailbox)
+  mailbox!: SharedMailbox;
+
+  @Property({ type: 'uuid' })
+  userId!: string; // Reference to User ID (UUID)
+
+  @Property({ type: 'string' })
+  role: SharedMailboxRole = SharedMailboxRole.MEMBER;
+
+  @Property({ nullable: true })
+  addedBy?: string; // Reference to Admin User ID
+
+  @Property({ onCreate: () => new Date() })
+  createdAt: Date = new Date();
+
+  @Property({ onUpdate: () => new Date() })
+  updatedAt: Date = new Date();
+}
+````
+
+## File: src/database/entities/shared-mailbox.entity.ts
+````typescript
+import { Entity, PrimaryKey, Property, ManyToOne } from '@mikro-orm/core';
+import { OrganizationUnit } from './organization-unit.entity';
+
+@Entity({ tableName: 'shared_mailboxes' })
+export class SharedMailbox {
+  @PrimaryKey({ type: 'uuid', defaultRaw: 'gen_random_uuid()' })
+  id!: string;
+
+  @Property()
+  name!: string;
+
+  @Property({ unique: true })
+  email!: string;
+
+  @Property()
+  displayName!: string;
+
+  @Property({ nullable: true })
+  exchangeGuid?: string;
+
+  @Property({ default: true })
+  isActive: boolean = true;
+
+  @Property({ nullable: true })
+  createdBy?: string;
+
+  @ManyToOne(() => OrganizationUnit, { nullable: true })
+  orgUnit?: OrganizationUnit;
+
+  @Property({ onCreate: () => new Date() })
+  createdAt = new Date();
+
+  @Property({ onUpdate: () => new Date() })
+  updatedAt = new Date();
 }
 ````
 
@@ -6919,73 +7591,6 @@ export class Migration20260223120000 extends Migration {
 
     this.addSql(`alter table "users" drop column "name";`);
     this.addSql(`alter table "users" drop column "password";`);
-  }
-}
-````
-
-## File: src/exchange/controllers/notes.controller.ts
-````typescript
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Post,
-  Put,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiBody,
-  ApiOperation,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
-import { ExchangeAuthGuard } from '../../auth/guards/exchange-auth.guard';
-import { ContactNoteService } from '../services/contact-note.service';
-import { CreateNoteDto, UpdateNoteDto } from '../dto/contact-note.dto';
-
-@ApiTags('Notes')
-@Controller('webmail/notes')
-@UseGuards(ExchangeAuthGuard)
-export class NotesController {
-  constructor(private readonly contactNoteService: ContactNoteService) {}
-
-  @Get()
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'List notes' })
-  @ApiQuery({ name: 'page', required: false })
-  @ApiQuery({ name: 'pageSize', required: false })
-  async listNotes(
-    @Query('page') page: number = 1,
-    @Query('pageSize') pageSize: number = 20,
-  ) {
-    return this.contactNoteService.listNotes(Number(page), Number(pageSize));
-  }
-
-  @Post()
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Create note' })
-  @ApiBody({ type: CreateNoteDto })
-  async createNote(@Body() dto: CreateNoteDto) {
-    return this.contactNoteService.createNote(dto);
-  }
-
-  @Put(':id')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Update note' })
-  @ApiBody({ type: UpdateNoteDto })
-  async updateNote(@Param('id') id: string, @Body() dto: UpdateNoteDto) {
-    return this.contactNoteService.updateNote(id, dto);
-  }
-
-  @Delete(':id')
-  @ApiBearerAuth('exchange_cookie')
-  @ApiOperation({ summary: 'Delete note' })
-  async deleteNote(@Param('id') id: string) {
-    return this.contactNoteService.deleteNote(id);
   }
 }
 ````
@@ -7510,93 +8115,6 @@ export class GalService {
 }
 ````
 
-## File: src/mailbox/mailbox.dto.ts
-````typescript
-import { ApiProperty } from '@nestjs/swagger';
-import {
-  IsBoolean,
-  IsEmail,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-} from 'class-validator';
-
-export class CreateMailboxDto {
-  @ApiProperty({ example: 'user@domain.local' })
-  @IsEmail()
-  email!: string;
-
-  @ApiProperty({ example: 'User Name' })
-  @IsString()
-  @IsNotEmpty()
-  name!: string;
-
-  @ApiProperty({ example: 'Temp@123' })
-  @IsString()
-  @IsNotEmpty()
-  password!: string;
-
-  @ApiProperty({ example: 'unit-id-123', required: false })
-  @IsString()
-  @IsOptional()
-  orgUnitId?: string;
-
-  @ApiProperty({ example: false, required: false })
-  @IsBoolean()
-  @IsOptional()
-  isAdmin?: boolean;
-}
-
-export class UpdateMailboxDto {
-  @ApiProperty({ example: 'User Name', required: false })
-  @IsString()
-  @IsOptional()
-  name?: string;
-
-  @ApiProperty({ example: 'user@domain.local', required: false })
-  @IsEmail()
-  @IsOptional()
-  email?: string;
-
-  @ApiProperty({ example: true, required: false })
-  @IsBoolean()
-  @IsOptional()
-  isActive?: boolean;
-}
-
-export class ImportMailboxDto {
-  @ApiProperty({
-    example: 'email,name,password\nuser@domain.local,User Name,Temp@123',
-  })
-  @IsString()
-  @IsNotEmpty()
-  csv!: string;
-}
-````
-
-## File: src/mailbox/mailbox.module.ts
-````typescript
-import { Module } from '@nestjs/common';
-import { AuthModule } from '../auth/auth.module';
-import { MailboxController } from './mailbox.controller';
-import { MailboxService } from './mailbox.service';
-import { ScriptRunnerService } from './script-runner.service';
-import { GalService } from './gal.service';
-import { ExchangeAuthService } from '../exchange/services/exchange-auth.service';
-
-@Module({
-  imports: [AuthModule],
-  controllers: [MailboxController],
-  providers: [
-    MailboxService,
-    ScriptRunnerService,
-    GalService,
-    ExchangeAuthService,
-  ],
-})
-export class MailboxModule {}
-````
-
 ## File: src/meta/metadata-reader.service.ts
 ````typescript
 import { Injectable } from '@nestjs/common';
@@ -7646,6 +8164,532 @@ export class MetadataReaderService {
     }
 
     return null;
+  }
+}
+````
+
+## File: src/shared-mailbox/shared-mailbox.controller.ts
+````typescript
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  Req,
+} from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { SharedMailboxService } from './shared-mailbox.service';
+import {
+  CreateSharedMailboxDto,
+  UpdateSharedMailboxDto,
+  AddSharedMailboxMemberDto,
+} from './shared-mailbox.dto';
+import { SharedMailbox } from '../database/entities/shared-mailbox.entity';
+import { ExchangeAuthGuard } from '../auth/guards/exchange-auth.guard';
+import { AuditAction } from '../common/decorators/audit-action.decorator';
+
+@ApiTags('Shared Mailbox')
+@Controller('shared-mailbox')
+@UseGuards(ExchangeAuthGuard)
+@ApiBearerAuth()
+export class SharedMailboxController {
+  constructor(private readonly sharedMailboxService: SharedMailboxService) {}
+
+  @Get()
+  @ApiOperation({ summary: 'Lấy danh sách Shared Mailbox (Admin)' })
+  async list(
+    @Query('page') page = 1,
+    @Query('pageSize') pageSize = 10,
+    @Query('search') search?: string,
+  ) {
+    return this.sharedMailboxService.list(Number(page), Number(pageSize), search);
+  }
+
+  @Get('me')
+  @ApiOperation({ summary: 'Lấy danh sách các Shared Mailbox mà user hiện tại được quyền truy cập' })
+  async getMe(@Req() req: any): Promise<SharedMailbox[]> {
+    return this.sharedMailboxService.getForUserByEmail(req.user.email);
+  }
+
+  @Post()
+  @AuditAction('Tạo Shared Mailbox')
+  @ApiOperation({ summary: 'Tạo Shared Mailbox mới' })
+  async create(@Body() dto: CreateSharedMailboxDto, @Req() req: any) {
+    return this.sharedMailboxService.create(dto, req.user.email);
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Lấy chi tiết Shared Mailbox' })
+  async get(@Param('id') id: string) {
+    return this.sharedMailboxService.get(id);
+  }
+
+  @Put(':id')
+  @AuditAction('Cập nhật Shared Mailbox')
+  @ApiOperation({ summary: 'Cập nhật thông tin Shared Mailbox' })
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateSharedMailboxDto,
+    @Req() req: any,
+  ) {
+    return this.sharedMailboxService.update(id, dto, req.user.email);
+  }
+
+  @Delete(':id')
+  @AuditAction('Vô hiệu hóa Shared Mailbox')
+  @ApiOperation({ summary: 'Vô hiệu hóa Shared Mailbox' })
+  async disable(@Param('id') id: string, @Req() req: any) {
+    return this.sharedMailboxService.disable(id, req.user.email);
+  }
+
+  @Post(':id/restore')
+  @AuditAction('Khôi phục Shared Mailbox')
+  @ApiOperation({ summary: 'Khôi phục Shared Mailbox' })
+  async restore(@Param('id') id: string, @Req() req: any) {
+    return this.sharedMailboxService.restore(id, req.user.email);
+  }
+
+  @Delete(':id/permanent')
+  @AuditAction('Xóa vĩnh viễn Shared Mailbox')
+  @ApiOperation({ summary: 'Xóa vĩnh viễn Shared Mailbox' })
+  async permanentDelete(@Param('id') id: string, @Req() req: any) {
+    return this.sharedMailboxService.permanentDelete(id, req.user.email);
+  }
+
+  @Post(':id/members')
+  @AuditAction('Thêm thành viên Shared Mailbox')
+  @ApiOperation({ summary: 'Thêm thành viên vào Shared Mailbox' })
+  async addMember(
+    @Param('id') id: string,
+    @Body() dto: AddSharedMailboxMemberDto,
+    @Req() req: any,
+  ) {
+    return this.sharedMailboxService.addMember(id, dto, req.user.email);
+  }
+
+  @Delete(':id/members/:userId')
+  @AuditAction('Xóa thành viên Shared Mailbox')
+  @ApiOperation({ summary: 'Xóa thành viên khỏi Shared Mailbox' })
+  async removeMember(
+    @Param('id') id: string,
+    @Param('userId') userId: string,
+    @Req() req: any,
+  ) {
+    return this.sharedMailboxService.removeMember(id, userId, req.user.email);
+  }
+}
+````
+
+## File: src/shared-mailbox/shared-mailbox.runner.ts
+````typescript
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import * as path from 'path';
+
+const execAsync = promisify(exec);
+
+export type SharedMailboxAction =
+  | 'create'
+  | 'update'
+  | 'disable'
+  | 'restore'
+  | 'delete'
+  | 'add-permission'
+  | 'remove-permission';
+
+@Injectable()
+export class SharedMailboxScriptRunner {
+  private readonly logger = new Logger(SharedMailboxScriptRunner.name);
+  private readonly timeoutMs: number;
+  private readonly scriptsPath: string;
+
+  constructor(private readonly configService: ConfigService) {
+    this.timeoutMs = parseInt(this.configService.get<string>('MAILBOX_SCRIPT_TIMEOUT_MS', '120000'), 10);
+    this.scriptsPath = path.resolve('./scripts/shared-mailbox');
+  }
+
+  async run(action: SharedMailboxAction, payload: Record<string, any>): Promise<any> {
+    const scriptMap: Record<SharedMailboxAction, string> = {
+      'create': 'create-shared-mailbox.ps1',
+      'update': 'update-shared-mailbox.ps1',
+      'disable': 'disable-shared-mailbox.ps1',
+      'restore': 'update-shared-mailbox.ps1', // Reuse update or create restore script if needed, here just set active
+      'delete': 'delete-shared-mailbox.ps1',
+      'add-permission': 'add-mailbox-permission.ps1',
+      'remove-permission': 'remove-mailbox-permission.ps1',
+    };
+
+    const scriptName = scriptMap[action];
+    if (!scriptName) {
+      throw new Error(`Unsupported action: ${action}`);
+    }
+
+    const scriptPath = path.join(this.scriptsPath, scriptName);
+    
+    // Convert payload to JSON string and escape quotes for PowerShell
+    const jsonPayload = JSON.stringify(payload).replace(/"/g, '\\"');
+    
+    // Command to execute PowerShell script (use pwsh on Linux/Standard, powershell.exe as fallback on Win)
+    const isWin = process.platform === 'win32';
+    const shellCommand = isWin ? 'powershell.exe' : 'pwsh';
+    const command = `${shellCommand} -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}" -InputJson "${jsonPayload}"`;
+
+    this.logger.debug(`Executing PowerShell script via ${shellCommand}: ${scriptName}`);
+
+    try {
+      const { stdout, stderr } = await execAsync(command, { timeout: this.timeoutMs });
+
+      if (stderr) {
+        this.logger.warn(`PowerShell Stderr (${scriptName}): ${stderr}`);
+      }
+
+      // Try to parse JSON output
+      try {
+        const result = JSON.parse(stdout.trim());
+        if (!result.Success && result.Success !== true) {
+           throw new Error(result.Error || 'Unknown error occurred in Script');
+        }
+        return result;
+      } catch (parseError) {
+        this.logger.error(`Failed to parse PowerShell JSON Output: ${stdout}`);
+        throw new Error(`Invalid JSON response from Exchange script: ${parseError.message}`);
+      }
+
+    } catch (error) {
+       this.logger.error(`Execution failed for ${scriptName}: ${error.message}`);
+       throw error;
+    }
+  }
+}
+````
+
+## File: src/shared-mailbox/shared-mailbox.service.ts
+````typescript
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+  BadRequestException,
+  Logger,
+} from '@nestjs/common';
+import { EntityManager, QueryOrder } from '@mikro-orm/core';
+import { SharedMailbox } from '../database/entities/shared-mailbox.entity';
+import { SharedMailboxMember, SharedMailboxRole } from '../database/entities/shared-mailbox-member.entity';
+import { User } from '../database/entities/user.entity';
+import { AuditLog } from '../database/entities/audit-log.entity';
+import { SharedMailboxScriptRunner } from './shared-mailbox.runner';
+import {
+  CreateSharedMailboxDto,
+  UpdateSharedMailboxDto,
+  AddSharedMailboxMemberDto,
+} from './shared-mailbox.dto';
+
+@Injectable()
+export class SharedMailboxService {
+  private readonly logger = new Logger(SharedMailboxService.name);
+
+  constructor(
+    private readonly em: EntityManager,
+    private readonly scriptRunner: SharedMailboxScriptRunner,
+  ) {}
+
+  async list(page: number, pageSize: number, search?: string) {
+    const limit = Math.max(1, Math.min(pageSize || 20, 100));
+    const offset = Math.max(0, (page - 1) * limit);
+
+    const where: any = {};
+    if (search?.trim()) {
+      where.$or = [
+        { email: { $ilike: `%${search}%` } },
+        { name: { $ilike: `%${search}%` } },
+        { displayName: { $ilike: `%${search}%` } },
+      ];
+    }
+
+    const [items, total] = await this.em.findAndCount(SharedMailbox, where, {
+      limit,
+      offset,
+      orderBy: { createdAt: QueryOrder.DESC },
+    });
+
+    return { items, total, page, pageSize: limit };
+  }
+
+  async create(dto: CreateSharedMailboxDto, adminEmail: string) {
+    const existing = await this.em.findOne(SharedMailbox, { email: dto.email });
+    if (existing) {
+      throw new ConflictException('Email already exists');
+    }
+
+    const adminUser = await this.em.findOne(User, { email: adminEmail });
+
+    // Transactional Workflow: Run PS Script first, then save to DB
+    const scriptResult = await this.scriptRunner.run('create', {
+      name: dto.name,
+      email: dto.email,
+      displayName: dto.displayName,
+    });
+
+    const exchangeGuid = scriptResult.Mailbox?.ExchangeGuid;
+
+    const mailbox = this.em.create(SharedMailbox, {
+      name: dto.name,
+      email: dto.email,
+      displayName: dto.displayName,
+      exchangeGuid,
+      createdBy: adminUser?.id || adminEmail,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'shared_mailbox',
+      targetId: mailbox.id,
+      action: 'CREATE',
+      userEmail: adminEmail,
+      details: { email: dto.email, displayName: dto.displayName },
+      timestamp: new Date(),
+    });
+
+    // Commit to DB after Script is successful
+    await this.em.begin();
+    try {
+      await this.em.persistAndFlush([mailbox, audit]);
+      await this.em.commit();
+      return mailbox;
+    } catch (e) {
+      await this.em.rollback();
+      this.logger.error(`DB Save Failed after PS Create: ${e.message}`, e.stack);
+      throw new BadRequestException('Exchange mailbox created but DB failed to save.');
+    }
+  }
+
+  async addMember(mailboxId: string, dto: AddSharedMailboxMemberDto, adminEmail: string) {
+    const mailbox = await this.em.findOne(SharedMailbox, { id: mailboxId });
+    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
+
+    const targetUser = await this.em.findOne(User, { email: dto.userEmail });
+    if (!targetUser) throw new NotFoundException('Target User not found');
+
+    const adminUser = await this.em.findOne(User, { email: adminEmail });
+
+    const existingMember = await this.em.findOne(SharedMailboxMember, {
+      mailbox,
+      userId: targetUser.id,
+    });
+    if (existingMember) {
+      throw new ConflictException('User is already a member of this Shared Mailbox');
+    }
+
+    // Call PowerShell
+    await this.scriptRunner.run('add-permission', {
+      mailboxEmail: mailbox.email,
+      userEmail: targetUser.email,
+      role: dto.role, // 'OWNER' or 'MEMBER'
+    });
+
+    const member = this.em.create(SharedMailboxMember, {
+      mailbox,
+      userId: targetUser.id,
+      role: dto.role,
+      addedBy: adminUser?.id || adminEmail,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'shared_mailbox',
+      targetId: mailbox.id,
+      action: 'ADD_MEMBER',
+      userEmail: adminEmail,
+      details: { targetUserId: targetUser.id, targetUserEmail: targetUser.email, role: dto.role },
+      timestamp: new Date(),
+    });
+
+    await this.em.begin();
+    try {
+      await this.em.persistAndFlush([member, audit]);
+      await this.em.commit();
+      return member;
+    } catch (e) {
+      await this.em.rollback();
+      throw new BadRequestException('Failed to save to Database');
+    }
+  }
+
+  async removeMember(mailboxId: string, targetUserId: string, adminEmail: string) {
+    const mailbox = await this.em.findOne(SharedMailbox, { id: mailboxId });
+    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
+
+    const targetUser = await this.em.findOne(User, { id: targetUserId });
+    if (!targetUser) throw new NotFoundException('Target User not found');
+
+    const member = await this.em.findOne(SharedMailboxMember, {
+      mailbox: mailbox.id,
+      userId: targetUser.id,
+    });
+
+    if (!member) throw new NotFoundException('User is not a member of this Shared Mailbox');
+
+    // Call PowerShell to remove both FullAccess and SendAs
+    await this.scriptRunner.run('remove-permission', {
+      mailboxEmail: mailbox.email,
+      userEmail: targetUser.email,
+    });
+
+    const audit = this.em.create(AuditLog, {
+       collection: 'shared_mailbox',
+       targetId: mailbox.id,
+       action: 'REMOVE_MEMBER',
+       userEmail: adminEmail,
+       details: { targetUserId: targetUser.id, targetUserEmail: targetUser.email, previousRole: member.role },
+       timestamp: new Date(),
+    });
+
+    await this.em.begin();
+    try {
+       this.em.remove(member);
+       await this.em.persistAndFlush(audit);
+       await this.em.commit();
+       return { success: true };
+    } catch(e) {
+       await this.em.rollback();
+       throw new BadRequestException('Failed to remove member record from Database');
+    }
+  }
+
+  async get(id: string) {
+    const mailbox = await this.em.findOne(SharedMailbox, { id }, { populate: ['members' as any] });
+    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
+    return mailbox;
+  }
+
+  async update(id: string, dto: UpdateSharedMailboxDto, adminEmail: string) {
+    const mailbox = await this.em.findOne(SharedMailbox, { id });
+    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
+
+    const oldEmail = mailbox.email;
+    const nextEmail = dto.email ?? mailbox.email;
+    const nextDisplayName = dto.displayName ?? mailbox.displayName;
+
+    if (dto.email && dto.email !== oldEmail) {
+      const existing = await this.em.findOne(SharedMailbox, { email: dto.email });
+      if (existing) throw new ConflictException('Email already exists');
+    }
+
+    await this.scriptRunner.run('update', {
+      exchangeGuid: mailbox.exchangeGuid,
+      oldEmail,
+      email: nextEmail,
+      displayName: nextDisplayName,
+    });
+
+    mailbox.email = nextEmail;
+    mailbox.displayName = nextDisplayName;
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'shared_mailbox',
+      targetId: mailbox.id,
+      action: 'UPDATE',
+      userEmail: adminEmail,
+      details: { email: nextEmail, displayName: nextDisplayName },
+      timestamp: new Date(),
+    });
+
+    await this.em.persistAndFlush([mailbox, audit]);
+    return mailbox;
+  }
+
+  async disable(id: string, adminEmail: string) {
+    const mailbox = await this.em.findOne(SharedMailbox, { id });
+    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
+
+    await this.scriptRunner.run('disable', {
+      exchangeGuid: mailbox.exchangeGuid,
+      email: mailbox.email,
+    });
+
+    mailbox.isActive = false;
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'shared_mailbox',
+      targetId: mailbox.id,
+      action: 'DISABLE',
+      userEmail: adminEmail,
+      timestamp: new Date(),
+    });
+
+    await this.em.persistAndFlush([mailbox, audit]);
+    return { success: true };
+  }
+
+  async getForUserByEmail(email: string): Promise<SharedMailbox[]> {
+    const user = await this.em.findOne(User, { email });
+    if (!user) return [];
+    const memberships = await this.em.find(SharedMailboxMember, { userId: user.id }, { populate: ['mailbox'] as any });
+    return memberships.map(m => m.mailbox) as SharedMailbox[];
+  }
+
+  async restore(id: string, adminEmail: string) {
+    const mailbox = await this.em.findOne(SharedMailbox, { id });
+    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
+
+    await this.scriptRunner.run('restore', {
+      exchangeGuid: mailbox.exchangeGuid,
+      email: mailbox.email,
+    });
+
+    mailbox.isActive = true;
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'shared_mailbox',
+      targetId: mailbox.id,
+      action: 'RESTORE',
+      userEmail: adminEmail,
+      timestamp: new Date(),
+    });
+
+    await this.em.persistAndFlush([mailbox, audit]);
+    return { success: true };
+  }
+
+  async permanentDelete(id: string, adminEmail: string) {
+    const mailbox = await this.em.findOne(SharedMailbox, { id });
+    if (!mailbox) throw new NotFoundException('Shared Mailbox not found');
+
+    await this.scriptRunner.run('delete', {
+      exchangeGuid: mailbox.exchangeGuid,
+      email: mailbox.email,
+    });
+
+    const audit = this.em.create(AuditLog, {
+      collection: 'shared_mailbox',
+      targetId: mailbox.id,
+      action: 'PERMANENT_DELETE',
+      userEmail: adminEmail,
+      timestamp: new Date(),
+    });
+
+    await this.em.begin();
+    try {
+      // Remove all members first due to FK or orphan removal
+      await this.em.nativeDelete(SharedMailboxMember, { mailbox: mailbox.id });
+      this.em.remove(mailbox);
+      await this.em.persistAndFlush(audit);
+      await this.em.commit();
+      return { success: true };
+    } catch (e) {
+      await this.em.rollback();
+      throw new BadRequestException('Failed to delete from Database');
+    }
   }
 }
 ````
@@ -8285,6 +9329,943 @@ if __name__ == "__main__":
     main()
 ````
 
+## File: src/audit/audit.module.ts
+````typescript
+import { Module, forwardRef } from '@nestjs/common';
+import { MikroOrmModule } from '@mikro-orm/nestjs';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { AuditLog } from '../database/entities/audit-log.entity';
+import { AuditLogService } from './audit.service';
+import { AuditLogInterceptor } from './audit-log.interceptor';
+import { CommonModule } from '../common/common.module';
+import { AuditController } from './audit.controller';
+import { AuthModule } from '../auth/auth.module';
+import { ExchangeAuthService } from '../exchange/services/exchange-auth.service';
+
+@Module({
+  imports: [
+    MikroOrmModule.forFeature([AuditLog]),
+    CommonModule,
+    forwardRef(() => AuthModule),
+  ],
+  providers: [
+    AuditLogService,
+    ExchangeAuthService,
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: AuditLogInterceptor,
+    },
+  ],
+  controllers: [AuditController],
+  exports: [AuditLogService],
+})
+export class AuditLogModule {}
+````
+
+## File: src/auth/guards/jwt-auth.guard.ts
+````typescript
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { AuthGuard } from '@nestjs/passport';
+
+@Injectable()
+export class JwtAuthGuard extends AuthGuard('jwt') {
+  handleRequest(err, user, info) {
+    if (err || !user) {
+      console.log('🔴 [DEBUG] JwtAuthGuard Failure:');
+      console.log('   Error:', err);
+      console.log('   Info:', info?.message || info);
+      let message = (info?.message || info).toLowerCase();
+      if (message === 'jwt expired') {
+        message = 'Token hết hạn vui lòng đăng nhập lại !';
+      } else if (
+        message === 'invalid signature' ||
+        message === 'jwt malformed' ||
+        message === 'no auth token'
+      ) {
+        message = 'Token không hợp lệ !';
+      }
+      throw err || new UnauthorizedException(message);
+    }
+    return user;
+  }
+}
+````
+
+## File: src/config/auth.config.ts
+````typescript
+import { registerAs } from '@nestjs/config';
+
+export default registerAs('auth', () => ({
+  jwtSecret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN || '15m',
+  refreshExpiresIn: process.env.REFRESH_EXPIRES_IN || '7d',
+  maxFailedRefreshInfo: parseInt(
+    process.env.AUTH_MAX_FAILED_REFRESH || '5',
+    10,
+  ),
+  logLevel: process.env.AUTH_LOG_LEVEL || 'basic',
+}));
+````
+
+## File: src/config/database.config.ts
+````typescript
+import { registerAs } from '@nestjs/config';
+
+export default registerAs('database', () => ({
+  host: process.env.DB_HOST || 'localhost',
+  port: parseInt(process.env.DB_PORT || '5432', 10),
+  user: process.env.DB_USER || 'postgres',
+  password: process.env.DB_PASSWORD || '123',
+  name: process.env.DB_NAME || 'postgres',
+  allowGlobalContext:
+    process.env.DB_ALLOW_GLOBAL_CONTEXT === 'true' ||
+    process.env.NODE_ENV !== 'production',
+}));
+````
+
+## File: src/database/entities/audit-log.entity.ts
+````typescript
+import {
+  Entity,
+  PrimaryKey,
+  Property,
+  ManyToOne,
+  Index,
+} from '@mikro-orm/core';
+import { User } from './user.entity';
+
+@Entity({ tableName: 'audit_logs' })
+@Index({ properties: ['collection', 'targetId'] })
+export class AuditLog {
+  @PrimaryKey({ type: 'bigint' })
+  id!: string;
+
+  @Property({ length: 255, nullable: true, index: 'audit_log_user_email_index' })
+  userEmail?: string;
+
+  @Property({ length: 100, index: 'audit_log_collection_index' })
+  collection!: string;
+
+  @Property({ length: 50 })
+  action!: string;
+
+  @Property({ length: 255, index: 'audit_log_target_id_index' })
+  targetId!: string;
+
+  @Property({ type: 'json', nullable: true })
+  details?: Record<string, any>;
+
+  @Property({ onCreate: () => new Date() })
+  timestamp = new Date();
+}
+````
+
+## File: src/dto/post/create-post.dto.ts
+````typescript
+import {
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+} from 'class-validator';
+
+export class CreatePostDto {
+  @IsString({ message: 'Tiêu đề phải là chuỗi' })
+  @IsOptional()
+  title?: string;
+
+  @IsString({ message: 'Nội dung phải là chuỗi' })
+  @IsOptional()
+  content?: string;
+
+  @IsNotEmpty({ message: 'Tác giả không được để trống' })
+  author: number;
+}
+````
+
+## File: src/exchange/constants/mail-folders.constant.ts
+````typescript
+export type MailFolderType =
+  | 'inbox'
+  | 'sent'
+  | 'starred'
+  | 'drafts'
+  | 'spam'
+  | 'trash'
+  | 'outbox';
+
+export type MailFolderDefinition = {
+  id: string;
+  type: MailFolderType;
+  name: string;
+  aliases: string[];
+};
+
+export const MAIL_FOLDERS: MailFolderDefinition[] = [
+  {
+    id: 'INBOX',
+    type: 'inbox',
+    name: 'Hộp thư đến',
+    aliases: ['INBOX'],
+  },
+  {
+    id: 'Outbox',
+    type: 'outbox',
+    name: 'Thư chờ gửi',
+    aliases: ['Outbox'],
+  },
+  {
+    id: 'Sent Items',
+    type: 'sent',
+    name: 'Đã gửi',
+    aliases: ['Sent Items', 'Sent'],
+  },
+  {
+    id: 'Starred',
+    type: 'starred',
+    name: 'Có gắn dấu sao',
+    aliases: ['Starred'],
+  },
+  {
+    id: 'Drafts',
+    type: 'drafts',
+    name: 'Thư nháp',
+    aliases: ['Drafts'],
+  },
+  {
+    id: 'Spam',
+    type: 'spam',
+    name: 'Thư rác',
+    aliases: ['Spam', 'Junk Email'],
+  },
+  {
+    id: 'Trash',
+    type: 'trash',
+    name: 'Thùng rác',
+    aliases: ['Trash', 'Deleted Items'],
+  },
+];
+
+export const DEFAULT_FOLDER_ID = 'INBOX';
+
+function normalize(input: string): string {
+  return input.trim().toLowerCase();
+}
+
+export function resolveFolderId(
+  input: string,
+  fallback = DEFAULT_FOLDER_ID,
+): string {
+  const normalized = normalize(input);
+
+  for (const folder of MAIL_FOLDERS) {
+    if (
+      normalize(folder.id) === normalized ||
+      normalize(folder.type) === normalized ||
+      folder.aliases.some((alias) => normalize(alias) === normalized)
+    ) {
+      return folder.id;
+    }
+  }
+
+  return input;
+}
+
+export function resolveFolderType(input: string): string {
+  const normalized = normalize(input);
+
+  for (const folder of MAIL_FOLDERS) {
+    if (
+      normalize(folder.id) === normalized ||
+      normalize(folder.type) === normalized ||
+      folder.aliases.some((alias) => normalize(alias) === normalized)
+    ) {
+      return folder.type;
+    }
+  }
+
+  return normalized.replace(/\s+/g, '_');
+}
+
+export function getFolderAliases(input: string): string[] {
+  const folderId = resolveFolderId(input, input);
+  const folder = MAIL_FOLDERS.find((item) => item.id === folderId);
+  if (!folder) return [input];
+  return Array.from(new Set([folder.id, ...folder.aliases]));
+}
+````
+
+## File: src/exchange/controllers/notes.controller.ts
+````typescript
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
+import { ExchangeAuthGuard } from '../../auth/guards/exchange-auth.guard';
+import { ContactNoteService } from '../services/contact-note.service';
+import { CreateNoteDto, UpdateNoteDto } from '../dto/contact-note.dto';
+
+@ApiTags('Notes')
+@Controller('webmail/notes')
+@UseGuards(ExchangeAuthGuard)
+export class NotesController {
+  constructor(private readonly contactNoteService: ContactNoteService) {}
+
+  @Get()
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'List notes' })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'pageSize', required: false })
+  async listNotes(
+    @Query('page') page: number = 1,
+    @Query('pageSize') pageSize: number = 20,
+  ) {
+    return this.contactNoteService.listNotes(Number(page), Number(pageSize));
+  }
+
+  @Post()
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Create note' })
+  @ApiBody({ type: CreateNoteDto })
+  async createNote(@Body() dto: CreateNoteDto) {
+    return this.contactNoteService.createNote(dto);
+  }
+
+  @Put(':id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Update note' })
+  @ApiBody({ type: UpdateNoteDto })
+  async updateNote(@Param('id') id: string, @Body() dto: UpdateNoteDto) {
+    return this.contactNoteService.updateNote(id, dto);
+  }
+
+  @Delete(':id')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Delete note' })
+  async deleteNote(@Param('id') id: string) {
+    return this.contactNoteService.deleteNote(id);
+  }
+}
+````
+
+## File: src/exchange/dto/contact-note.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+import {
+  IsEmail,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class ContactAddressDto {
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  street?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  city?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  state?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  postalCode?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  country?: string;
+}
+
+export class CreateContactDto {
+  @ApiProperty({ example: 'user@example.com' })
+  @IsEmail()
+  email!: string;
+
+  @ApiProperty({ example: 'User Name' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  displayName!: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  givenName?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  surname?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  company?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  jobTitle?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  phone?: string;
+
+  @ApiProperty({ required: false, type: ContactAddressDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ContactAddressDto)
+  address?: ContactAddressDto;
+}
+
+export class UpdateContactDto {
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  @MaxLength(255)
+  displayName?: string;
+
+  @ApiProperty({ required: false })
+  @IsEmail()
+  @IsOptional()
+  email?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  givenName?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  surname?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  company?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  jobTitle?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  phone?: string;
+
+  @ApiProperty({ required: false, type: ContactAddressDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ContactAddressDto)
+  address?: ContactAddressDto;
+}
+
+export class CreateNoteDto {
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  subject?: string;
+
+  @ApiProperty({ example: 'My note content' })
+  @IsString()
+  @IsNotEmpty()
+  content!: string;
+}
+
+export class UpdateNoteDto {
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  subject?: string;
+
+  @ApiProperty({ required: false })
+  @IsString()
+  @IsOptional()
+  content?: string;
+}
+````
+
+## File: src/files/files.controller.ts
+````typescript
+import {
+  Controller,
+  Post,
+  Get,
+  Body,
+  Param,
+  UseInterceptors,
+  UploadedFile,
+  Res,
+  Query,
+  BadRequestException,
+  StreamableFile,
+  Header,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
+import { FilesService } from './files.service';
+import { CommitFileDto } from './dto/commit-file.dto';
+import { TempUploadResponseDto } from './dto/temp-upload-response.dto';
+import {
+  ApiBody,
+  ApiConsumes,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
+
+@ApiTags('Files')
+@Controller('files')
+export class FilesController {
+  constructor(private readonly filesService: FilesService) {}
+
+  /**
+   * POST /files/upload
+   * Upload file to temporary storage
+   */
+  @Post('upload')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Upload file tạm' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary' },
+      },
+      required: ['file'],
+    },
+  })
+  @ApiResponse({ status: 201, type: TempUploadResponseDto })
+  async uploadTemp(
+    @UploadedFile() file: Express.Multer.File,
+  ): Promise<TempUploadResponseDto> {
+    if (!file) {
+      throw new BadRequestException('No file provided');
+    }
+
+    return this.filesService.uploadTemp(file);
+  }
+
+  /**
+   * GET /files/temp/:id/preview
+   * Stream temporary file for preview
+   */
+  @Get('temp/:id/preview')
+  @ApiOperation({ summary: 'Preview file tạm' })
+  async previewTemp(@Param('id') id: string, @Res() res: Response) {
+    const fileMetadata = await this.filesService.getMetadata(id);
+    const stream = await this.filesService.getTempFileStream(id);
+
+    // Set headers for inline preview with full info for Postman
+    res.setHeader('Content-Type', fileMetadata.mimeType);
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${fileMetadata.originalName}"`,
+    );
+    res.setHeader('Content-Length', fileMetadata.size.toString());
+    res.setHeader('Cache-Control', 'public, max-age=3600'); // 1 hour cache for temp preview
+    res.setHeader('Accept-Ranges', 'bytes');
+
+    stream.pipe(res);
+  }
+
+  /**
+   * POST /files/commit
+   * Commit file from temp to permanent storage
+   */
+  @Post('commit')
+  @ApiOperation({ summary: 'Commit file từ temp sang permanent' })
+  @ApiResponse({ status: 200, description: 'Commit thành công' })
+  async commitFile(@Body() dto: CommitFileDto) {
+    return this.filesService.commitFile(
+      dto.id,
+      dto.extraMetadata,
+      dto.originalName,
+    );
+  }
+
+  /**
+   * GET /files/:id
+   * Get file metadata only (no streaming)
+   */
+  @Get(':id')
+  @ApiOperation({ summary: 'Lấy metadata file' })
+  async getFileMetadata(@Param('id') id: string) {
+    const file = await this.filesService.getMetadata(id);
+
+    // Convert bigint to string for JSON serialization
+    return {
+      ...file,
+      size: file.size.toString(),
+    };
+  }
+}
+
+@ApiTags('Assets')
+@Controller('assets')
+export class AssetsController {
+  constructor(private readonly filesService: FilesService) {}
+
+  /**
+   * GET /assets/:id
+   * Stream permanent file with Range support
+   */
+  @Get(':id')
+  @ApiOperation({ summary: 'Stream file permanent' })
+  async streamAsset(
+    @Param('id') id: string,
+    @Query('download') download: string,
+    @Res() res: Response,
+  ) {
+    const { file, stream } = await this.filesService.getFileStream(id);
+
+    // Set Content-Disposition based on download parameter
+    const disposition = download === 'true' ? 'attachment' : 'inline';
+    res.setHeader(
+      'Content-Disposition',
+      `${disposition}; filename="${file.originalName}"`,
+    );
+
+    // Set Content-Type
+    res.setHeader('Content-Type', file.mimeType);
+
+    // Set Content-Length
+    res.setHeader('Content-Length', file.size.toString());
+
+    // Set Cache-Control as requested
+    res.setHeader('Cache-Control', 'public, max-age=31536000'); // 1 year cache
+
+    // Enable Range requests
+    res.setHeader('Accept-Ranges', 'bytes');
+
+    // For now, stream entire file (Range handling can be added here)
+    stream.pipe(res);
+  }
+}
+````
+
+## File: src/mailbox/mailbox.dto.ts
+````typescript
+import { ApiProperty } from '@nestjs/swagger';
+import {
+  IsBoolean,
+  IsEmail,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+} from 'class-validator';
+
+export class CreateMailboxDto {
+  @ApiProperty({ example: 'user@domain.local' })
+  @IsEmail()
+  email!: string;
+
+  @ApiProperty({ example: 'User Name' })
+  @IsString()
+  @IsNotEmpty()
+  name!: string;
+
+  @ApiProperty({ example: 'Temp@123' })
+  @IsString()
+  @IsNotEmpty()
+  password!: string;
+
+  @ApiProperty({ example: 'unit-id-123', required: false })
+  @IsString()
+  @IsOptional()
+  orgUnitId?: string;
+
+  @ApiProperty({ example: false, required: false })
+  @IsBoolean()
+  @IsOptional()
+  isAdmin?: boolean;
+}
+
+export class UpdateMailboxDto {
+  @ApiProperty({ example: 'User Name', required: false })
+  @IsString()
+  @IsOptional()
+  name?: string;
+
+  @ApiProperty({ example: 'user@domain.local', required: false })
+  @IsEmail()
+  @IsOptional()
+  email?: string;
+
+  @ApiProperty({ example: true, required: false })
+  @IsBoolean()
+  @IsOptional()
+  isActive?: boolean;
+}
+
+export class ImportMailboxDto {
+  @ApiProperty({
+    example: 'email,name,password\nuser@domain.local,User Name,Temp@123',
+  })
+  @IsString()
+  @IsNotEmpty()
+  csv!: string;
+}
+````
+
+## File: src/mailbox/mailbox.module.ts
+````typescript
+import { Module } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
+import { MailboxController } from './mailbox.controller';
+import { MailboxService } from './mailbox.service';
+import { ScriptRunnerService } from './script-runner.service';
+import { GalService } from './gal.service';
+import { ExchangeAuthService } from '../exchange/services/exchange-auth.service';
+
+@Module({
+  imports: [AuthModule],
+  controllers: [MailboxController],
+  providers: [
+    MailboxService,
+    ScriptRunnerService,
+    GalService,
+    ExchangeAuthService,
+  ],
+})
+export class MailboxModule {}
+````
+
+## File: src/meta/entity-registry.service.ts
+````typescript
+import {
+  Injectable,
+  OnModuleInit,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { MikroORM, EntityMetadata } from '@mikro-orm/core';
+
+@Injectable()
+export class EntityRegistryService implements OnModuleInit {
+  private readonly logger = new Logger(EntityRegistryService.name);
+  private readonly collectionMap = new Map<string, string>(); // collectionName -> EntityClassName
+  private readonly entityMap = new Map<string, EntityMetadata>(); // EntityClassName -> Metadata
+
+  constructor(private readonly orm: MikroORM) {}
+
+  async onModuleInit() {
+    this.scanEntities();
+  }
+
+  private scanEntities() {
+    const metadata = this.orm.getMetadata().getAll();
+    for (const meta of Object.values(metadata)) {
+      // Use tableName as the collection identifier
+      const collectionName = meta.tableName;
+      const entityName = meta.className;
+
+      if (!collectionName) {
+        continue;
+      }
+
+      this.collectionMap.set(collectionName, entityName);
+      this.entityMap.set(entityName, meta);
+
+      this.logger.log(
+        `Registered collection: ${collectionName} -> ${entityName}`,
+      );
+    }
+  }
+
+  getEntityName(collection: string): string {
+    const entityName = this.collectionMap.get(collection);
+    if (!entityName) {
+      throw new NotFoundException(`Collection ${collection} not found`);
+    }
+    return entityName;
+  }
+
+  getMetadata(collection: string): EntityMetadata {
+    const entityName = this.getEntityName(collection);
+    return this.entityMap.get(entityName)!;
+  }
+
+  hasCollection(collection: string): boolean {
+    console.log('collectionMap', this.collectionMap);
+    return this.collectionMap.has(collection);
+  }
+}
+````
+
+## File: src/storage/local-storage.adapter.ts
+````typescript
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { promises as fs, createReadStream, ReadStream } from 'fs';
+import { join, dirname } from 'path';
+import { pipeline } from 'stream/promises';
+import { IStorageAdapter, StorageResult } from './storage.interface';
+
+/**
+ * Local filesystem storage adapter
+ * Handles file operations using Node.js fs module with streaming
+ */
+@Injectable()
+export class LocalStorageAdapter implements IStorageAdapter {
+  private readonly storagePath: string;
+
+  constructor(private readonly configService: ConfigService) {
+    this.storagePath =
+      this.configService.get<string>('FILE_STORAGE_PATH') || './storage';
+  }
+
+  async upload(
+    file: Express.Multer.File,
+    path: string,
+  ): Promise<StorageResult> {
+    const fullPath = join(this.storagePath, path);
+    await this.ensureDir(dirname(fullPath));
+    await fs.writeFile(fullPath, file.buffer);
+    return {
+      storedName: path.split('/').pop() || path,
+      storagePath: path,
+      size: file.size,
+    };
+  }
+
+  async getSignedUrl(path: string): Promise<string> {
+    // For local storage, we just return the relative path.
+    // In a real app, this might need to be prefixed with the API host URL
+    // or mapped to a static file serve route.
+    return path;
+  }
+
+  /**
+   * Save uploaded file to temporary storage
+   */
+  async saveTemp(
+    file: Express.Multer.File,
+    id: string,
+  ): Promise<StorageResult> {
+    const tempDir = join(this.storagePath, 'temp');
+    await this.ensureDir(tempDir);
+
+    const storedName = id;
+    const storagePath = `temp/${storedName}`;
+    const fullPath = join(this.storagePath, storagePath);
+
+    // Write file using stream (no memory buffering)
+    await fs.writeFile(fullPath, file.buffer);
+
+    return {
+      storedName,
+      storagePath,
+      size: file.size,
+    };
+  }
+
+  /**
+   * Move file from temp to permanent storage
+   * Uses atomic rename operation when possible
+   */
+  async moveToPermanent(
+    tempPath: string,
+    permanentPath: string,
+  ): Promise<void> {
+    const fullTempPath = join(this.storagePath, tempPath);
+    const fullPermanentPath = join(this.storagePath, permanentPath);
+
+    // Ensure permanent directory exists
+    await this.ensureDir(dirname(fullPermanentPath));
+
+    // Atomic move (rename syscall)
+    await fs.rename(fullTempPath, fullPermanentPath);
+  }
+
+  /**
+   * Get readable stream for file
+   * Enables streaming without loading entire file into memory
+   */
+  async getStream(path: string): Promise<ReadStream> {
+    const fullPath = join(this.storagePath, path);
+
+    // Verify file exists before creating stream
+    await fs.access(fullPath);
+
+    return createReadStream(fullPath);
+  }
+
+  /**
+   * Delete file from storage
+   */
+  async delete(path: string): Promise<void> {
+    const fullPath = join(this.storagePath, path);
+    await fs.unlink(fullPath);
+  }
+
+  /**
+   * Check if file exists
+   */
+  async exists(path: string): Promise<boolean> {
+    try {
+      const fullPath = join(this.storagePath, path);
+      await fs.access(fullPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Get file size in bytes
+   */
+  async getSize(path: string): Promise<number> {
+    const fullPath = join(this.storagePath, path);
+    const stats = await fs.stat(fullPath);
+    return stats.size;
+  }
+
+  /**
+   * Ensure directory exists, create if it doesn't
+   */
+  private async ensureDir(dir: string): Promise<void> {
+    try {
+      await fs.mkdir(dir, { recursive: true });
+    } catch (error) {
+      // Ignore if directory already exists
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
+    }
+  }
+}
+````
+
 ## File: src/audit/audit-log.interceptor.ts
 ````typescript
 import {
@@ -8756,12 +10737,16 @@ import {
   ExecutionContext,
   UnauthorizedException,
 } from '@nestjs/common';
-import { Request } from 'express';
+import { EntityManager } from '@mikro-orm/core';
+import { User } from '../../database/entities/user.entity';
 import { ExchangeAuthService } from '../../exchange/services/exchange-auth.service';
 
 @Injectable()
 export class ExchangeAuthGuard implements CanActivate {
-  constructor(private readonly authService: ExchangeAuthService) {}
+  constructor(
+    private readonly authService: ExchangeAuthService,
+    private readonly em: EntityManager,
+  ) { }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<any>();
@@ -8783,11 +10768,18 @@ export class ExchangeAuthGuard implements CanActivate {
       throw new UnauthorizedException('Invalid or expired session');
     }
 
+    // Lấy thông tin user từ DB để có ID (cần cho RSS)
+    const user = await this.em.findOne(User, { email: credentials.email });
+    if (!user) {
+      throw new UnauthorizedException('User not found in database');
+    }
+
     // Refresh session on each request
     await this.authService.refreshSession(sessionToken);
 
     // Attach user and session token to request
     request.user = {
+      id: user.id,
       email: credentials.email,
     };
     request['exchangeSession'] = sessionToken;
@@ -8797,198 +10789,119 @@ export class ExchangeAuthGuard implements CanActivate {
 }
 ````
 
-## File: src/auth/guards/jwt-auth.guard.ts
+## File: src/auth/strategies/jwt.strategy.ts
 ````typescript
-import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+import { Injectable } from '@nestjs/common';
+import { PassportStrategy } from '@nestjs/passport';
+import { ExtractJwt, Strategy } from 'passport-jwt';
+import { ConfigService } from '@nestjs/config';
+
+type JwtRequest = {
+  cookies?: Record<string, string | undefined>;
+  headers?: Record<string, string | string[] | undefined>;
+};
+
+const normalizeJwt = (value?: string | null) => {
+  if (!value) {
+    return null;
+  }
+
+  const token = value.trim().replace(/^"|"$/g, '');
+
+  if (!token || token === 'null' || token === 'undefined') {
+    return null;
+  }
+
+  const segments = token.split('.');
+  if (segments.length !== 3 || segments.some((segment) => !segment)) {
+    return null;
+  }
+
+  return token;
+};
+
+const jwtCookieExtractor = (request: JwtRequest) =>
+  normalizeJwt(request?.cookies?.access_token ?? null);
+
+const jwtBearerExtractor = (request: JwtRequest) => {
+  const authorization = request?.headers?.authorization;
+  const header = Array.isArray(authorization)
+    ? authorization[0]
+    : authorization;
+
+  if (!header) {
+    return null;
+  }
+
+  const [scheme, token, ...rest] = header.trim().split(/\s+/);
+  if (scheme !== 'Bearer' || rest.length > 0) {
+    return null;
+  }
+
+  return normalizeJwt(token);
+};
 
 @Injectable()
-export class JwtAuthGuard extends AuthGuard('jwt') {
-  handleRequest(err, user, info) {
-    if (err || !user) {
-      console.log('🔴 [DEBUG] JwtAuthGuard Failure:');
-      console.log('   Error:', err);
-      console.log('   Info:', info?.message || info);
-      let message = (info?.message || info).toLowerCase();
-      if (message === 'jwt expired') {
-        message = 'Token hết hạn vui lòng đăng nhập lại !';
-      } else if (
-        message === 'invalid signature' ||
-        message === 'jwt malformed' ||
-        message === 'no auth token'
-      ) {
-        message = 'Token không hợp lệ !';
-      }
-      throw err || new UnauthorizedException(message);
+export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
+  constructor(private readonly configService: ConfigService) {
+    super({
+      jwtFromRequest: ExtractJwt.fromExtractors([
+        jwtBearerExtractor,
+        jwtCookieExtractor,
+      ]),
+      ignoreExpiration: false,
+      secretOrKey:
+        configService.get<string>('JWT_SECRET') ||
+        'your-secret-key-change-in-production',
+    });
+  }
+
+  async validate(payload: any) {
+    if (!payload || !payload.sub) {
+      return null;
     }
+
+    const user = {
+      id: payload.sub,
+      email: payload.email,
+    };
+
     return user;
   }
 }
 ````
 
-## File: src/config/auth.config.ts
+## File: src/common/context/request.context.ts
 ````typescript
-import { registerAs } from '@nestjs/config';
+import { Injectable, Scope } from '@nestjs/common';
 
-export default registerAs('auth', () => ({
-  jwtSecret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
-  jwtExpiresIn: process.env.JWT_EXPIRES_IN || '15m',
-  refreshExpiresIn: process.env.REFRESH_EXPIRES_IN || '7d',
-  maxFailedRefreshInfo: parseInt(
-    process.env.AUTH_MAX_FAILED_REFRESH || '5',
-    10,
-  ),
-  logLevel: process.env.AUTH_LOG_LEVEL || 'basic',
-}));
-````
-
-## File: src/config/database.config.ts
-````typescript
-import { registerAs } from '@nestjs/config';
-
-export default registerAs('database', () => ({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432', 10),
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || '123',
-  name: process.env.DB_NAME || 'postgres',
-  allowGlobalContext:
-    process.env.DB_ALLOW_GLOBAL_CONTEXT === 'true' ||
-    process.env.NODE_ENV !== 'production',
-}));
-````
-
-## File: src/dto/post/create-post.dto.ts
-````typescript
-import {
-  IsString,
-  IsNotEmpty,
-  IsOptional,
-} from 'class-validator';
-
-export class CreatePostDto {
-  @IsString({ message: 'Tiêu đề phải là chuỗi' })
-  @IsOptional()
-  title?: string;
-
-  @IsString({ message: 'Nội dung phải là chuỗi' })
-  @IsOptional()
-  content?: string;
-
-  @IsNotEmpty({ message: 'Tác giả không được để trống' })
-  author: number;
-}
-````
-
-## File: src/exchange/constants/mail-folders.constant.ts
-````typescript
-export type MailFolderType =
-  | 'inbox'
-  | 'sent'
-  | 'starred'
-  | 'drafts'
-  | 'spam'
-  | 'trash'
-  | 'outbox';
-
-export type MailFolderDefinition = {
-  id: string;
-  type: MailFolderType;
-  name: string;
-  aliases: string[];
-};
-
-export const MAIL_FOLDERS: MailFolderDefinition[] = [
-  {
-    id: 'INBOX',
-    type: 'inbox',
-    name: 'Hộp thư đến',
-    aliases: ['INBOX'],
-  },
-  {
-    id: 'Outbox',
-    type: 'outbox',
-    name: 'Thư chờ gửi',
-    aliases: ['Outbox'],
-  },
-  {
-    id: 'Sent Items',
-    type: 'sent',
-    name: 'Đã gửi',
-    aliases: ['Sent Items', 'Sent'],
-  },
-  {
-    id: 'Starred',
-    type: 'starred',
-    name: 'Có gắn dấu sao',
-    aliases: ['Starred'],
-  },
-  {
-    id: 'Drafts',
-    type: 'drafts',
-    name: 'Thư nháp',
-    aliases: ['Drafts'],
-  },
-  {
-    id: 'Spam',
-    type: 'spam',
-    name: 'Thư rác',
-    aliases: ['Spam', 'Junk Email'],
-  },
-  {
-    id: 'Trash',
-    type: 'trash',
-    name: 'Thùng rác',
-    aliases: ['Trash', 'Deleted Items'],
-  },
-];
-
-export const DEFAULT_FOLDER_ID = 'INBOX';
-
-function normalize(input: string): string {
-  return input.trim().toLowerCase();
+export interface UserContext {
+  id: string | number;
+  role?: string;
+  email?: string;
+  permissions?: any[];
 }
 
-export function resolveFolderId(
-  input: string,
-  fallback = DEFAULT_FOLDER_ID,
-): string {
-  const normalized = normalize(input);
+@Injectable({ scope: Scope.REQUEST })
+export class RequestContext {
+  private _user: UserContext | null = null;
+  private _tenantId: string | null = null;
 
-  for (const folder of MAIL_FOLDERS) {
-    if (
-      normalize(folder.id) === normalized ||
-      normalize(folder.type) === normalized ||
-      folder.aliases.some((alias) => normalize(alias) === normalized)
-    ) {
-      return folder.id;
-    }
+  get user(): UserContext | null {
+    return this._user;
   }
 
-  return input;
-}
-
-export function resolveFolderType(input: string): string {
-  const normalized = normalize(input);
-
-  for (const folder of MAIL_FOLDERS) {
-    if (
-      normalize(folder.id) === normalized ||
-      normalize(folder.type) === normalized ||
-      folder.aliases.some((alias) => normalize(alias) === normalized)
-    ) {
-      return folder.type;
-    }
+  set user(user: UserContext | null) {
+    this._user = user;
   }
 
-  return normalized.replace(/\s+/g, '_');
-}
+  get tenantId(): string | null {
+    return this._tenantId;
+  }
 
-export function getFolderAliases(input: string): string[] {
-  const folderId = resolveFolderId(input, input);
-  const folder = MAIL_FOLDERS.find((item) => item.id === folderId);
-  if (!folder) return [input];
-  return Array.from(new Set([folder.id, ...folder.aliases]));
+  set tenantId(id: string | null) {
+    this._tenantId = id;
+  }
 }
 ````
 
@@ -9092,155 +11005,108 @@ export class ContactsController {
 }
 ````
 
-## File: src/exchange/dto/contact-note.dto.ts
+## File: src/exchange/interceptors/exchange-error.interceptor.ts
 ````typescript
-import { ApiProperty } from '@nestjs/swagger';
 import {
-  IsEmail,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  MaxLength,
-  ValidateNested,
-} from 'class-validator';
-import { Type } from 'class-transformer';
+  Injectable,
+  NestInterceptor,
+  ExecutionContext,
+  CallHandler,
+  HttpException,
+  Logger,
+} from '@nestjs/common';
+import { Observable, throwError } from 'rxjs';
+import { catchError } from 'rxjs/operators';
 
-export class ContactAddressDto {
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  street?: string;
+@Injectable()
+export class ExchangeErrorInterceptor implements NestInterceptor {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+    return next.handle().pipe(
+      catchError((err) => {
+        if (err instanceof HttpException) {
+          return throwError(() => err);
+        }
 
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  city?: string;
+        // Map EWS errors to HTTP Status
+        // err.name or err.message often contains the code
+        const msg = err.message || '';
 
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  state?: string;
+        if (
+          msg.includes('ErrorInvalidCredentials') ||
+          msg.includes('401') ||
+          msg.includes('No session token') ||
+          msg.includes('Session expired or invalid')
+        ) {
+          return throwError(
+            () => new HttpException('Sai thông tin đăng nhập Exchange', 401),
+          );
+        }
+        if (
+          msg.includes('AccountIsLocked') ||
+          msg.includes('ErrorImpersonationDenied')
+        ) {
+          return throwError(
+            () =>
+              new HttpException(
+                'Tài khoản bị khóa hoặc không có quyền truy cập',
+                403,
+              ),
+          );
+        }
+        if (msg.includes('ErrorServerBusy')) {
+          return throwError(
+            () =>
+              new HttpException('Máy chủ đang bận, vui lòng thử lại sau', 429),
+          );
+        }
+        if (msg.includes('ETIMEDOUT') || msg.includes('timeout')) {
+          return throwError(
+            () => new HttpException('Mất kết nối đến Exchange Server', 504),
+          );
+        }
 
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  postalCode?: string;
+        // Lỗi Postfix reject do Rspamd nhận diện là Spam
+        if (
+          msg.includes('rejected as spam') ||
+          msg.includes('Message rejected') ||
+          msg.includes('5.7.1') ||
+          msg.includes('Policy Rejection') ||
+          msg.includes('spam score')
+        ) {
+          return throwError(
+            () =>
+              new HttpException(
+                'Email bị từ chối do bị nhận diện là Spam. Vui lòng kiểm tra lại nội dung.',
+                451,
+              ),
+          );
+        }
 
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  country?: string;
-}
+        // Lỗi Postfix reject do ClamAV phát hiện Virus trong attachment
+        if (
+          msg.includes('infected') ||
+          msg.toLowerCase().includes('virus') ||
+          msg.includes('malware') ||
+          msg.includes('5.7.0') ||
+          msg.includes('content rejected')
+        ) {
+          return throwError(
+            () =>
+              new HttpException(
+                'Email bị từ chối do file đính kèm chứa mã độc (Virus). Vui lòng kiểm tra lại file.',
+                422,
+              ),
+          );
+        }
 
-export class CreateContactDto {
-  @ApiProperty({ example: 'user@example.com' })
-  @IsEmail()
-  email!: string;
-
-  @ApiProperty({ example: 'User Name' })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(255)
-  displayName!: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  givenName?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  surname?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  company?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  jobTitle?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  phone?: string;
-
-  @ApiProperty({ required: false, type: ContactAddressDto })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => ContactAddressDto)
-  address?: ContactAddressDto;
-}
-
-export class UpdateContactDto {
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  @MaxLength(255)
-  displayName?: string;
-
-  @ApiProperty({ required: false })
-  @IsEmail()
-  @IsOptional()
-  email?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  givenName?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  surname?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  company?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  jobTitle?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  phone?: string;
-
-  @ApiProperty({ required: false, type: ContactAddressDto })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => ContactAddressDto)
-  address?: ContactAddressDto;
-}
-
-export class CreateNoteDto {
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  subject?: string;
-
-  @ApiProperty({ example: 'My note content' })
-  @IsString()
-  @IsNotEmpty()
-  content!: string;
-}
-
-export class UpdateNoteDto {
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  subject?: string;
-
-  @ApiProperty({ required: false })
-  @IsString()
-  @IsOptional()
-  content?: string;
+        // Default
+        Logger.error(`EWS Error: ${msg}`, err.stack);
+        return throwError(
+          () => new HttpException('Lỗi kết nối Exchange Webmail', 500),
+        );
+      }),
+    );
+  }
 }
 ````
 
@@ -9445,166 +11311,6 @@ export class ContactNoteService {
   async deleteNote(id: string): Promise<{ success: boolean }> {
     await this.withProvider(() => this.provider.deleteNote(id));
     return { success: true };
-  }
-}
-````
-
-## File: src/files/files.controller.ts
-````typescript
-import {
-  Controller,
-  Post,
-  Get,
-  Body,
-  Param,
-  UseInterceptors,
-  UploadedFile,
-  Res,
-  Query,
-  BadRequestException,
-  StreamableFile,
-  Header,
-} from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import type { Response } from 'express';
-import { FilesService } from './files.service';
-import { CommitFileDto } from './dto/commit-file.dto';
-import { TempUploadResponseDto } from './dto/temp-upload-response.dto';
-import {
-  ApiBody,
-  ApiConsumes,
-  ApiOperation,
-  ApiResponse,
-  ApiTags,
-} from '@nestjs/swagger';
-
-@ApiTags('Files')
-@Controller('files')
-export class FilesController {
-  constructor(private readonly filesService: FilesService) {}
-
-  /**
-   * POST /files/upload
-   * Upload file to temporary storage
-   */
-  @Post('upload')
-  @UseInterceptors(FileInterceptor('file'))
-  @ApiOperation({ summary: 'Upload file tạm' })
-  @ApiConsumes('multipart/form-data')
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        file: { type: 'string', format: 'binary' },
-      },
-      required: ['file'],
-    },
-  })
-  @ApiResponse({ status: 201, type: TempUploadResponseDto })
-  async uploadTemp(
-    @UploadedFile() file: Express.Multer.File,
-  ): Promise<TempUploadResponseDto> {
-    if (!file) {
-      throw new BadRequestException('No file provided');
-    }
-
-    return this.filesService.uploadTemp(file);
-  }
-
-  /**
-   * GET /files/temp/:id/preview
-   * Stream temporary file for preview
-   */
-  @Get('temp/:id/preview')
-  @ApiOperation({ summary: 'Preview file tạm' })
-  async previewTemp(@Param('id') id: string, @Res() res: Response) {
-    const fileMetadata = await this.filesService.getMetadata(id);
-    const stream = await this.filesService.getTempFileStream(id);
-
-    // Set headers for inline preview with full info for Postman
-    res.setHeader('Content-Type', fileMetadata.mimeType);
-    res.setHeader(
-      'Content-Disposition',
-      `inline; filename="${fileMetadata.originalName}"`,
-    );
-    res.setHeader('Content-Length', fileMetadata.size.toString());
-    res.setHeader('Cache-Control', 'public, max-age=3600'); // 1 hour cache for temp preview
-    res.setHeader('Accept-Ranges', 'bytes');
-
-    stream.pipe(res);
-  }
-
-  /**
-   * POST /files/commit
-   * Commit file from temp to permanent storage
-   */
-  @Post('commit')
-  @ApiOperation({ summary: 'Commit file từ temp sang permanent' })
-  @ApiResponse({ status: 200, description: 'Commit thành công' })
-  async commitFile(@Body() dto: CommitFileDto) {
-    return this.filesService.commitFile(
-      dto.id,
-      dto.extraMetadata,
-      dto.originalName,
-    );
-  }
-
-  /**
-   * GET /files/:id
-   * Get file metadata only (no streaming)
-   */
-  @Get(':id')
-  @ApiOperation({ summary: 'Lấy metadata file' })
-  async getFileMetadata(@Param('id') id: string) {
-    const file = await this.filesService.getMetadata(id);
-
-    // Convert bigint to string for JSON serialization
-    return {
-      ...file,
-      size: file.size.toString(),
-    };
-  }
-}
-
-@ApiTags('Assets')
-@Controller('assets')
-export class AssetsController {
-  constructor(private readonly filesService: FilesService) {}
-
-  /**
-   * GET /assets/:id
-   * Stream permanent file with Range support
-   */
-  @Get(':id')
-  @ApiOperation({ summary: 'Stream file permanent' })
-  async streamAsset(
-    @Param('id') id: string,
-    @Query('download') download: string,
-    @Res() res: Response,
-  ) {
-    const { file, stream } = await this.filesService.getFileStream(id);
-
-    // Set Content-Disposition based on download parameter
-    const disposition = download === 'true' ? 'attachment' : 'inline';
-    res.setHeader(
-      'Content-Disposition',
-      `${disposition}; filename="${file.originalName}"`,
-    );
-
-    // Set Content-Type
-    res.setHeader('Content-Type', file.mimeType);
-
-    // Set Content-Length
-    res.setHeader('Content-Length', file.size.toString());
-
-    // Set Cache-Control as requested
-    res.setHeader('Cache-Control', 'public, max-age=31536000'); // 1 year cache
-
-    // Enable Range requests
-    res.setHeader('Accept-Ranges', 'bytes');
-
-    // For now, stream entire file (Range handling can be added here)
-    stream.pipe(res);
   }
 }
 ````
@@ -10012,210 +11718,413 @@ export class MailboxService {
 }
 ````
 
-## File: src/meta/entity-registry.service.ts
+## File: src/mailbox/script-runner.service.ts
 ````typescript
-import {
-  Injectable,
-  OnModuleInit,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
-import { MikroORM, EntityMetadata } from '@mikro-orm/core';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config'; // Updated scripts
+import { spawn, ChildProcess } from 'child_process';
+import * as readline from 'readline';
+import * as path from 'path';
+
+export type ScriptAction =
+  | 'create'
+  | 'update'
+  | 'disable'
+  | 'restore'
+  | 'delete';
 
 @Injectable()
-export class EntityRegistryService implements OnModuleInit {
-  private readonly logger = new Logger(EntityRegistryService.name);
-  private readonly collectionMap = new Map<string, string>(); // collectionName -> EntityClassName
-  private readonly entityMap = new Map<string, EntityMetadata>(); // EntityClassName -> Metadata
+export class ScriptRunnerService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(ScriptRunnerService.name);
+  private readonly timeoutMs: number;
+  private readonly workerEnabled: boolean;
 
-  constructor(private readonly orm: MikroORM) {}
+  private workerProcess: ChildProcess | null = null;
+  private responseReader: readline.Interface | null = null;
+  private pendingRequests: Map<
+    number,
+    { resolve: (value: any) => void; reject: (reason: any) => void; timer: NodeJS.Timeout }
+  > = new Map();
+  private requestCounter = 0;
+  private isWorkerReady = false;
+  private workerCommand: string | null = null;
+  private restartTimer: NodeJS.Timeout | null = null;
+  private pythonMissingDetected = false;
 
-  async onModuleInit() {
-    this.scanEntities();
+  constructor(private readonly configService: ConfigService) {
+    this.timeoutMs = this.configService.get<number>(
+      'MAILBOX_SCRIPT_TIMEOUT_MS',
+      120000,
+    );
+    this.workerEnabled =
+      this.configService.get<string>('MAILBOX_WORKER_ENABLED') !== 'false';
   }
 
-  private scanEntities() {
-    const metadata = this.orm.getMetadata().getAll();
-    for (const meta of Object.values(metadata)) {
-      // Use tableName as the collection identifier
-      const collectionName = meta.tableName;
-      const entityName = meta.className;
+  onModuleInit() {
+    if (!this.workerEnabled) {
+      this.logger.log('Mailbox worker is disabled by configuration');
+      return;
+    }
 
-      if (!collectionName) {
-        continue;
+    void this.startWorker();
+  }
+
+  onModuleDestroy() {
+    this.stopWorker();
+  }
+
+  private async startWorker() {
+    if (!this.workerEnabled || this.workerProcess) {
+      return;
+    }
+
+    const workerPath = path.resolve('./scripts/mailbox/exchange-worker.py');
+    const isWin = process.platform === 'win32';
+    const configuredCommand = this.configService.get<string>('MAILBOX_PYTHON_CMD');
+    const commandsToTry = configuredCommand
+      ? [configuredCommand]
+      : isWin
+        ? ['py', 'python', 'python3']
+        : ['python3', 'python'];
+
+    const resolvedCommand = await this.resolvePythonCommand(commandsToTry);
+    if (!resolvedCommand) {
+      this.logger.warn(
+        'Mailbox worker is disabled because no usable Python interpreter was found',
+      );
+      return;
+    }
+
+    this.workerCommand = resolvedCommand;
+    this.trySpawnWorker(resolvedCommand, workerPath);
+  }
+
+  private trySpawnWorker(currentCmd: string, workerPath: string) {
+    this.pythonMissingDetected = false;
+    this.logger.log(`🚀 Đang khởi động Exchange Worker với: ${currentCmd}`);
+
+    try {
+      const child = spawn(currentCmd, [workerPath], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+
+      child.on('error', (err: any) => {
+        this.logger.error(`❌ Worker process error (${currentCmd}): ${err.message}`);
+        this.isWorkerReady = false;
+      });
+
+      child.on('spawn', () => {
+        this.workerProcess = child;
+        this.isWorkerReady = true;
+        this.logger.log(`✅ Exchange Worker đã khởi động thành công với: ${currentCmd}`);
+        this.setupWorkerCommunication();
+      });
+
+      child.on('close', (code) => {
+        const missingPython = this.pythonMissingDetected || code === 9009;
+        const wasReady = this.isWorkerReady;
+
+        this.isWorkerReady = false;
+        this.workerProcess = null;
+        this.cleanupWorker();
+
+        if (missingPython) {
+          this.logger.error(
+            `Mailbox worker disabled because Python is not available for command '${currentCmd}'`,
+          );
+          return;
+        }
+
+        if (wasReady) {
+          this.logger.warn(`⚠️ Exchange Worker đã thoát (code: ${code}). Tự khởi động lại sau 5s...`);
+          this.restartTimer = setTimeout(() => {
+            this.restartTimer = null;
+            void this.startWorker();
+          }, 5000);
+        }
+      });
+    } catch (error) {
+      this.logger.error(`❌ Lỗi khi spawn worker: ${error.message}`);
+    }
+  }
+
+  private async resolvePythonCommand(commands: string[]): Promise<string | null> {
+    for (const command of commands) {
+      const isUsable = await this.isPythonCommandUsable(command);
+      if (isUsable) {
+        return command;
+      }
+    }
+
+    return null;
+  }
+
+  private isPythonCommandUsable(command: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const probe = spawn(command, ['--version'], {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      let output = '';
+
+      probe.stdout?.on('data', (chunk) => {
+        output += chunk.toString();
+      });
+
+      probe.stderr?.on('data', (chunk) => {
+        output += chunk.toString();
+      });
+
+      probe.on('error', () => resolve(false));
+      probe.on('close', (code) => {
+        const normalized = output.toLowerCase();
+        const missingAlias =
+          normalized.includes('python was not found') ||
+          normalized.includes('microsoft store') ||
+          normalized.includes('app execution aliases');
+        resolve(code === 0 && normalized.includes('python') && !missingAlias);
+      });
+    });
+  }
+
+  private setupWorkerCommunication() {
+    if (!this.workerProcess) return;
+
+    this.responseReader = readline.createInterface({
+      input: this.workerProcess.stdout!,
+    });
+
+    this.responseReader.on('line', (line) => {
+      try {
+        const response = JSON.parse(line);
+        const firstKey = this.pendingRequests.keys().next().value;
+        if (firstKey !== undefined) {
+          const pending = this.pendingRequests.get(firstKey);
+          if (pending) {
+            clearTimeout(pending.timer);
+            this.pendingRequests.delete(firstKey);
+            if (response.success) {
+              pending.resolve({ stdout: response.message, stderr: '' });
+            } else {
+              pending.reject(new Error(response.message));
+            }
+          }
+        }
+      } catch (e) {
+        this.logger.warn(`Lỗi phân giải kết quả worker: ${e.message}`);
+      }
+    });
+
+    this.workerProcess.stderr?.on('data', (chunk) => {
+      const msg = chunk.toString().trim();
+      if (!msg) {
+        return;
       }
 
-      this.collectionMap.set(collectionName, entityName);
-      this.entityMap.set(entityName, meta);
+      const normalized = msg.toLowerCase();
+      if (
+        normalized.includes('python was not found') ||
+        normalized.includes('microsoft store') ||
+        normalized.includes('app execution aliases')
+      ) {
+        this.pythonMissingDetected = true;
+      }
 
-      this.logger.log(
-        `Registered collection: ${collectionName} -> ${entityName}`,
-      );
+      this.logger.debug(`[Worker Debug]: ${msg}`);
+    });
+  }
+
+  private cleanupWorker() {
+    if (this.responseReader) {
+      this.responseReader.close();
+      this.responseReader = null;
     }
-  }
-
-  getEntityName(collection: string): string {
-    const entityName = this.collectionMap.get(collection);
-    if (!entityName) {
-      throw new NotFoundException(`Collection ${collection} not found`);
+    // Reject all pending
+    for (const [id, pending] of this.pendingRequests) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error('Worker connection closed'));
     }
-    return entityName;
+    this.pendingRequests.clear();
   }
 
-  getMetadata(collection: string): EntityMetadata {
-    const entityName = this.getEntityName(collection);
-    return this.entityMap.get(entityName)!;
+  private stopWorker() {
+    this.isWorkerReady = false;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+    if (this.workerProcess) {
+      this.workerProcess.stdin?.end();
+      this.workerProcess.kill();
+      this.workerProcess = null;
+    }
+    this.cleanupWorker();
   }
 
-  hasCollection(collection: string): boolean {
-    console.log('collectionMap', this.collectionMap);
-    return this.collectionMap.has(collection);
+  async run(action: ScriptAction, payload: Record<string, any>): Promise<{ stdout: string; stderr: string }> {
+    if (!this.isWorkerReady || !this.workerProcess) {
+      throw new Error('Exchange Worker chưa sẵn sàng. Vui lòng đợi trong giây lát.');
+    }
+
+    return new Promise((resolve, reject) => {
+      const requestId = ++this.requestCounter;
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        reject(new Error(`Thao tác Mailbox (${action}) bị quá hạn sau ${this.timeoutMs}ms`));
+      }, this.timeoutMs);
+
+      this.pendingRequests.set(requestId, { resolve, reject, timer });
+
+      const enrichedPayload = {
+        action,
+        ...payload,
+        ExchangeServer: this.configService.get('EXCHANGE_SERVER') || 'mail-ex.mailex.local',
+        UserAdmin: this.configService.get('EXCHANGE_USER_ADMIN') || 'mailex\\Administrator',
+        AdminPassword: this.configService.get('EXCHANGE_PASSWORD') || '123456a@',
+      };
+
+      try {
+        this.workerProcess!.stdin!.write(JSON.stringify(enrichedPayload) + '\n');
+      } catch (error) {
+        clearTimeout(timer);
+        this.pendingRequests.delete(requestId);
+        reject(new Error(`Lỗi gửi lệnh tới worker: ${error.message}`));
+      }
+    });
   }
 }
 ````
 
-## File: src/storage/local-storage.adapter.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { promises as fs, createReadStream, ReadStream } from 'fs';
-import { join, dirname } from 'path';
-import { pipeline } from 'stream/promises';
-import { IStorageAdapter, StorageResult } from './storage.interface';
+## File: .env.example
+````
+# ==============================================================================
+# SERVER CONFIGURATION
+# ==============================================================================
+PORT=3000
+NODE_ENV=development
+FRONTEND_ORIGIN=http://localhost:3001
+COOKIE_SAME_SITE=lax
+COOKIE_SECURE=false
+# Set to 'true' to run seed data on startup (creates default admin/roles)
+RUN_SEEDING=false
 
-/**
- * Local filesystem storage adapter
- * Handles file operations using Node.js fs module with streaming
- */
-@Injectable()
-export class LocalStorageAdapter implements IStorageAdapter {
-  private readonly storagePath: string;
+# ==============================================================================
+# DATABASE CONFIGURATION (PostgreSQL)
+# ==============================================================================
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=your_password
+DB_NAME=nestjs_base_db
+# Allow global context for simpler MikroORM usage (default false for strictness)
+DB_ALLOW_GLOBAL_CONTEXT=false
 
-  constructor(private readonly configService: ConfigService) {
-    this.storagePath =
-      this.configService.get<string>('FILE_STORAGE_PATH') || './storage';
-  }
+# ==============================================================================
+# AUTHENTICATION & SECURITY
+# ==============================================================================
+# JWT Secret Key - CHANGE THIS IN PRODUCTION!
+JWT_SECRET=your-super-secret-key-change-it-now
+# Access Token Lifetime
+JWT_EXPIRES_IN=15m
+# Refresh Token Lifetime
+REFRESH_EXPIRES_IN=7d
+# Max number of failed refresh attempts before blocking context (optional)
+AUTH_MAX_FAILED_REFRESH=5
+# Logging level for auth events: 'basic' or 'verbose'
+AUTH_LOG_LEVEL=basic
 
-  async upload(
-    file: Express.Multer.File,
-    path: string,
-  ): Promise<StorageResult> {
-    const fullPath = join(this.storagePath, path);
-    await this.ensureDir(dirname(fullPath));
-    await fs.writeFile(fullPath, file.buffer);
-    return {
-      storedName: path.split('/').pop() || path,
-      storagePath: path,
-      size: file.size,
-    };
-  }
+# ==============================================================================
+# CACHE CONFIGURATION (DragonflyDB / Redis)
+# ==============================================================================
+# Cấu hình DragonflyDB / Redis dùng chung cho:
+# - lưu session + refresh token của Exchange
+# - cache số lượng thư mục mail
+# - hàng chờ BullMQ của RSS (crawl feed + lưu bài viết)
+#
+# Nếu DRAGONFLY_ENABLED=false:
+# - phần auth/cache sẽ fallback sang bộ nhớ trong process backend
+# - RSS vẫn hoạt động, nhưng job sẽ chạy trực tiếp thay vì qua BullMQ/Redis
+#
+# Nếu DRAGONFLY_ENABLED=true:
+# - cần bảo đảm Dragonfly/Redis đang chạy và truy cập được ở host/port bên dưới
+DRAGONFLY_ENABLED=false
+# Host Dragonfly/Redis dùng cho cache + kết nối BullMQ queue
+DRAGONFLY_HOST=localhost
+# Port Dragonfly/Redis
+DRAGONFLY_PORT=6379
+# Để trống nếu Dragonfly/Redis local của bạn không có mật khẩu
+DRAGONFLY_PASSWORD=
+# TTL cache mặc định tính theo giây (ví dụ: 300 = 5 phút)
+# Biến này cũng ảnh hưởng tới một số giá trị cache tạm của backend
+DRAGONFLY_TTL=300
 
-  async getSignedUrl(path: string): Promise<string> {
-    // For local storage, we just return the relative path.
-    // In a real app, this might need to be prefixed with the API host URL
-    // or mapped to a static file serve route.
-    return path;
-  }
+# ==============================================================================
+# QUERY ENGINE CONFIGURATION
+# ==============================================================================
+# Max nested depth for filtering/relations
+QUERY_MAX_DEPTH=3
+# Max number of conditions in a single query (hard limit for safety)
+QUERY_MAX_CONDITIONS=50
+# Max number of fields allowed in sort
+QUERY_MAX_SORT_FIELDS=3
+# Allow regex in filters? (Warning: performance impact)
+QUERY_ALLOW_REGEX=false
 
-  /**
-   * Save uploaded file to temporary storage
-   */
-  async saveTemp(
-    file: Express.Multer.File,
-    id: string,
-  ): Promise<StorageResult> {
-    const tempDir = join(this.storagePath, 'temp');
-    await this.ensureDir(tempDir);
+# ==============================================================================
+# FILE STORAGE
+# ==============================================================================
+# Driver: 'local' | 's3' (future support)
+STORAGE_DRIVER=local
+FILE_STORAGE_PATH=./storage
 
-    const storedName = id;
-    const storagePath = `temp/${storedName}`;
-    const fullPath = join(this.storagePath, storagePath);
+# ==============================================================================
+# EXCHANGE WEBMAIL CONFIGURATION (MVP)
+# ==============================================================================
+# Secret used to derive encryption keys for storing Exchange credentials in Redis
+# MUST be a long, random string. NEVER use JWT_SECRET for this.
+EXCHANGE_CRED_SECRET=change_this_to_a_complex_random_string_mvp_only
 
-    // Write file using stream (no memory buffering)
-    await fs.writeFile(fullPath, file.buffer);
+# EWS Endpoint URL (e.g., Office 365)
+# Default: https://outlook.office365.com/EWS/Exchange.asmx
+EWS_URL=https://outlook.office365.com/EWS/Exchange.asmx
+EWS_TOKEN_URL=
+EWS_CLIENT_ID=
+EWS_CLIENT_SECRET=
+# Use either EWS_SCOPE (OAuth2 v2) or EWS_RESOURCE (OAuth2 v1/ADFS)
+EWS_SCOPE=
+EWS_RESOURCE=
+# Example: Exchange2013, Exchange2016, Exchange2019
+EWS_VERSION=Exchange2016
+# Impersonate mailbox by SMTP address (app-only OAuth2)
+EWS_IMPERSONATE=true
+# Validate EWS connectivity on login
+EWS_VALIDATE_ON_LOGIN=false
+# Temporarily disable SSO (EWS OAuth2)
+EWS_SSO_ENABLED=true
+# Allow self-signed certificates (dev only)
+EWS_TLS_REJECT_UNAUTHORIZED=true
 
-    return {
-      storedName,
-      storagePath,
-      size: file.size,
-    };
-  }
+# ==============================================================================
+# MAILBOX MANAGEMENT (SCRIPT + GAL)
+# ==============================================================================
+# Paths to mailbox management scripts (PowerShell or executable)
+MAILBOX_SCRIPT_CREATE=./scripts/mailbox/create-mailbox.ps1
+MAILBOX_SCRIPT_UPDATE=./scripts/mailbox/update-mailbox.ps1
+MAILBOX_SCRIPT_DISABLE=./scripts/mailbox/disable-mailbox.ps1
+MAILBOX_SCRIPT_RESTORE=./scripts/mailbox/restore-mailbox.ps1
+MAILBOX_SCRIPT_DELETE=./scripts/mailbox/delete-mailbox.ps1
+# Script timeout in milliseconds
+MAILBOX_SCRIPT_TIMEOUT_MS=60000
+# Admin credentials for GAL lookup when EWS_SSO_ENABLED=false
+EWS_ADMIN_EMAIL=
+EWS_ADMIN_PASSWORD=
 
-  /**
-   * Move file from temp to permanent storage
-   * Uses atomic rename operation when possible
-   */
-  async moveToPermanent(
-    tempPath: string,
-    permanentPath: string,
-  ): Promise<void> {
-    const fullTempPath = join(this.storagePath, tempPath);
-    const fullPermanentPath = join(this.storagePath, permanentPath);
-
-    // Ensure permanent directory exists
-    await this.ensureDir(dirname(fullPermanentPath));
-
-    // Atomic move (rename syscall)
-    await fs.rename(fullTempPath, fullPermanentPath);
-  }
-
-  /**
-   * Get readable stream for file
-   * Enables streaming without loading entire file into memory
-   */
-  async getStream(path: string): Promise<ReadStream> {
-    const fullPath = join(this.storagePath, path);
-
-    // Verify file exists before creating stream
-    await fs.access(fullPath);
-
-    return createReadStream(fullPath);
-  }
-
-  /**
-   * Delete file from storage
-   */
-  async delete(path: string): Promise<void> {
-    const fullPath = join(this.storagePath, path);
-    await fs.unlink(fullPath);
-  }
-
-  /**
-   * Check if file exists
-   */
-  async exists(path: string): Promise<boolean> {
-    try {
-      const fullPath = join(this.storagePath, path);
-      await fs.access(fullPath);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Get file size in bytes
-   */
-  async getSize(path: string): Promise<number> {
-    const fullPath = join(this.storagePath, path);
-    const stats = await fs.stat(fullPath);
-    return stats.size;
-  }
-
-  /**
-   * Ensure directory exists, create if it doesn't
-   */
-  private async ensureDir(dir: string): Promise<void> {
-    try {
-      await fs.mkdir(dir, { recursive: true });
-    } catch (error) {
-      // Ignore if directory already exists
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-        throw error;
-      }
-    }
-  }
-}
+# Exchange Connection for PowerShell Scripts
+EXCHANGE_SERVER=mail-ex.mailex.local
+EXCHANGE_USER_ADMIN=mailex\Administrator
+EXCHANGE_PASSWORD=123456a@
 ````
 
 ## File: .gitignore
@@ -10286,54 +12195,27 @@ secrets/
 *.key
 ````
 
-## File: src/auth/strategies/jwt.strategy.ts
-````typescript
-import { Injectable } from '@nestjs/common';
-import { PassportStrategy } from '@nestjs/passport';
-import { ExtractJwt, Strategy } from 'passport-jwt';
-
-console.log('🔵 JwtStrategy FILE LOADED');
-
-import { ConfigService } from '@nestjs/config';
-
-@Injectable()
-export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
-  constructor(private readonly configService: ConfigService) {
-    super({
-      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
-      ignoreExpiration: false,
-      secretOrKey:
-        configService.get<string>('JWT_SECRET') ||
-        'your-secret-key-change-in-production',
-    });
-  }
-
-  async validate(payload: any) {
-    if (!payload || !payload.sub) {
-      return null;
-    }
-
-    const user = {
-      id: payload.sub,
-      email: payload.email,
-    };
-
-    return user;
-  }
-}
-````
-
 ## File: src/common/cache/dragonfly.service.ts
 ````typescript
 import { Injectable, OnModuleDestroy, Logger, Inject } from '@nestjs/common';
 import Redis from 'ioredis';
 import dragonflyConfig from '../../config/dragonfly.config';
 
+type MemoryCacheEntry = {
+  value: string;
+  expiresAt: number | null;
+};
+
 @Injectable()
 export class DragonflyService implements OnModuleDestroy {
   private readonly logger = new Logger(DragonflyService.name);
   private client: Redis | null = null;
+  private readonly memoryStore = new Map<string, MemoryCacheEntry>();
   private isConnected = false;
+  private lastErrorMessage: string | null = null;
+  private lastErrorLoggedAt = 0;
+  private suppressedErrorCount = 0;
+  private readonly errorThrottleMs = 30000;
 
   constructor(
     @Inject(dragonflyConfig.KEY)
@@ -10341,7 +12223,46 @@ export class DragonflyService implements OnModuleDestroy {
   ) {
     if (this.config.enabled) {
       this.initClient();
+    } else {
+      this.logger.warn(
+        'DragonflyDB is disabled. Falling back to in-memory cache for the current process.',
+      );
     }
+  }
+
+  private get shouldUseMemoryFallback(): boolean {
+    return !this.config.enabled || !this.client || !this.isConnected;
+  }
+
+  private getExpiresAt(ttlSeconds?: number): number | null {
+    const effectiveTTL = ttlSeconds ?? this.config.ttl;
+
+    if (!effectiveTTL || effectiveTTL <= 0) {
+      return null;
+    }
+
+    return Date.now() + effectiveTTL * 1000;
+  }
+
+  private readMemoryEntry(key: string): MemoryCacheEntry | null {
+    const entry = this.memoryStore.get(key);
+    if (!entry) {
+      return null;
+    }
+
+    if (entry.expiresAt !== null && entry.expiresAt <= Date.now()) {
+      this.memoryStore.delete(key);
+      return null;
+    }
+
+    return entry;
+  }
+
+  private writeMemoryEntry(key: string, value: string, ttlSeconds?: number): void {
+    this.memoryStore.set(key, {
+      value,
+      expiresAt: this.getExpiresAt(ttlSeconds),
+    });
   }
 
   private initClient() {
@@ -10353,11 +12274,13 @@ export class DragonflyService implements OnModuleDestroy {
       host: this.config.host,
       port: this.config.port,
       password: this.config.password,
+      connectTimeout: 5000,
       // Retry strategy: keep trying to reconnect but don't block
       retryStrategy: (times) => {
-        const delay = Math.min(times * 50, 2000);
+        const delay = Math.min(times * 250, 5000);
         return delay;
       },
+      maxRetriesPerRequest: 1,
       // Don't crash on connection error
       enableOfflineQueue: false,
       lazyConnect: true, // Don't connect immediately in constructor
@@ -10370,12 +12293,20 @@ export class DragonflyService implements OnModuleDestroy {
     });
 
     this.client.on('connect', () => {
+      if (this.suppressedErrorCount > 0) {
+        this.logger.warn(
+          `DragonflyDB reconnected after ${this.suppressedErrorCount} suppressed connection errors`,
+        );
+        this.suppressedErrorCount = 0;
+      }
       this.logger.log('✅ Connected to DragonflyDB');
       this.isConnected = true;
+      this.lastErrorMessage = null;
+      this.lastErrorLoggedAt = 0;
     });
 
     this.client.on('error', (err) => {
-      this.logger.error(`❌ DragonflyDB Error: ${err.message}`);
+      this.logConnectionError(err);
       this.isConnected = false;
     });
 
@@ -10389,22 +12320,70 @@ export class DragonflyService implements OnModuleDestroy {
 
   async onModuleDestroy() {
     if (this.client) {
-      await this.client.quit();
+      try {
+        await this.client.quit();
+      } catch {
+        this.client.disconnect();
+      }
     }
   }
 
+  private logConnectionError(err: Error) {
+    const message = err.message || 'Unknown DragonflyDB error';
+    const now = Date.now();
+    const shouldLog =
+      this.lastErrorMessage !== message ||
+      now - this.lastErrorLoggedAt >= this.errorThrottleMs;
+
+    if (shouldLog) {
+      if (this.suppressedErrorCount > 0) {
+        this.logger.warn(
+          `Suppressed ${this.suppressedErrorCount} repeated DragonflyDB connection errors`,
+        );
+        this.suppressedErrorCount = 0;
+      }
+
+      this.logger.error(
+        `❌ DragonflyDB unavailable. Cache is temporarily disabled: ${message}`,
+      );
+      this.lastErrorMessage = message;
+      this.lastErrorLoggedAt = now;
+      return;
+    }
+
+    this.suppressedErrorCount += 1;
+  }
+
   get enabled(): boolean {
-    return this.config.enabled && this.isConnected && !!this.client;
+    return !this.shouldUseMemoryFallback;
   }
 
   /**
    * Get value from cache safely. Returns null if error or miss.
    */
   async get<T>(key: string): Promise<T | null> {
-    if (!this.enabled || !this.client) return null;
+    if (this.shouldUseMemoryFallback) {
+      const entry = this.readMemoryEntry(key);
+      if (!entry) {
+        return null;
+      }
+
+      try {
+        return JSON.parse(entry.value) as T;
+      } catch (error) {
+        this.logger.warn(`Failed to parse memory cache key ${key}: ${error.message}`);
+        this.memoryStore.delete(key);
+        return null;
+      }
+    }
+
+    const client = this.client;
+    if (!client) {
+      return null;
+    }
 
     try {
-      const data = await this.client.get(key);
+      const data = await client.get(key);
       if (!data) return null;
       return JSON.parse(data) as T;
     } catch (error) {
@@ -10417,16 +12396,28 @@ export class DragonflyService implements OnModuleDestroy {
    * Set value to cache safely.
    */
   async set(key: string, value: any, ttl?: number): Promise<void> {
-    if (!this.enabled || !this.client) return;
+    if (this.shouldUseMemoryFallback) {
+      try {
+        this.writeMemoryEntry(key, JSON.stringify(value), ttl);
+      } catch (error) {
+        this.logger.warn(`Failed to set memory cache key ${key}: ${error.message}`);
+      }
+      return;
+    }
+
+    const client = this.client;
+    if (!client) {
+      return;
+    }
 
     try {
       const serialized = JSON.stringify(value);
       const effectiveTTL = ttl || this.config.ttl;
 
       if (effectiveTTL > 0) {
-        await this.client.set(key, serialized, 'EX', effectiveTTL);
+        await client.set(key, serialized, 'EX', effectiveTTL);
       } else {
-        await this.client.set(key, serialized);
+        await client.set(key, serialized);
       }
     } catch (error) {
       this.logger.warn(`Failed to set cache key ${key}: ${error.message}`);
@@ -10437,9 +12428,18 @@ export class DragonflyService implements OnModuleDestroy {
    * Delete key from cache safely
    */
   async del(key: string): Promise<void> {
-    if (!this.enabled || !this.client) return;
+    if (this.shouldUseMemoryFallback) {
+      this.memoryStore.delete(key);
+      return;
+    }
+
+    const client = this.client;
+    if (!client) {
+      return;
+    }
+
     try {
-      await this.client.del(key);
+      await client.del(key);
     } catch (error) {
       this.logger.warn(`Failed to del cache key ${key}: ${error.message}`);
     }
@@ -10450,10 +12450,17 @@ export class DragonflyService implements OnModuleDestroy {
    * @returns true if key exists, false otherwise
    */
   async exists(key: string): Promise<boolean> {
-    if (!this.enabled || !this.client) return false;
+    if (this.shouldUseMemoryFallback) {
+      return this.readMemoryEntry(key) !== null;
+    }
+
+    const client = this.client;
+    if (!client) {
+      return false;
+    }
 
     try {
-      const result = await this.client.exists(key);
+      const result = await client.exists(key);
       return result === 1; // Redis EXISTS returns number of keys that exist (1 or 0 for single key)
     } catch (error) {
       this.logger.warn(
@@ -10469,10 +12476,26 @@ export class DragonflyService implements OnModuleDestroy {
    * @returns true if expiration was set, false otherwise
    */
   async expire(key: string, ttl: number): Promise<boolean> {
-    if (!this.enabled || !this.client) return false;
+    if (this.shouldUseMemoryFallback) {
+      const entry = this.readMemoryEntry(key);
+      if (!entry) {
+        return false;
+      }
+
+      this.memoryStore.set(key, {
+        ...entry,
+        expiresAt: this.getExpiresAt(ttl),
+      });
+      return true;
+    }
+
+    const client = this.client;
+    if (!client) {
+      return false;
+    }
 
     try {
-      const result = await this.client.expire(key, ttl);
+      const result = await client.expire(key, ttl);
       return result === 1; // Redis EXPIRE returns 1 if successful, 0 if key doesn't exist
     } catch (error) {
       this.logger.warn(
@@ -10490,11 +12513,28 @@ export class DragonflyService implements OnModuleDestroy {
     value: any,
     ttlSeconds: number,
   ): Promise<boolean> {
-    if (!this.enabled || !this.client) return false;
+    if (this.shouldUseMemoryFallback) {
+      if (this.readMemoryEntry(key)) {
+        return false;
+      }
+
+      try {
+        this.writeMemoryEntry(key, JSON.stringify(value), ttlSeconds);
+        return true;
+      } catch (error) {
+        this.logger.warn(`Failed to set NX memory cache key ${key}: ${error.message}`);
+        return false;
+      }
+    }
+
+    const client = this.client;
+    if (!client) {
+      return false;
+    }
 
     try {
       const serialized = JSON.stringify(value);
-      const result = await this.client.set(
+      const result = await client.set(
         key,
         serialized,
         'EX',
@@ -10549,37 +12589,98 @@ export class DragonflyService implements OnModuleDestroy {
 }
 ````
 
-## File: src/common/context/request.context.ts
+## File: src/common/common.module.ts
 ````typescript
-import { Injectable, Scope } from '@nestjs/common';
+import { Module, Global } from '@nestjs/common';
+import { RequestContext } from './context/request.context';
+import { RequestContextInterceptor } from './interceptors/request-context.interceptor';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { DragonflyService } from './cache/dragonfly.service';
+import { CacheModule } from './cache/cache.module';
+import { PermissionService } from './permissions/permission.service';
 
-export interface UserContext {
-  id: string | number;
-  role?: string;
-  email?: string;
-  permissions?: any[];
+@Global()
+@Module({
+  imports: [CacheModule],
+  providers: [
+    RequestContext,
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: RequestContextInterceptor,
+    },
+    PermissionService,
+  ],
+  exports: [RequestContext, CacheModule, PermissionService],
+})
+export class CommonModule {}
+````
+
+## File: src/database/entities/permission.entity.ts
+````typescript
+import {
+  Entity,
+  PrimaryKey,
+  Property,
+  ManyToMany,
+  Collection,
+  Index,
+} from '@mikro-orm/core';
+import { Role } from './role.entity';
+
+@Entity({ tableName: 'permissions' })
+@Index({
+  name: 'permissions_collection_action_index',
+  properties: ['collection', 'action'],
+})
+export class Permission {
+  @PrimaryKey()
+  id!: number;
+
+  @Property()
+  collection!: string;
+
+  @Property()
+  action!: string;
+
+  @Property({ nullable: true })
+  description?: string;
+
+  @ManyToMany(() => Role, (role) => role.permissions)
+  roles = new Collection<Role>(this);
 }
+````
 
-@Injectable({ scope: Scope.REQUEST })
-export class RequestContext {
-  private _user: UserContext | null = null;
-  private _tenantId: string | null = null;
+## File: src/database/entities/role.entity.ts
+````typescript
+import {
+  Entity,
+  PrimaryKey,
+  Property,
+  ManyToMany,
+  Collection,
+} from '@mikro-orm/core';
+import { Permission } from './permission.entity';
+import { User } from './user.entity';
 
-  get user(): UserContext | null {
-    return this._user;
-  }
+@Entity({ tableName: 'roles' })
+export class Role {
+  @PrimaryKey()
+  id!: number;
 
-  set user(user: UserContext | null) {
-    this._user = user;
-  }
+  @Property({ unique: true })
+  name!: string;
 
-  get tenantId(): string | null {
-    return this._tenantId;
-  }
+  @Property({ nullable: true })
+  description?: string;
 
-  set tenantId(id: string | null) {
-    this._tenantId = id;
-  }
+  @ManyToMany(() => Permission, (permission) => permission.roles, {
+    owner: true,
+    pivotTable: 'roles_permissions',
+  })
+  permissions = new Collection<Permission>(this);
+
+  @ManyToMany(() => User, (user) => user.roles)
+  users = new Collection<User>(this);
 }
 ````
 
@@ -11251,6 +13352,309 @@ export class RequestContext {
           "autoincrement": false,
           "primary": false,
           "nullable": false,
+          "mappedType": "uuid"
+        },
+        "url": {
+          "name": "url",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "title": {
+          "name": "title",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "default": "true",
+          "mappedType": "boolean"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        }
+      },
+      "name": "rss_feeds",
+      "schema": "public",
+      "indexes": [
+        {
+          "columnNames": [
+            "url"
+          ],
+          "composite": false,
+          "keyName": "rss_feeds_url_index",
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "columnNames": [
+            "url"
+          ],
+          "composite": false,
+          "keyName": "rss_feeds_url_unique",
+          "constraint": true,
+          "primary": false,
+          "unique": true
+        },
+        {
+          "keyName": "rss_feeds_pkey",
+          "columnNames": [
+            "id"
+          ],
+          "composite": false,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {},
+      "nativeEnums": {}
+    },
+    {
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "mappedType": "uuid"
+        },
+        "feed_id": {
+          "name": "feed_id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "mappedType": "uuid"
+        },
+        "guid": {
+          "name": "guid",
+          "type": "varchar(1024)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "length": 1024,
+          "mappedType": "string"
+        },
+        "link": {
+          "name": "link",
+          "type": "varchar(2048)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "length": 2048,
+          "mappedType": "string"
+        },
+        "title": {
+          "name": "title",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "summary": {
+          "name": "summary",
+          "type": "text",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "default": "''",
+          "mappedType": "text"
+        },
+        "is_read": {
+          "name": "is_read",
+          "type": "boolean",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "default": "false",
+          "mappedType": "boolean"
+        },
+        "read_at": {
+          "name": "read_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "length": 6,
+          "mappedType": "datetime"
+        },
+        "published_at": {
+          "name": "published_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "length": 6,
+          "mappedType": "datetime"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        }
+      },
+      "name": "rss_articles",
+      "schema": "public",
+      "indexes": [
+        {
+          "columnNames": [
+            "feed_id"
+          ],
+          "composite": false,
+          "keyName": "rss_articles_feed_id_index",
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "columnNames": [
+            "guid"
+          ],
+          "composite": false,
+          "keyName": "rss_articles_guid_index",
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "columnNames": [
+            "guid"
+          ],
+          "composite": false,
+          "keyName": "rss_articles_guid_unique",
+          "constraint": true,
+          "primary": false,
+          "unique": true
+        },
+        {
+          "columnNames": [
+            "link"
+          ],
+          "composite": false,
+          "keyName": "rss_articles_link_index",
+          "constraint": false,
+          "primary": false,
+          "unique": false
+        },
+        {
+          "columnNames": [
+            "link"
+          ],
+          "composite": false,
+          "keyName": "rss_articles_link_unique",
+          "constraint": true,
+          "primary": false,
+          "unique": true
+        },
+        {
+          "keyName": "rss_articles_pkey",
+          "columnNames": [
+            "id"
+          ],
+          "composite": false,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {
+        "rss_articles_feed_id_foreign": {
+          "constraintName": "rss_articles_feed_id_foreign",
+          "columnNames": [
+            "feed_id"
+          ],
+          "localTableName": "public.rss_articles",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "referencedTableName": "public.rss_feeds",
+          "deleteRule": "set null",
+          "updateRule": "cascade"
+        }
+      },
+      "nativeEnums": {}
+    },
+    {
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
           "default": "gen_random_uuid()",
           "mappedType": "uuid"
         },
@@ -11882,419 +14286,398 @@ export class RequestContext {
         }
       },
       "nativeEnums": {}
+    },
+    {
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "mappedType": "uuid"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "mappedType": "uuid"
+        },
+        "article_id": {
+          "name": "article_id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "mappedType": "uuid"
+        },
+        "is_read": {
+          "name": "is_read",
+          "type": "boolean",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "default": "false",
+          "mappedType": "boolean"
+        },
+        "is_starred": {
+          "name": "is_starred",
+          "type": "boolean",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "default": "false",
+          "mappedType": "boolean"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        }
+      },
+      "name": "user_rss_states",
+      "schema": "public",
+      "indexes": [
+        {
+          "keyName": "user_rss_states_user_id_article_id_unique",
+          "columnNames": [
+            "user_id",
+            "article_id"
+          ],
+          "composite": true,
+          "constraint": true,
+          "primary": false,
+          "unique": true
+        },
+        {
+          "keyName": "user_rss_states_pkey",
+          "columnNames": [
+            "id"
+          ],
+          "composite": false,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {
+        "user_rss_states_user_id_foreign": {
+          "constraintName": "user_rss_states_user_id_foreign",
+          "columnNames": [
+            "user_id"
+          ],
+          "localTableName": "public.user_rss_states",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "referencedTableName": "public.users",
+          "updateRule": "cascade"
+        },
+        "user_rss_states_article_id_foreign": {
+          "constraintName": "user_rss_states_article_id_foreign",
+          "columnNames": [
+            "article_id"
+          ],
+          "localTableName": "public.user_rss_states",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "referencedTableName": "public.rss_articles",
+          "updateRule": "cascade"
+        }
+      },
+      "nativeEnums": {}
+    },
+    {
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "mappedType": "uuid"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "mappedType": "uuid"
+        },
+        "feed_id": {
+          "name": "feed_id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "mappedType": "uuid"
+        },
+        "folder_name": {
+          "name": "folder_name",
+          "type": "varchar(255)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "length": 255,
+          "mappedType": "string"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamptz",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": false,
+          "length": 6,
+          "mappedType": "datetime"
+        }
+      },
+      "name": "user_rss_subscriptions",
+      "schema": "public",
+      "indexes": [
+        {
+          "keyName": "user_rss_subscriptions_user_id_feed_id_unique",
+          "columnNames": [
+            "user_id",
+            "feed_id"
+          ],
+          "composite": true,
+          "constraint": true,
+          "primary": false,
+          "unique": true
+        },
+        {
+          "keyName": "user_rss_subscriptions_pkey",
+          "columnNames": [
+            "id"
+          ],
+          "composite": false,
+          "constraint": true,
+          "primary": true,
+          "unique": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {
+        "user_rss_subscriptions_user_id_foreign": {
+          "constraintName": "user_rss_subscriptions_user_id_foreign",
+          "columnNames": [
+            "user_id"
+          ],
+          "localTableName": "public.user_rss_subscriptions",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "referencedTableName": "public.users",
+          "updateRule": "cascade"
+        },
+        "user_rss_subscriptions_feed_id_foreign": {
+          "constraintName": "user_rss_subscriptions_feed_id_foreign",
+          "columnNames": [
+            "feed_id"
+          ],
+          "localTableName": "public.user_rss_subscriptions",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "referencedTableName": "public.rss_feeds",
+          "updateRule": "cascade"
+        }
+      },
+      "nativeEnums": {}
     }
   ],
   "nativeEnums": {}
 }
 ````
 
-## File: src/exchange/interceptors/exchange-error.interceptor.ts
+## File: src/exchange/services/smtp-sender.service.ts
 ````typescript
-import {
-  Injectable,
-  NestInterceptor,
-  ExecutionContext,
-  CallHandler,
-  HttpException,
-  Logger,
-} from '@nestjs/common';
-import { Observable, throwError } from 'rxjs';
-import { catchError } from 'rxjs/operators';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import * as nodemailer from 'nodemailer';
+
+type SmtpCredentials = {
+  email: string;
+  password: string;
+  authIdentity?: string;
+};
+
+type MailboxTransporter = {
+  transporter: nodemailer.Transporter;
+  password: string;
+  lastUsedAt: number;
+};
 
 @Injectable()
-export class ExchangeErrorInterceptor implements NestInterceptor {
-  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
-    return next.handle().pipe(
-      catchError((err) => {
-        if (err instanceof HttpException) {
-          return throwError(() => err);
-        }
-
-        // Map EWS errors to HTTP Status
-        // err.name or err.message often contains the code
-        const msg = err.message || '';
-
-        if (
-          msg.includes('ErrorInvalidCredentials') ||
-          msg.includes('401') ||
-          msg.includes('No session token') ||
-          msg.includes('Session expired or invalid')
-        ) {
-          return throwError(
-            () => new HttpException('Sai thông tin đăng nhập Exchange', 401),
-          );
-        }
-        if (
-          msg.includes('AccountIsLocked') ||
-          msg.includes('ErrorImpersonationDenied')
-        ) {
-          return throwError(
-            () =>
-              new HttpException(
-                'Tài khoản bị khóa hoặc không có quyền truy cập',
-                403,
-              ),
-          );
-        }
-        if (msg.includes('ErrorServerBusy')) {
-          return throwError(
-            () =>
-              new HttpException('Máy chủ đang bận, vui lòng thử lại sau', 429),
-          );
-        }
-        if (msg.includes('ETIMEDOUT') || msg.includes('timeout')) {
-          return throwError(
-            () => new HttpException('Mất kết nối đến Exchange Server', 504),
-          );
-        }
-
-        // Lỗi Postfix reject do Rspamd nhận diện là Spam
-        if (
-          msg.includes('rejected as spam') ||
-          msg.includes('Message rejected') ||
-          msg.includes('5.7.1') ||
-          msg.includes('Policy Rejection') ||
-          msg.includes('spam score')
-        ) {
-          return throwError(
-            () =>
-              new HttpException(
-                'Email bị từ chối do bị nhận diện là Spam. Vui lòng kiểm tra lại nội dung.',
-                451,
-              ),
-          );
-        }
-
-        // Lỗi Postfix reject do ClamAV phát hiện Virus trong attachment
-        if (
-          msg.includes('infected') ||
-          msg.toLowerCase().includes('virus') ||
-          msg.includes('malware') ||
-          msg.includes('5.7.0') ||
-          msg.includes('content rejected')
-        ) {
-          return throwError(
-            () =>
-              new HttpException(
-                'Email bị từ chối do file đính kèm chứa mã độc (Virus). Vui lòng kiểm tra lại file.',
-                422,
-              ),
-          );
-        }
-
-        // Default
-        Logger.error(`EWS Error: ${msg}`, err.stack);
-        return throwError(
-          () => new HttpException('Lỗi kết nối Exchange Webmail', 500),
-        );
-      }),
-    );
-  }
-}
-````
-
-## File: src/mailbox/script-runner.service.ts
-````typescript
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config'; // Updated scripts
-import { spawn, ChildProcess } from 'child_process';
-import * as readline from 'readline';
-import * as path from 'path';
-
-export type ScriptAction =
-  | 'create'
-  | 'update'
-  | 'disable'
-  | 'restore'
-  | 'delete';
-
-@Injectable()
-export class ScriptRunnerService implements OnModuleInit, OnModuleDestroy {
-  private readonly logger = new Logger(ScriptRunnerService.name);
-  private readonly timeoutMs: number;
-
-  private workerProcess: ChildProcess | null = null;
-  private responseReader: readline.Interface | null = null;
-  private pendingRequests: Map<
-    number,
-    { resolve: (value: any) => void; reject: (reason: any) => void; timer: NodeJS.Timeout }
-  > = new Map();
-  private requestCounter = 0;
-  private isWorkerReady = false;
+export class SmtpSenderService implements OnModuleDestroy {
+  private readonly logger = new Logger(SmtpSenderService.name);
+  private readonly transporters = new Map<string, MailboxTransporter>();
+  private readonly idleTtlMs: number;
 
   constructor(private readonly configService: ConfigService) {
-    this.timeoutMs = this.configService.get<number>(
-      'MAILBOX_SCRIPT_TIMEOUT_MS',
-      120000,
+    // Giảm idle TTL mặc định xuống 2 phút để Exchange dọn hết connection zombie khi app restart
+    this.idleTtlMs = this.configService.get<number>(
+      'SMTP_POOL_IDLE_TTL_MS',
+      2 * 60 * 1000,
     );
   }
 
-  onModuleInit() {
-    this.startWorker();
+  async sendMail(
+    credentials: SmtpCredentials,
+    options: nodemailer.SendMailOptions,
+  ): Promise<nodemailer.SentMessageInfo> {
+    this.cleanupIdleTransporters();
+    const entry = await this.getOrCreateTransporter(credentials);
+    entry.lastUsedAt = Date.now();
+    return entry.transporter.sendMail(options);
   }
 
-  onModuleDestroy() {
-    this.stopWorker();
-  }
-
-  private startWorker() {
-    const workerPath = path.resolve('./scripts/mailbox/exchange-worker.py');
-    const isWin = process.platform === 'win32';
-    // Thử lần lượt các lệnh Python phổ biến
-    const commandsToTry = isWin ? ['python', 'py', 'python3'] : ['python3', 'python'];
-    
-    this.trySpawnWorker(commandsToTry, workerPath);
-  }
-
-  private trySpawnWorker(cmds: string[], workerPath: string) {
-    if (cmds.length === 0) {
-      this.isWorkerReady = false;
-      this.logger.error('❌ FATAL: Không tìm thấy lệnh Python nào (python, py, python3) trên hệ thống!');
-      return;
-    }
-
-    const currentCmd = cmds[0];
-    this.logger.log(`🚀 Đang khởi động Exchange Worker với: ${currentCmd}`);
-
-    try {
-      const child = spawn(currentCmd, [workerPath], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true,
-      });
-
-      child.on('error', (err: any) => {
-        if (err.code === 'ENOENT') {
-          // Lệnh không tồn tại, thử lệnh tiếp theo trong danh sách
-          this.trySpawnWorker(cmds.slice(1), workerPath);
-        } else {
-          this.logger.error(`❌ Worker process error (${currentCmd}): ${err.message}`);
-          this.isWorkerReady = false;
-        }
-      });
-
-      child.on('spawn', () => {
-        this.workerProcess = child;
-        this.isWorkerReady = true;
-        this.logger.log(`✅ Exchange Worker đã khởi động thành công với: ${currentCmd}`);
-        this.setupWorkerCommunication();
-      });
-
-      child.on('close', (code) => {
-        if (this.isWorkerReady) {
-          this.logger.warn(`⚠️ Exchange Worker đã thoát (code: ${code}). Tự khởi động lại sau 5s...`);
-          this.isWorkerReady = false;
-          this.cleanupWorker();
-          setTimeout(() => this.startWorker(), 5000);
-        }
-      });
-    } catch (error) {
-      this.logger.error(`❌ Lỗi khi spawn worker: ${error.message}`);
-      this.trySpawnWorker(cmds.slice(1), workerPath);
-    }
-  }
-
-  private setupWorkerCommunication() {
-    if (!this.workerProcess) return;
-
-    this.responseReader = readline.createInterface({
-      input: this.workerProcess.stdout!,
-    });
-
-    this.responseReader.on('line', (line) => {
+  async onModuleDestroy(): Promise<void> {
+    for (const [email, entry] of this.transporters.entries()) {
       try {
-        const response = JSON.parse(line);
-        const firstKey = this.pendingRequests.keys().next().value;
-        if (firstKey !== undefined) {
-          const pending = this.pendingRequests.get(firstKey);
-          if (pending) {
-            clearTimeout(pending.timer);
-            this.pendingRequests.delete(firstKey);
-            if (response.success) {
-              pending.resolve({ stdout: response.message, stderr: '' });
-            } else {
-              pending.reject(new Error(response.message));
-            }
-          }
-        }
-      } catch (e) {
-        this.logger.warn(`Lỗi phân giải kết quả worker: ${e.message}`);
-      }
-    });
-
-    this.workerProcess.stderr?.on('data', (chunk) => {
-      const msg = chunk.toString().trim();
-      if (msg) this.logger.debug(`[Worker Debug]: ${msg}`);
-    });
-  }
-
-  private cleanupWorker() {
-    if (this.responseReader) {
-      this.responseReader.close();
-      this.responseReader = null;
-    }
-    // Reject all pending
-    for (const [id, pending] of this.pendingRequests) {
-      clearTimeout(pending.timer);
-      pending.reject(new Error('Worker connection closed'));
-    }
-    this.pendingRequests.clear();
-  }
-
-  private stopWorker() {
-    this.isWorkerReady = false;
-    if (this.workerProcess) {
-      this.workerProcess.stdin?.end();
-      this.workerProcess.kill();
-      this.workerProcess = null;
-    }
-    this.cleanupWorker();
-  }
-
-  async run(action: ScriptAction, payload: Record<string, any>): Promise<{ stdout: string; stderr: string }> {
-    if (!this.isWorkerReady || !this.workerProcess) {
-      throw new Error('Exchange Worker chưa sẵn sàng. Vui lòng đợi trong giây lát.');
-    }
-
-    return new Promise((resolve, reject) => {
-      const requestId = ++this.requestCounter;
-      const timer = setTimeout(() => {
-        this.pendingRequests.delete(requestId);
-        reject(new Error(`Thao tác Mailbox (${action}) bị quá hạn sau ${this.timeoutMs}ms`));
-      }, this.timeoutMs);
-
-      this.pendingRequests.set(requestId, { resolve, reject, timer });
-
-      const enrichedPayload = {
-        action,
-        ...payload,
-        ExchangeServer: this.configService.get('EXCHANGE_SERVER') || 'mail-ex.mailex.local',
-        UserAdmin: this.configService.get('EXCHANGE_USER_ADMIN') || 'mailex\\Administrator',
-        AdminPassword: this.configService.get('EXCHANGE_PASSWORD') || '123456a@',
-      };
-
-      try {
-        this.workerProcess!.stdin!.write(JSON.stringify(enrichedPayload) + '\n');
+        entry.transporter.close();
       } catch (error) {
-        clearTimeout(timer);
-        this.pendingRequests.delete(requestId);
-        reject(new Error(`Lỗi gửi lệnh tới worker: ${error.message}`));
+        this.logger.warn(
+          `Failed to close SMTP transporter for ${email}: ${error.message}`,
+        );
       }
+    }
+    this.transporters.clear();
+  }
+
+  private async getOrCreateTransporter(
+    credentials: SmtpCredentials,
+  ): Promise<MailboxTransporter> {
+    const transporterKey = credentials.authIdentity || credentials.email;
+    const existing = this.transporters.get(transporterKey);
+
+    if (existing && existing.password === credentials.password) {
+      return existing;
+    }
+
+    if (existing) {
+      try {
+        existing.transporter.close();
+      } catch (error) {
+        this.logger.warn(
+          `Failed to close old SMTP transporter for ${transporterKey}: ${error.message}`,
+        );
+      }
+    }
+
+    const transporter = nodemailer.createTransport(
+      this.buildSmtpConfig(credentials) as any,
+    );
+
+    const entry: MailboxTransporter = {
+      transporter,
+      password: credentials.password,
+      lastUsedAt: Date.now(),
+    };
+
+    this.transporters.set(transporterKey, entry);
+    this.logger.log(`Initialized SMTP pool for ${transporterKey}`);
+    return entry;
+  }
+
+  private buildSmtpConfig(credentials: SmtpCredentials) {
+    const host = this.configService.get<string>(
+      'SMTP_HOST',
+      'smtp.office365.com',
+    );
+    const port = this.configService.get<number>('SMTP_PORT', 587);
+    const secure =
+      this.configService.get<string>('SMTP_SECURE', 'false') === 'true';
+    const maxConnections = this.configService.get<number>(
+      'SMTP_POOL_MAX_CONNECTIONS',
+      2,
+    );
+    const maxMessages = this.configService.get<number>(
+      'SMTP_POOL_MAX_MESSAGES',
+      100,
+    );
+    const rateLimit = this.configService.get<number>('SMTP_RATE_LIMIT', 3);
+    const rateDelta = this.configService.get<number>(
+      'SMTP_RATE_DELTA_MS',
+      1000,
+    );
+
+    console.log('SMTP config:', {
+      host,
+      port,
+      secure,
+      maxConnections,
+      maxMessages,
+      rateLimit,
+      rateDelta,
     });
+
+    return {
+      host,
+      port,
+      secure,
+      requireTLS: true,
+      auth: {
+        user: credentials.authIdentity || credentials.email,
+        pass: credentials.password,
+      },
+      tls: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: false,
+      },
+      // Timeout để Exchange cleanup connection đúng cách, tránh zombie PRX6
+      greetingTimeout: 15000,  // 15 giây chờ greeting SMTP
+      socketTimeout: 30000,    // 30 giây idle socket timeout
+      idleTimeout: 300000,      // 5 phút thì đóng connection nhàn rỗi
+      debug: false,
+      logger: false,
+      pool: true,
+      maxConnections,
+      maxMessages,
+      rateLimit,
+      rateDelta,
+    };
+  }
+
+  private cleanupIdleTransporters(): void {
+    const now = Date.now();
+
+    for (const [email, entry] of this.transporters.entries()) {
+      if (now - entry.lastUsedAt < this.idleTtlMs) {
+        continue;
+      }
+
+      try {
+        entry.transporter.close();
+      } catch (error) {
+        this.logger.warn(
+          `Failed to close idle SMTP transporter for ${email}: ${error.message}`,
+        );
+      }
+      this.transporters.delete(email);
+    }
   }
 }
-````
-
-## File: .env.example
-````
-# ==============================================================================
-# SERVER CONFIGURATION
-# ==============================================================================
-PORT=3000
-NODE_ENV=development
-# Set to 'true' to run seed data on startup (creates default admin/roles)
-RUN_SEEDING=false
-
-# ==============================================================================
-# DATABASE CONFIGURATION (PostgreSQL)
-# ==============================================================================
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=postgres
-DB_PASSWORD=your_password
-DB_NAME=nestjs_base_db
-# Allow global context for simpler MikroORM usage (default false for strictness)
-DB_ALLOW_GLOBAL_CONTEXT=false
-
-# ==============================================================================
-# AUTHENTICATION & SECURITY
-# ==============================================================================
-# JWT Secret Key - CHANGE THIS IN PRODUCTION!
-JWT_SECRET=your-super-secret-key-change-it-now
-# Access Token Lifetime
-JWT_EXPIRES_IN=15m
-# Refresh Token Lifetime
-REFRESH_EXPIRES_IN=7d
-# Max number of failed refresh attempts before blocking context (optional)
-AUTH_MAX_FAILED_REFRESH=5
-# Logging level for auth events: 'basic' or 'verbose'
-AUTH_LOG_LEVEL=basic
-
-# ==============================================================================
-# CACHE CONFIGURATION (DragonflyDB / Redis)
-# ==============================================================================
-# Enable caching layer (Optional)
-DRAGONFLY_ENABLED=false
-DRAGONFLY_HOST=localhost
-DRAGONFLY_PORT=6379
-DRAGONFLY_PASSWORD=
-# Default Cache TTL in seconds (e.g. 300 = 5 minutes)
-DRAGONFLY_TTL=300
-
-# ==============================================================================
-# QUERY ENGINE CONFIGURATION
-# ==============================================================================
-# Max nested depth for filtering/relations
-QUERY_MAX_DEPTH=3
-# Max number of conditions in a single query (hard limit for safety)
-QUERY_MAX_CONDITIONS=50
-# Max number of fields allowed in sort
-QUERY_MAX_SORT_FIELDS=3
-# Allow regex in filters? (Warning: performance impact)
-QUERY_ALLOW_REGEX=false
-
-# ==============================================================================
-# FILE STORAGE
-# ==============================================================================
-# Driver: 'local' | 's3' (future support)
-STORAGE_DRIVER=local
-FILE_STORAGE_PATH=./storage
-
-# ==============================================================================
-# EXCHANGE WEBMAIL CONFIGURATION (MVP)
-# ==============================================================================
-# Secret used to derive encryption keys for storing Exchange credentials in Redis
-# MUST be a long, random string. NEVER use JWT_SECRET for this.
-EXCHANGE_CRED_SECRET=change_this_to_a_complex_random_string_mvp_only
-
-# EWS Endpoint URL (e.g., Office 365)
-# Default: https://outlook.office365.com/EWS/Exchange.asmx
-EWS_URL=https://outlook.office365.com/EWS/Exchange.asmx
-EWS_TOKEN_URL=
-EWS_CLIENT_ID=
-EWS_CLIENT_SECRET=
-# Use either EWS_SCOPE (OAuth2 v2) or EWS_RESOURCE (OAuth2 v1/ADFS)
-EWS_SCOPE=
-EWS_RESOURCE=
-# Example: Exchange2013, Exchange2016, Exchange2019
-EWS_VERSION=Exchange2016
-# Impersonate mailbox by SMTP address (app-only OAuth2)
-EWS_IMPERSONATE=true
-# Validate EWS connectivity on login
-EWS_VALIDATE_ON_LOGIN=false
-# Temporarily disable SSO (EWS OAuth2)
-EWS_SSO_ENABLED=true
-# Allow self-signed certificates (dev only)
-EWS_TLS_REJECT_UNAUTHORIZED=true
-
-# ==============================================================================
-# MAILBOX MANAGEMENT (SCRIPT + GAL)
-# ==============================================================================
-# Paths to mailbox management scripts (PowerShell or executable)
-MAILBOX_SCRIPT_CREATE=./scripts/mailbox/create-mailbox.ps1
-MAILBOX_SCRIPT_UPDATE=./scripts/mailbox/update-mailbox.ps1
-MAILBOX_SCRIPT_DISABLE=./scripts/mailbox/disable-mailbox.ps1
-MAILBOX_SCRIPT_RESTORE=./scripts/mailbox/restore-mailbox.ps1
-MAILBOX_SCRIPT_DELETE=./scripts/mailbox/delete-mailbox.ps1
-# Script timeout in milliseconds
-MAILBOX_SCRIPT_TIMEOUT_MS=60000
-# Admin credentials for GAL lookup when EWS_SSO_ENABLED=false
-EWS_ADMIN_EMAIL=
-EWS_ADMIN_PASSWORD=
-
-# Exchange Connection for PowerShell Scripts
-EXCHANGE_SERVER=mail-ex.mailex.local
-EXCHANGE_USER_ADMIN=mailex\Administrator
-EXCHANGE_PASSWORD=123456a@
 ````
 
 ## File: src/auth/auth.controller.ts
@@ -12307,6 +14690,7 @@ import { RegisterDto } from './dto/register.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import type { Response } from 'express';
+import { buildAuthCookieOptions } from './auth-cookie.util';
 import {
   ApiBearerAuth,
   ApiBody,
@@ -12335,12 +14719,13 @@ export class AuthController {
   ) {
     const tokens = await this.authService.login(dto.email, dto.password);
 
-    res.cookie('exchange_session', tokens.exchangeAccessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 3600000,
-    });
+    res.cookie('access_token', tokens.accessToken, buildAuthCookieOptions(900000));
+
+    res.cookie(
+      'exchange_session',
+      tokens.exchangeAccessToken,
+      buildAuthCookieOptions(3600000),
+    );
 
     return tokens;
   }
@@ -12362,101 +14747,6 @@ export class AuthController {
   async getMe(@CurrentUser() user: { id: string; email: string }) {
     return this.authService.getMe(user.id);
   }
-}
-````
-
-## File: src/common/common.module.ts
-````typescript
-import { Module, Global } from '@nestjs/common';
-import { RequestContext } from './context/request.context';
-import { RequestContextInterceptor } from './interceptors/request-context.interceptor';
-import { APP_INTERCEPTOR } from '@nestjs/core';
-import { DragonflyService } from './cache/dragonfly.service';
-import { CacheModule } from './cache/cache.module';
-import { PermissionService } from './permissions/permission.service';
-
-@Global()
-@Module({
-  imports: [CacheModule],
-  providers: [
-    RequestContext,
-    {
-      provide: APP_INTERCEPTOR,
-      useClass: RequestContextInterceptor,
-    },
-    PermissionService,
-  ],
-  exports: [RequestContext, CacheModule, PermissionService],
-})
-export class CommonModule {}
-````
-
-## File: src/database/entities/permission.entity.ts
-````typescript
-import {
-  Entity,
-  PrimaryKey,
-  Property,
-  ManyToMany,
-  Collection,
-  Index,
-} from '@mikro-orm/core';
-import { Role } from './role.entity';
-
-@Entity({ tableName: 'permissions' })
-@Index({
-  name: 'permissions_collection_action_index',
-  properties: ['collection', 'action'],
-})
-export class Permission {
-  @PrimaryKey()
-  id!: number;
-
-  @Property()
-  collection!: string;
-
-  @Property()
-  action!: string;
-
-  @Property({ nullable: true })
-  description?: string;
-
-  @ManyToMany(() => Role, (role) => role.permissions)
-  roles = new Collection<Role>(this);
-}
-````
-
-## File: src/database/entities/role.entity.ts
-````typescript
-import {
-  Entity,
-  PrimaryKey,
-  Property,
-  ManyToMany,
-  Collection,
-} from '@mikro-orm/core';
-import { Permission } from './permission.entity';
-import { User } from './user.entity';
-
-@Entity({ tableName: 'roles' })
-export class Role {
-  @PrimaryKey()
-  id!: number;
-
-  @Property({ unique: true })
-  name!: string;
-
-  @Property({ nullable: true })
-  description?: string;
-
-  @ManyToMany(() => Permission, (permission) => permission.roles, {
-    owner: true,
-    pivotTable: 'roles_permissions',
-  })
-  permissions = new Collection<Permission>(this);
-
-  @ManyToMany(() => User, (user) => user.roles)
-  users = new Collection<User>(this);
 }
 ````
 
@@ -12517,6 +14807,7 @@ export class User {
 ## File: src/exchange/exchange.module.ts
 ````typescript
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { MikroOrmModule } from '@mikro-orm/nestjs';
 import { ExchangeController } from './controllers/exchange.controller';
 import { ContactsController } from './controllers/contacts.controller';
@@ -12527,6 +14818,7 @@ import { CacheModule } from '../common/cache/cache.module';
 import { CommonModule } from '../common/common.module';
 import { MailService } from './services/mail.service';
 import { EwsMailProvider } from './services/ews-mail.provider';
+import { ImapMailProvider } from './services/imap-mail.provider';
 import { SmtpSenderService } from './services/smtp-sender.service';
 import { ContactNoteService } from './services/contact-note.service';
 import { SpamModerationService } from './services/spam-moderation.service';
@@ -12537,13 +14829,13 @@ import { SecurityPolicy } from '../database/entities/security-policy.entity';
 
 @Module({
   imports: [
-    CacheModule, 
+    CacheModule,
     CommonModule,
     MikroOrmModule.forFeature([SpamReport, GlobalBlocklist, SecurityPolicy]),
   ],
   controllers: [
-    ExchangeController, 
-    ContactsController, 
+    ExchangeController,
+    ContactsController,
     NotesController,
     AdminModerationController,
   ],
@@ -12551,6 +14843,7 @@ import { SecurityPolicy } from '../database/entities/security-policy.entity';
     ExchangeAuthService,
     SmtpSenderService,
     EwsMailProvider,
+    ImapMailProvider,
     MailService,
     ContactNoteService,
     SpamModerationService,
@@ -12561,174 +14854,6 @@ import { SecurityPolicy } from '../database/entities/security-policy.entity';
 export class ExchangeModule {}
 ````
 
-## File: src/exchange/services/smtp-sender.service.ts
-````typescript
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import * as nodemailer from 'nodemailer';
-
-type SmtpCredentials = {
-  email: string;
-  password: string;
-};
-
-type MailboxTransporter = {
-  transporter: nodemailer.Transporter;
-  password: string;
-  lastUsedAt: number;
-};
-
-@Injectable()
-export class SmtpSenderService implements OnModuleDestroy {
-  private readonly logger = new Logger(SmtpSenderService.name);
-  private readonly transporters = new Map<string, MailboxTransporter>();
-  private readonly idleTtlMs: number;
-
-  constructor(private readonly configService: ConfigService) {
-    // Giảm idle TTL mặc định xuống 2 phút để Exchange dọn hết connection zombie khi app restart
-    this.idleTtlMs = this.configService.get<number>(
-      'SMTP_POOL_IDLE_TTL_MS',
-      2 * 60 * 1000,
-    );
-  }
-
-  async sendMail(
-    credentials: SmtpCredentials,
-    options: nodemailer.SendMailOptions,
-  ): Promise<nodemailer.SentMessageInfo> {
-    this.cleanupIdleTransporters();
-    const entry = await this.getOrCreateTransporter(credentials);
-    entry.lastUsedAt = Date.now();
-    return entry.transporter.sendMail(options);
-  }
-
-  async onModuleDestroy(): Promise<void> {
-    for (const [email, entry] of this.transporters.entries()) {
-      try {
-        entry.transporter.close();
-      } catch (error) {
-        this.logger.warn(
-          `Failed to close SMTP transporter for ${email}: ${error.message}`,
-        );
-      }
-    }
-    this.transporters.clear();
-  }
-
-  private async getOrCreateTransporter(
-    credentials: SmtpCredentials,
-  ): Promise<MailboxTransporter> {
-    const existing = this.transporters.get(credentials.email);
-
-    if (existing && existing.password === credentials.password) {
-      return existing;
-    }
-
-    if (existing) {
-      try {
-        existing.transporter.close();
-      } catch (error) {
-        this.logger.warn(
-          `Failed to close old SMTP transporter for ${credentials.email}: ${error.message}`,
-        );
-      }
-    }
-
-    const transporter = nodemailer.createTransport(
-      this.buildSmtpConfig(credentials) as any,
-    );
-
-    const entry: MailboxTransporter = {
-      transporter,
-      password: credentials.password,
-      lastUsedAt: Date.now(),
-    };
-
-    this.transporters.set(credentials.email, entry);
-    this.logger.log(`Initialized SMTP pool for ${credentials.email}`);
-    return entry;
-  }
-
-  private buildSmtpConfig(credentials: SmtpCredentials) {
-    const host = this.configService.get<string>(
-      'SMTP_HOST',
-      'smtp.office365.com',
-    );
-    const port = this.configService.get<number>('SMTP_PORT', 587);
-    const secure =
-      this.configService.get<string>('SMTP_SECURE', 'false') === 'true';
-    const maxConnections = this.configService.get<number>(
-      'SMTP_POOL_MAX_CONNECTIONS',
-      2,
-    );
-    const maxMessages = this.configService.get<number>(
-      'SMTP_POOL_MAX_MESSAGES',
-      100,
-    );
-    const rateLimit = this.configService.get<number>('SMTP_RATE_LIMIT', 3);
-    const rateDelta = this.configService.get<number>(
-      'SMTP_RATE_DELTA_MS',
-      1000,
-    );
-
-    console.log('SMTP config:', {
-      host,
-      port,
-      secure,
-      maxConnections,
-      maxMessages,
-      rateLimit,
-      rateDelta,
-    });
-
-    return {
-      host,
-      port,
-      secure,
-      requireTLS: true,
-      auth: {
-        user: credentials.email,
-        pass: credentials.password,
-      },
-      tls: {
-        minVersion: 'TLSv1.2',
-        rejectUnauthorized: false,
-      },
-      // Timeout để Exchange cleanup connection đúng cách, tránh zombie PRX6
-      greetingTimeout: 15000,  // 15 giây chờ greeting SMTP
-      socketTimeout: 30000,    // 30 giây idle socket timeout
-      idleTimeout: 300000,      // 5 phút thì đóng connection nhàn rỗi
-      debug: false,
-      logger: false,
-      pool: true,
-      maxConnections,
-      maxMessages,
-      rateLimit,
-      rateDelta,
-    };
-  }
-
-  private cleanupIdleTransporters(): void {
-    const now = Date.now();
-
-    for (const [email, entry] of this.transporters.entries()) {
-      if (now - entry.lastUsedAt < this.idleTtlMs) {
-        continue;
-      }
-
-      try {
-        entry.transporter.close();
-      } catch (error) {
-        this.logger.warn(
-          `Failed to close idle SMTP transporter for ${email}: ${error.message}`,
-        );
-      }
-      this.transporters.delete(email);
-    }
-  }
-}
-````
-
 ## File: mikro-orm.config.ts
 ````typescript
 import 'dotenv/config'; // Ensure .env is loaded for CLI
@@ -12736,6 +14861,10 @@ import { defineConfig } from '@mikro-orm/postgresql';
 import { User } from './src/database/entities/user.entity';
 import { File } from './src/database/entities/file.entity';
 import { AuditLog } from './src/database/entities/audit-log.entity';
+import { RssFeed } from './src/database/entities/rss-feed.entity';
+import { RssArticle } from './src/database/entities/rss-article.entity';
+import { UserRssSubscription } from './src/database/entities/user-rss-subscription.entity';
+import { UserRssState } from './src/database/entities/user-rss-state.entity';
 
 export default defineConfig({
   entities: ['./dist/database/entities/*.entity.js'],
@@ -12881,9 +15010,21 @@ import { json, urlencoded } from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  const corsOrigins = (process.env.FRONTEND_ORIGIN ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
   // Keep request body limit fixed in code.
   // 25MB file in base64 is larger than 25MB, so transport limit must be higher.
   const bodyLimit = '40mb';
+
+  if (corsOrigins.length > 0 || process.env.NODE_ENV !== 'production') {
+    app.enableCors({
+      origin: corsOrigins.length > 0 ? corsOrigins : true,
+      credentials: true,
+    });
+  }
 
   app.use(json({ limit: bodyLimit }));
   app.use(urlencoded({ extended: true, limit: bodyLimit }));
@@ -13074,9 +15215,11 @@ export class AuthService {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
+    "prestart:dev": "node scripts/dev-clean.mjs",
     "start:dev": "nest start --watch",
+    "start:dev:reset": "npm run start:dev",
     "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main",
+    "start:prod": "node dist/src/main.js",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
     "test:watch": "jest --watch",
@@ -13101,7 +15244,10 @@ export class AuthService {
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/schedule": "^6.1.0",
     "@nestjs/swagger": "^11.2.0",
+    "@types/sanitize-html": "^2.16.1",
     "argon2": "^0.44.0",
+    "bullmq": "^5.71.0",
+    "cheerio": "^1.2.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.3",
     "cookie-parser": "^1.4.7",
@@ -13114,7 +15260,9 @@ export class AuthService {
     "passport-jwt": "^4.0.1",
     "pwsh": "^0.3.0",
     "reflect-metadata": "^0.2.2",
+    "rss-parser": "^3.13.0",
     "rxjs": "^7.8.1",
+    "sanitize-html": "^2.17.1",
     "ssh2": "^1.17.0",
     "swagger-ui-express": "^5.0.1",
     "ulid": "^3.0.2"
@@ -13169,6 +15317,193 @@ export class AuthService {
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
   }
+}
+````
+
+## File: src/exchange/interfaces/mail-provider.interface.ts
+````typescript
+export interface MailAttachmentMeta {
+  index: number;
+  filename: string;
+  contentType?: string;
+  size?: number;
+}
+
+export interface MailMessage {
+  id: string; // Composite ID: Base64(folder:uid)
+  subject: string;
+  from: { name: string; email: string };
+  to: { name: string; email: string }[];
+  cc: { name: string; email: string }[];
+  bcc: { name: string; email: string }[];
+  receivedAt: Date;
+  body: string;
+  isHtml: boolean;
+  hasAttachments: boolean;
+  isRead: boolean;
+  preview: string;
+  importance?: string;
+  isStarred?: boolean;
+  // Conversation group id
+  conversationId?: string;
+  attachments?: MailAttachmentMeta[];
+}
+
+export interface MailFolder {
+  id: string; // e.g., 'INBOX', 'Sent Items', 'Starred', 'Drafts', 'Spam', 'Trash' hoặc FolderId từ EWS
+  name: string;
+  type?: string; // e.g., 'inbox', 'sent', 'user_created'
+  parentId?: string;
+  children?: MailFolder[];
+  isSystem: boolean;
+  unreadCount?: number;
+  totalCount?: number;
+}
+
+export interface Attachment {
+  filename: string;
+  contentType?: string;
+  content: string; // Base64 encoded
+}
+
+export interface SendMailOptions {
+  from?: string;
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
+  replyTo?: string[];
+  subject?: string;
+  text?: string; // Plain text version
+  html?: string; // HTML version
+  attachments?: Attachment[];
+}
+
+export interface SaveDraftOptions {
+  from?: string;
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
+  replyTo?: string[];
+  subject?: string;
+  text?: string;
+  html?: string;
+  attachments?: Attachment[];
+}
+
+export interface ReplyMailOptions {
+  messageId: string;
+  html?: string;
+  text?: string;
+  replyAll?: boolean;
+  attachments?: Attachment[];
+}
+
+export interface ForwardMailOptions {
+  messageId: string;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  html?: string;
+  text?: string;
+  attachments?: Attachment[];
+}
+
+export interface IMailProvider {
+  /**
+   * Connect to the mail server
+   */
+  connect(): Promise<void>;
+
+  /**
+   * Disconnect from the mail server
+   */
+  disconnect(): Promise<void>;
+
+  /**
+   * Get list of standard folders
+   */
+  getFolders(): Promise<MailFolder[]>;
+
+  /**
+   * Get messages from a folder with pagination
+   */
+  getMessages(
+    folderId: string,
+    page: number,
+    limit: number,
+    mailbox?: string,
+  ): Promise<{ items: Partial<MailMessage>[]; total: number }>;
+
+  /**
+   * Get unread/total counts for standard folders
+   */
+  getFolderCounts(mailbox?: string): Promise<Record<string, { total: number; unread: number }>>;
+
+  /**
+   * Get a single message by its composite ID
+   */
+  getMessage(id: string): Promise<MailMessage>;
+
+  downloadAttachment(messageId: string, index: number): Promise<{ filename: string; contentType: string; content: Buffer }>;
+
+  /**
+   * Send an email
+   */
+  sendMessage(
+    options: SendMailOptions,
+  ): Promise<{ success: boolean; messageId?: string }>;
+
+  /**
+   * Save a draft
+   */
+  saveDraft(
+    options: SaveDraftOptions,
+  ): Promise<{ success: boolean; messageId?: string }>;
+
+  /**
+   * Search messages
+   */
+  search(
+    query: string,
+    page: number,
+    limit: number,
+    folder?: string,
+    mailbox?: string,
+  ): Promise<{ items: Partial<MailMessage>[]; total: number }>;
+
+  /**
+   * Move message to another folder
+   */
+  moveMessage(
+    messageId: string,
+    targetFolder: string,
+  ): Promise<{ success: boolean }>;
+
+  markMessages(ids: string[], isRead: boolean): Promise<void>;
+  markAllMessages(folder: string, isRead: boolean, mailbox?: string): Promise<void>;
+  moveMessagesBatch(ids: string[], targetFolder: string): Promise<void>;
+  moveAllMessages(
+    sourceFolder: string,
+    targetFolder: string,
+    mailbox?: string,
+  ): Promise<void>;
+  permanentlyDeleteMessages(ids: string[]): Promise<number>;
+  permanentlyDeleteAllMessages(folder: string, mailbox?: string): Promise<number>;
+  markMessagesStar(ids: string[], starred: boolean): Promise<void>;
+  markAllMessagesStar(folder: string, starred: boolean, mailbox?: string): Promise<void>;
+
+  replyMessage(options: ReplyMailOptions): Promise<{ success: boolean; messageId?: string }>;
+  forwardMessage(options: ForwardMailOptions): Promise<{ success: boolean; messageId?: string }>;
+  getConversationMessages(messageId: string, maxItems: number): Promise<any>;
+
+  // Calendar
+  createEvent(payload: any): Promise<any>;
+  getEvents(startDate: string, endDate: string): Promise<any[]>;
+  getEventDetails(eventId: string): Promise<any>;
+  updateEvent(eventId: string, payload: any): Promise<any>;
+  deleteEvent(eventId: string): Promise<void>;
+  getActiveReminders(): Promise<any[]>;
+  dismissReminder(eventId: string): Promise<void>;
 }
 ````
 
@@ -13314,9 +15649,6 @@ const LIST_PROPS = new PropertySet(
   EmailMessageSchema.IsRead,
   ItemSchema.HasAttachments,
   ItemSchema.Categories,
-  PR_FLAG_STATUS,
-  PR_SENDER_SMTP_ADDRESS,
-  PR_SENT_REPRESENTING_SMTP_ADDRESS,
 );
 
 /** Dùng khi load chi tiết message */
@@ -13391,7 +15723,11 @@ export class EwsMailProvider implements IMailProvider {
   private readonly logger = new Logger(EwsMailProvider.name);
   private service: ExchangeService | null = null;
   private email: string | null = null;
-  private credentials: { email: string; password: string } | null = null;
+  private credentials: {
+    email: string;
+    password: string;
+    authIdentity?: string;
+  } | null = null;
 
   constructor(
     private readonly configService: ConfigService,
@@ -13399,7 +15735,7 @@ export class EwsMailProvider implements IMailProvider {
     private readonly authService: ExchangeAuthService,
     private readonly smtpSenderService: SmtpSenderService,
     @Inject(REQUEST) private readonly request: any,
-  ) {}
+  ) { }
 
   private parseEmailAddress(value: string): { name: string; email: string } {
     const trimmed = value?.trim?.() ?? '';
@@ -13454,31 +15790,39 @@ export class EwsMailProvider implements IMailProvider {
       throw new UnauthorizedException('Password not found in credentials');
 
     this.email = creds.email;
-    this.credentials = { email: creds.email, password: creds.password };
+    this.credentials = {
+      email: creds.email,
+      password: creds.password,
+      authIdentity: creds.authIdentity,
+    };
+
+    const cfg = this.ewsConfig;
+    if (!cfg.url) throw new Error('EWS_URL is not configured');
+
+    if (!cfg.tlsRejectUnauthorized) {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    }
+
+    // Exchange 2019 on-premises tương thích với ExchangeVersion.Exchange2016
+    const version =
+      ExchangeVersion[cfg.version as keyof typeof ExchangeVersion] ??
+      ExchangeVersion.Exchange2016;
 
     // Kiểm tra global service cache để tránh tạo quá nhiều connections (lỗi concurrent limit)
     let service = globalExchangeServices.get(creds.email);
 
     if (!service) {
-      const cfg = this.ewsConfig;
-      if (!cfg.url) throw new Error('EWS_URL is not configured');
-
-      if (!cfg.tlsRejectUnauthorized) {
-        process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-      }
-
-      // Exchange 2019 on-premises tương thích với ExchangeVersion.Exchange2016
-      const version =
-        ExchangeVersion[cfg.version as keyof typeof ExchangeVersion] ??
-        ExchangeVersion.Exchange2016;
-
       service = new ExchangeService(version);
-      service.Url = new Uri(cfg.url);
-      service.Credentials = new WebCredentials(creds.email, creds.password);
-
-      // Lưu lại để dùng chung
       globalExchangeServices.set(creds.email, service);
     }
+
+    // Luôn cập nhật endpoint và credentials hiện tại để tránh tái sử dụng phiên
+    // EWS cũ với password đã lỗi thời sau khi user đăng nhập lại.
+    service.Url = new Uri(cfg.url);
+    service.Credentials = new WebCredentials(
+      creds.authIdentity || creds.email,
+      creds.password,
+    );
 
     this.service = service;
   }
@@ -14081,23 +16425,15 @@ export class EwsMailProvider implements IMailProvider {
         DETAIL_PROPS,
       );
     } catch (err) {
-      if (
-        String(err?.message || '').includes(
-          'extended property attribute combination is invalid',
-        )
-      ) {
-        // Fallback to basic properties if extended properties are rejected by server
-        const basicProps = new PropertySet(
-          BasePropertySet.FirstClassProperties,
-        );
-        message = await EmailMessage.Bind(
-          this.service,
-          new ItemId(itemId),
-          basicProps,
-        );
-      } else {
-        throw err;
-      }
+      this.logger.warn(
+        `getMessage fallback without extended properties: ${err?.message}`,
+      );
+      const basicProps = new PropertySet(BasePropertySet.FirstClassProperties);
+      message = await EmailMessage.Bind(
+        this.service,
+        new ItemId(itemId),
+        basicProps,
+      );
     }
 
     if (!(message as any).IsRead) {
@@ -14607,7 +16943,7 @@ export class EwsMailProvider implements IMailProvider {
           att.content,
         );
         if (file && att.contentType) file.ContentType = att.contentType;
-      } catch (_) {}
+      } catch (_) { }
     }
 
     // Gửi thẳng, lưu bản sao vào SentItems — không qua bước Save/FindItems/Bind
@@ -14652,7 +16988,7 @@ export class EwsMailProvider implements IMailProvider {
       for (const r of recipients.GetEnumerator?.() ?? []) {
         out.push(r.Name || r.Address || '');
       }
-    } catch (_) {}
+    } catch (_) { }
     return out.join('; ');
   }
 
@@ -14770,7 +17106,7 @@ export class EwsMailProvider implements IMailProvider {
           att.content,
         );
         if (file && att.contentType) file.ContentType = att.contentType;
-      } catch (_) {}
+      } catch (_) { }
     }
 
     // Gửi trực tiếp và lưu Sent Items, không cần Save() sang Draft để tránh race condition
@@ -15441,7 +17777,7 @@ export class EwsMailProvider implements IMailProvider {
     if (
       payload.email &&
       this.normalizeEmail(payload.email) !==
-        this.normalizeEmail(this.getContactPrimaryEmail(contact))
+      this.normalizeEmail(this.getContactPrimaryEmail(contact))
     ) {
       const existing = await this.findContactByEmail(payload.email);
       if (existing && existing.Id?.UniqueId !== contact.Id?.UniqueId) {
@@ -15973,193 +18309,6 @@ export class EwsMailProvider implements IMailProvider {
 }
 ````
 
-## File: src/exchange/interfaces/mail-provider.interface.ts
-````typescript
-export interface MailAttachmentMeta {
-  index: number;
-  filename: string;
-  contentType?: string;
-  size?: number;
-}
-
-export interface MailMessage {
-  id: string; // Composite ID: Base64(folder:uid)
-  subject: string;
-  from: { name: string; email: string };
-  to: { name: string; email: string }[];
-  cc: { name: string; email: string }[];
-  bcc: { name: string; email: string }[];
-  receivedAt: Date;
-  body: string;
-  isHtml: boolean;
-  hasAttachments: boolean;
-  isRead: boolean;
-  preview: string;
-  importance?: string;
-  isStarred?: boolean;
-  // Conversation group id
-  conversationId?: string;
-  attachments?: MailAttachmentMeta[];
-}
-
-export interface MailFolder {
-  id: string; // e.g., 'INBOX', 'Sent Items', 'Starred', 'Drafts', 'Spam', 'Trash' hoặc FolderId từ EWS
-  name: string;
-  type?: string; // e.g., 'inbox', 'sent', 'user_created'
-  parentId?: string;
-  children?: MailFolder[];
-  isSystem: boolean;
-  unreadCount?: number;
-  totalCount?: number;
-}
-
-export interface Attachment {
-  filename: string;
-  contentType?: string;
-  content: string; // Base64 encoded
-}
-
-export interface SendMailOptions {
-  from?: string;
-  to?: string[];
-  cc?: string[];
-  bcc?: string[];
-  replyTo?: string[];
-  subject?: string;
-  text?: string; // Plain text version
-  html?: string; // HTML version
-  attachments?: Attachment[];
-}
-
-export interface SaveDraftOptions {
-  from?: string;
-  to?: string[];
-  cc?: string[];
-  bcc?: string[];
-  replyTo?: string[];
-  subject?: string;
-  text?: string;
-  html?: string;
-  attachments?: Attachment[];
-}
-
-export interface ReplyMailOptions {
-  messageId: string;
-  html?: string;
-  text?: string;
-  replyAll?: boolean;
-  attachments?: Attachment[];
-}
-
-export interface ForwardMailOptions {
-  messageId: string;
-  to: string[];
-  cc?: string[];
-  bcc?: string[];
-  html?: string;
-  text?: string;
-  attachments?: Attachment[];
-}
-
-export interface IMailProvider {
-  /**
-   * Connect to the mail server
-   */
-  connect(): Promise<void>;
-
-  /**
-   * Disconnect from the mail server
-   */
-  disconnect(): Promise<void>;
-
-  /**
-   * Get list of standard folders
-   */
-  getFolders(): Promise<MailFolder[]>;
-
-  /**
-   * Get messages from a folder with pagination
-   */
-  getMessages(
-    folderId: string,
-    page: number,
-    limit: number,
-    mailbox?: string,
-  ): Promise<{ items: Partial<MailMessage>[]; total: number }>;
-
-  /**
-   * Get unread/total counts for standard folders
-   */
-  getFolderCounts(mailbox?: string): Promise<Record<string, { total: number; unread: number }>>;
-
-  /**
-   * Get a single message by its composite ID
-   */
-  getMessage(id: string): Promise<MailMessage>;
-
-  downloadAttachment(messageId: string, index: number): Promise<{ filename: string; contentType: string; content: Buffer }>;
-
-  /**
-   * Send an email
-   */
-  sendMessage(
-    options: SendMailOptions,
-  ): Promise<{ success: boolean; messageId?: string }>;
-
-  /**
-   * Save a draft
-   */
-  saveDraft(
-    options: SaveDraftOptions,
-  ): Promise<{ success: boolean; messageId?: string }>;
-
-  /**
-   * Search messages
-   */
-  search(
-    query: string,
-    page: number,
-    limit: number,
-    folder?: string,
-    mailbox?: string,
-  ): Promise<{ items: Partial<MailMessage>[]; total: number }>;
-
-  /**
-   * Move message to another folder
-   */
-  moveMessage(
-    messageId: string,
-    targetFolder: string,
-  ): Promise<{ success: boolean }>;
-
-  markMessages(ids: string[], isRead: boolean): Promise<void>;
-  markAllMessages(folder: string, isRead: boolean, mailbox?: string): Promise<void>;
-  moveMessagesBatch(ids: string[], targetFolder: string): Promise<void>;
-  moveAllMessages(
-    sourceFolder: string,
-    targetFolder: string,
-    mailbox?: string,
-  ): Promise<void>;
-  permanentlyDeleteMessages(ids: string[]): Promise<number>;
-  permanentlyDeleteAllMessages(folder: string, mailbox?: string): Promise<number>;
-  markMessagesStar(ids: string[], starred: boolean): Promise<void>;
-  markAllMessagesStar(folder: string, starred: boolean, mailbox?: string): Promise<void>;
-
-  replyMessage(options: ReplyMailOptions): Promise<{ success: boolean; messageId?: string }>;
-  forwardMessage(options: ForwardMailOptions): Promise<{ success: boolean; messageId?: string }>;
-  getConversationMessages(messageId: string, maxItems: number): Promise<any>;
-
-  // Calendar
-  createEvent(payload: any): Promise<any>;
-  getEvents(startDate: string, endDate: string): Promise<any[]>;
-  getEventDetails(eventId: string): Promise<any>;
-  updateEvent(eventId: string, payload: any): Promise<any>;
-  deleteEvent(eventId: string): Promise<void>;
-  getActiveReminders(): Promise<any[]>;
-  dismissReminder(eventId: string): Promise<void>;
-}
-````
-
 ## File: src/exchange/services/exchange-auth.service.ts
 ````typescript
 import {
@@ -16183,27 +18332,137 @@ import {
   Uri,
   WellKnownFolderName,
   Folder,
-  FolderView,
-  FolderSchema,
-  BasePropertySet,
-  PropertySet,
   ImpersonatedUserId,
   ConnectingIdType,
 } from 'ews-javascript-api';
+import { ImapFlow } from 'imapflow';
 import { XhrApi } from '@ewsjs/xhr';
 
 // exchange-auth.service.ts
+export type MailProviderType = 'ews' | 'imap';
+
 @Injectable()
 export class ExchangeAuthService {
   private readonly logger = new Logger(ExchangeAuthService.name);
   private readonly SESSION_TTL = 3600; // 1 hour
   private readonly REFRESH_TTL = 7 * 24 * 3600; // 7 days
 
+  private normalizeEmail(email: string): string {
+    return (email || '').trim().toLowerCase();
+  }
+
+  private getBasicIdentityCacheKey(email: string): string {
+    return `exchange:basic-identity:${this.normalizeEmail(email)}`;
+  }
+
+  private getMailProviderPreference(): 'auto' | MailProviderType {
+    const configured =
+      this.configService.get<string>('MAIL_PROVIDER')?.trim().toLowerCase() ||
+      'auto';
+
+    if (configured === 'ews' || configured === 'imap') {
+      return configured;
+    }
+
+    return 'auto';
+  }
+
+  private buildBasicAuthIdentityCandidates(email: string): string[] {
+    const normalizedEmail = this.normalizeEmail(email);
+    const [localPart = '', domainPart = ''] = normalizedEmail.split('@');
+    const configuredDomain =
+      this.configService.get<string>('EWS_BASIC_AUTH_DOMAIN')?.trim() || '';
+    const configuredUpnSuffix =
+      this.configService.get<string>('EWS_BASIC_AUTH_UPN_SUFFIX')?.trim() || '';
+    const inferredNetbiosDomain = domainPart.split('.')[0] || '';
+    const domainForSam = configuredDomain || inferredNetbiosDomain;
+
+    const candidates = [
+      normalizedEmail,
+      configuredUpnSuffix && localPart
+        ? `${localPart}@${configuredUpnSuffix.toLowerCase()}`
+        : '',
+      domainForSam && localPart ? `${domainForSam}\\${localPart}` : '',
+      localPart,
+    ];
+
+    return Array.from(
+      new Set(
+        candidates
+          .map((candidate) => candidate.trim())
+          .filter(Boolean),
+      ),
+    );
+  }
+
+  private async getCachedBasicAuthIdentity(email: string): Promise<string | null> {
+    const cached = await this.cache.get<{ identity?: string }>(
+      this.getBasicIdentityCacheKey(email),
+    );
+    return cached?.identity?.trim() || null;
+  }
+
+  private async cacheBasicAuthIdentity(
+    email: string,
+    identity: string,
+  ): Promise<void> {
+    await this.cache.set(
+      this.getBasicIdentityCacheKey(email),
+      { identity },
+      this.REFRESH_TTL,
+    );
+  }
+
+  private buildImapConfig(authUser: string, password: string) {
+    return {
+      host: this.configService.get<string>('IMAP_HOST', 'outlook.office365.com'),
+      port: this.configService.get<number>('IMAP_PORT', 993),
+      secure: this.configService.get<string>('IMAP_SECURE', 'true') !== 'false',
+      auth: {
+        user: authUser,
+        pass: password,
+      },
+      tls: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: false,
+      },
+      logger: false,
+    };
+  }
+
+  private buildDefaultName(email: string): string {
+    return email.split('@')[0] || email;
+  }
+
+  private async ensureLocalUser(email: string): Promise<User> {
+    let user = await this.em.findOne(User, { email });
+
+    if (!user) {
+      user = this.em.create(User, {
+        email,
+        name: this.buildDefaultName(email),
+        isActive: true,
+        mailboxInitialized: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      await this.em.persistAndFlush(user);
+      this.logger.log(`Provisioned local webmail user for ${email}`);
+    }
+
+    if (!user.isActive) {
+      throw new ForbiddenException('Tài khoản đã bị vô hiệu hoá');
+    }
+
+    return user;
+  }
+
   constructor(
     private readonly cache: DragonflyService,
     private readonly configService: ConfigService,
     private readonly em: EntityManager,
-  ) {}
+  ) { }
 
   /**
    * Generate secure session token
@@ -16277,29 +18536,65 @@ export class ExchangeAuthService {
     if (!user.isActive) {
       throw new ForbiddenException('Tài khoản đã bị vô hiệu hoá');
     }
-    
-    if (!user.password) {
-      user.password = await argon2.hash(password);
-      await this.em.persistAndFlush(user);
-    } else {
-      const valid = await argon2.verify(user.password, password);
-      if (!valid) {
-        throw new UnauthorizedException('Invalid Exchange credentials');
-      }
-    }
 
     const ssoEnabled =
       this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
+    let exchangeAuthIdentity = this.normalizeEmail(email);
+    let mailProvider: MailProviderType = 'ews';
+
     if (ssoEnabled) {
       // 1. Verify credentials against Exchange/EWS (SSO)
-      await this.verifyExchangeCredentials(email);
+      exchangeAuthIdentity = await this.verifyExchangeCredentials(email);
     } else {
-      // 1. Verify credentials against Exchange/EWS (basic)
-      await this.verifyExchangeCredentialsBasic(email, password);
+      const providerPreference = this.getMailProviderPreference();
+
+      if (providerPreference === 'imap') {
+        exchangeAuthIdentity = await this.verifyImapCredentials(email, password);
+        mailProvider = 'imap';
+      } else {
+        try {
+          exchangeAuthIdentity = await this.verifyExchangeCredentialsBasic(
+            email,
+            password,
+          );
+        } catch (error) {
+          if (providerPreference !== 'auto') {
+            throw error;
+          }
+
+          this.logger.warn(
+            `EWS basic auth rejected ${email}. Falling back to IMAP authentication.`,
+          );
+          exchangeAuthIdentity = await this.verifyImapCredentials(
+            email,
+            password,
+          );
+          mailProvider = 'imap';
+        }
+      }
     }
 
+    if (!user.password || !(await argon2.verify(user.password, password))) {
+      user.password = await argon2.hash(password);
+      await this.em.persistAndFlush(user);
+    }
+
+    // 2. Ensure mailbox folders are initialized once per account
+    await this.initializeMailboxIfNeeded(
+      email,
+      password,
+      exchangeAuthIdentity,
+      mailProvider,
+    );
+
     // 3. Issue tokens
-    const tokens = await this.issueTokens(email, password);
+    const tokens = await this.issueTokens(
+      email,
+      password,
+      exchangeAuthIdentity,
+      mailProvider,
+    );
+
     return {
       ...tokens,
       id: user.id,
@@ -16313,16 +18608,26 @@ export class ExchangeAuthService {
   private async issueTokens(
     email: string,
     password: string,
+    authIdentity?: string,
+    mailProvider: MailProviderType = 'ews',
   ): Promise<{ accessToken: string; refreshToken: string; email: string }> {
     // A. Issue Access Token (Session)
     const accessToken = this.generateSessionToken();
     const accessKey = await this.deriveKey(accessToken);
     const encryptedEmail = this.encrypt(email, accessKey);
     const encryptedPass = this.encrypt(password, accessKey);
+    const normalizedAuthIdentity = (authIdentity || email).trim();
+    const encryptedAuthIdentity = this.encrypt(normalizedAuthIdentity, accessKey);
 
     await this.cache.set(
       `exchange:session:${accessToken}`,
-      { e: encryptedEmail, p: encryptedPass, createdAt: Date.now() },
+      {
+        e: encryptedEmail,
+        p: encryptedPass,
+        u: encryptedAuthIdentity,
+        m: mailProvider,
+        createdAt: Date.now(),
+      },
       this.SESSION_TTL,
     );
 
@@ -16335,12 +18640,15 @@ export class ExchangeAuthService {
     const refreshKey = await this.deriveKey(tokenId);
     const re = this.encrypt(email, refreshKey);
     const rp = this.encrypt(password, refreshKey);
+    const ru = this.encrypt(normalizedAuthIdentity, refreshKey);
 
     await this.cache.set(
       `exchange:refresh:${tokenId}`,
-      { h: secretHash, e: re, p: rp },
+      { h: secretHash, e: re, p: rp, u: ru, m: mailProvider },
       this.REFRESH_TTL,
     );
+
+    await this.cacheBasicAuthIdentity(email, normalizedAuthIdentity);
 
     return {
       email,
@@ -16365,7 +18673,13 @@ export class ExchangeAuthService {
       throw new UnauthorizedException('Token không hợp lệ !');
     }
 
-    const stored = await this.cache.get<{ h: string; e: string; p: string }>(
+    const stored = await this.cache.get<{
+      h: string;
+      e: string;
+      p: string;
+      u?: string;
+      m?: MailProviderType;
+    }>(
       `exchange:refresh:${tokenId}`,
     );
 
@@ -16384,13 +18698,26 @@ export class ExchangeAuthService {
       const key = await this.deriveKey(tokenId);
       const email = this.decrypt(stored.e, key);
       const password = this.decrypt(stored.p, key);
+      const authIdentity = stored.u
+        ? this.decrypt(stored.u, key)
+        : (await this.getCachedBasicAuthIdentity(email)) || email;
+      const mailProvider = stored.m === 'imap' ? 'imap' : 'ews';
 
       // Revoke old refresh token
       await this.cache.del(`exchange:refresh:${tokenId}`);
 
       // Issue new tokens
       this.logger.log(`Exchange tokens rotated for ${email}`);
-      return this.issueTokens(email, password);
+      const tokens = await this.issueTokens(
+        email,
+        password,
+        authIdentity,
+        mailProvider,
+      );
+
+      return {
+        ...tokens,
+      };
     } catch (error) {
       this.logger.error(`Failed to rotate exchange token: ${error.message}`);
       throw new UnauthorizedException('Không thể làm mới token !');
@@ -16400,22 +18727,23 @@ export class ExchangeAuthService {
   /**
    * Verify Exchange credentials
    */
-  private async verifyExchangeCredentials(email: string): Promise<void> {
+  private async verifyExchangeCredentials(email: string): Promise<string> {
     const ssoEnabled =
       this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
     if (!ssoEnabled) {
-      return;
+      return this.normalizeEmail(email);
     }
     const validate = this.configService.get<boolean>('EWS_VALIDATE_ON_LOGIN');
     if (!validate) {
       this.logger.log(`Skip EWS validation for ${email}`);
-      return;
+      return this.normalizeEmail(email);
     }
 
     const service = await this.createEwsService(email);
     try {
       await Folder.Bind(service, WellKnownFolderName.Inbox);
       this.logger.log(`EWS authentication successful for ${email}`);
+      return this.normalizeEmail(email);
     } catch (error) {
       this.logger.warn(
         `EWS authentication failed for ${email}: ${error.message}`,
@@ -16424,21 +18752,92 @@ export class ExchangeAuthService {
     }
   }
 
+  private async initializeMailboxIfNeeded(
+    email: string,
+    password: string,
+    authIdentity?: string,
+    mailProvider: MailProviderType = 'ews',
+  ): Promise<void> {
+    const user = await this.em.findOne(User, { email });
+
+    if (!user) {
+      throw new UnauthorizedException('Tài khoản không tồn tại trên hệ thống');
+    }
+
+    if (user.mailboxInitialized) {
+      return;
+    }
+
+    if (mailProvider !== 'ews') {
+      user.mailboxInitialized = false;
+      await this.em.persistAndFlush(user);
+      return;
+    }
+
+    try {
+      const service = await this.createEwsService(email, password, authIdentity);
+      await this.ensureSystemFolders(service);
+      user.mailboxInitialized = true;
+    } catch (error) {
+      this.logger.warn(
+        `Failed to verify default folders for ${email}: ${error.message}`,
+      );
+      user.mailboxInitialized = false;
+    }
+
+    await this.em.persistAndFlush(user);
+  }
+
   async createSessionFromCredentials(
     email: string,
     password: string,
+    authIdentity?: string,
+    mailProvider: MailProviderType = 'ews',
   ): Promise<{ accessToken: string; refreshToken: string }> {
-    return this.issueTokens(email, password);
+    return this.issueTokens(email, password, authIdentity, mailProvider);
   }
 
-  async ensureMailboxExists(email: string, password?: string): Promise<void> {
-    const service = await this.createEwsService(email, password);
+  async ensureMailboxExists(
+    email: string,
+    password?: string,
+    authIdentity?: string,
+    mailProvider: MailProviderType = 'ews',
+  ): Promise<void> {
+    if (mailProvider === 'imap') {
+      if (!password) {
+        throw new UnauthorizedException('Missing password for IMAP auth');
+      }
+
+      await this.verifyImapCredentials(email, password, authIdentity);
+      return;
+    }
+
+    const service = await this.createEwsService(email, password, authIdentity);
     await Folder.Bind(service, WellKnownFolderName.Inbox);
+  }
+
+  async resolveAuthIdentity(
+    email: string,
+    authIdentity?: string,
+  ): Promise<string> {
+    if (authIdentity?.trim()) {
+      return authIdentity.trim();
+    }
+
+    return (await this.getCachedBasicAuthIdentity(email)) || this.normalizeEmail(email);
+  }
+
+  async resolveMailProvider(
+    sessionToken: string,
+  ): Promise<MailProviderType> {
+    const credentials = await this.getCredentials(sessionToken);
+    return credentials?.mailProvider === 'imap' ? 'imap' : 'ews';
   }
 
   private async createEwsService(
     email: string,
     password?: string,
+    authIdentity?: string,
   ): Promise<ExchangeService> {
     const rejectUnauthorized =
       this.configService.get<string>('EWS_TLS_REJECT_UNAUTHORIZED') !== 'false';
@@ -16462,7 +18861,7 @@ export class ExchangeAuthService {
     (ExchangeService as any).XHRApi = new XhrApi();
     const service = new ExchangeService(
       ExchangeVersion[version as keyof typeof ExchangeVersion] ||
-        ExchangeVersion.Exchange2016,
+      ExchangeVersion.Exchange2016,
     );
     const ssoEnabled =
       this.configService.get<string>('EWS_SSO_ENABLED') !== 'false';
@@ -16498,7 +18897,7 @@ export class ExchangeAuthService {
       if (!password) {
         throw new UnauthorizedException('Missing password for basic auth');
       }
-      service.Credentials = new WebCredentials(email, password);
+      service.Credentials = new WebCredentials(authIdentity || email, password);
     }
     service.Url = new Uri(url);
 
@@ -16518,23 +18917,88 @@ export class ExchangeAuthService {
   private async verifyExchangeCredentialsBasic(
     email: string,
     password: string,
-  ): Promise<void> {
+    authIdentity?: string,
+  ): Promise<string> {
     const validate = this.configService.get<boolean>('EWS_VALIDATE_ON_LOGIN');
     if (!validate) {
       this.logger.log(`Skip EWS basic validation for ${email}`);
-      return;
+      return this.normalizeEmail(email);
     }
 
-    const service = await this.createEwsService(email, password);
-    try {
-      await Folder.Bind(service, WellKnownFolderName.Inbox);
-      this.logger.log(`EWS basic authentication successful for ${email}`);
-    } catch (error) {
-      this.logger.warn(
-        `EWS basic authentication failed for ${email}: ${error.message}`,
-      );
-      throw new UnauthorizedException('Invalid Exchange credentials');
+    const cachedIdentity = await this.getCachedBasicAuthIdentity(email);
+    const candidates = authIdentity?.trim() 
+      ? [authIdentity.trim(), ...(cachedIdentity ? [cachedIdentity] : []), ...this.buildBasicAuthIdentityCandidates(email)]
+      : (cachedIdentity ? [cachedIdentity, ...this.buildBasicAuthIdentityCandidates(email)] : this.buildBasicAuthIdentityCandidates(email));
+
+    const uniqueCandidates = Array.from(new Set(candidates)).filter(Boolean);
+    let lastError: unknown;
+
+    for (const candidate of uniqueCandidates) {
+      const service = await this.createEwsService(email, password, candidate);
+
+      try {
+        await Folder.Bind(service, WellKnownFolderName.Inbox);
+        await this.cacheBasicAuthIdentity(email, candidate);
+        this.logger.log(
+          `EWS basic authentication successful for ${email} using identity ${candidate}`,
+        );
+        return candidate;
+      } catch (error) {
+        lastError = error;
+        this.logger.warn(
+          `EWS basic authentication failed for ${email} using identity ${candidate}: ${error.message}`,
+        );
+      }
     }
+
+    throw new UnauthorizedException(
+      lastError instanceof Error && lastError.message
+        ? `Invalid Exchange credentials`
+        : 'Invalid Exchange credentials',
+    );
+  }
+
+  private async verifyImapCredentials(
+    email: string,
+    password: string,
+    authIdentity?: string,
+  ): Promise<string> {
+    const prioritizedCandidates = authIdentity?.trim()
+      ? [authIdentity.trim(), ...this.buildBasicAuthIdentityCandidates(email)]
+      : this.buildBasicAuthIdentityCandidates(email);
+    const candidates = Array.from(new Set(prioritizedCandidates));
+
+    let lastError: unknown;
+
+    for (const candidate of candidates) {
+      const client = new ImapFlow(this.buildImapConfig(candidate, password) as any);
+
+      try {
+        await client.connect();
+        await client.logout();
+        await this.cacheBasicAuthIdentity(email, candidate);
+        this.logger.log(
+          `IMAP authentication successful for ${email} using identity ${candidate}`,
+        );
+        return candidate;
+      } catch (error) {
+        lastError = error;
+        try {
+          await client.logout();
+        } catch {
+          // ignore disconnect errors after failed auth
+        }
+        this.logger.warn(
+          `IMAP authentication failed for ${email} using identity ${candidate}: ${error.message}`,
+        );
+      }
+    }
+
+    throw new UnauthorizedException(
+      lastError instanceof Error && lastError.message
+        ? 'Invalid Exchange credentials'
+        : 'Invalid Exchange credentials',
+    );
   }
 
 
@@ -16543,10 +19007,17 @@ export class ExchangeAuthService {
    */
   async getCredentials(
     sessionToken: string,
-  ): Promise<{ email: string; password: string } | null> {
+  ): Promise<{
+    email: string;
+    password: string;
+    authIdentity: string;
+    mailProvider: MailProviderType;
+  } | null> {
     const session = await this.cache.get<{
       e: string;
       p: string;
+      u?: string;
+      m?: MailProviderType;
       createdAt: number;
     }>(`exchange:session:${sessionToken}`);
 
@@ -16558,8 +19029,12 @@ export class ExchangeAuthService {
       const key = await this.deriveKey(sessionToken);
       const email = this.decrypt(session.e, key);
       const password = this.decrypt(session.p, key);
+      const authIdentity = session.u
+        ? this.decrypt(session.u, key)
+        : (await this.getCachedBasicAuthIdentity(email)) || email;
+      const mailProvider = session.m === 'imap' ? 'imap' : 'ews';
 
-      return { email, password };
+      return { email, password, authIdentity, mailProvider };
     } catch (error) {
       this.logger.error(
         `Failed to decrypt credentials for session ${sessionToken}`,
@@ -16600,6 +19075,27 @@ export class ExchangeAuthService {
     const exists = await this.cache.exists(`exchange:session:${sessionToken}`);
     return exists;
   }
+
+  /**
+   * Ensure system folders (Inbox, Drafts, Sent, etc.) exist for EWS
+   */
+  private async ensureSystemFolders(service: ExchangeService): Promise<void> {
+    const folders = [
+      WellKnownFolderName.Inbox,
+      WellKnownFolderName.Drafts,
+      WellKnownFolderName.SentItems,
+      WellKnownFolderName.DeletedItems,
+      WellKnownFolderName.JunkEmail,
+    ];
+
+    for (const folder of folders) {
+      try {
+        await Folder.Bind(service, folder);
+      } catch (error) {
+        this.logger.warn(`Well-known folder ${folder} not found, may create later`);
+      }
+    }
+  }
 }
 ````
 
@@ -16623,6 +19119,10 @@ import { File } from './database/entities/file.entity';
 import { AuditLog } from './database/entities/audit-log.entity';
 import { Role } from './database/entities/role.entity';
 import { Permission } from './database/entities/permission.entity';
+import { RssFeed } from './database/entities/rss-feed.entity';
+import { RssArticle } from './database/entities/rss-article.entity';
+import { UserRssSubscription } from './database/entities/user-rss-subscription.entity';
+import { UserRssState } from './database/entities/user-rss-state.entity';
 import { AuditLogModule } from './audit/audit.module';
 import { ExchangeModule } from './exchange/exchange.module';
 import { PostgreSqlDriver } from '@mikro-orm/postgresql';
@@ -16634,6 +19134,7 @@ import { SpamReport } from './database/entities/spam-report.entity';
 import { GlobalBlocklist } from './database/entities/global-blocklist.entity';
 import { SecurityPolicy } from './database/entities/security-policy.entity';
 import { OrganizationModule } from './organization/organization.module';
+import { RssModule } from './rss/rss.module';
 
 @Module({
   imports: [
@@ -16645,7 +19146,17 @@ import { OrganizationModule } from './organization/organization.module';
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
         driver: PostgreSqlDriver,
-        entities: [User, File, AuditLog, Role, Permission, SharedMailbox, SharedMailboxMember, SpamReport, GlobalBlocklist, SecurityPolicy],
+        entities: [
+          User,
+          File,
+          AuditLog,
+          Role,
+          Permission, SharedMailbox, SharedMailboxMember, SpamReport, GlobalBlocklist, SecurityPolicy,
+          RssFeed,
+          RssArticle,
+          UserRssSubscription,
+          UserRssState,
+        ],
         dbName: configService.get<string>('database.name'),
         host: configService.get<string>('database.host'),
         port: configService.get<number>('database.port'),
@@ -16669,6 +19180,7 @@ import { OrganizationModule } from './organization/organization.module';
     AuditLogModule,
     ExchangeModule,
     MailboxModule,
+    RssModule,
     SharedMailboxModule,
     ScheduleModule.forRoot(),
     OrganizationModule,
@@ -16676,7 +19188,7 @@ import { OrganizationModule } from './organization/organization.module';
   controllers: [],
   providers: [],
 })
-export class AppModule {}
+export class AppModule { }
 ````
 
 ## File: src/exchange/services/imap-mail.provider.ts
@@ -16712,7 +19224,11 @@ import { safeStringify } from '../utils/json.helper';
 export class ImapMailProvider implements IMailProvider {
   private readonly logger = new Logger(ImapMailProvider.name);
   private client: ImapFlow;
-  private credentials: { email: string; password: string };
+  private credentials: {
+    email: string;
+    password: string;
+    authIdentity?: string;
+  };
   private sessionToken: string;
 
   constructor(
@@ -16735,7 +19251,7 @@ export class ImapMailProvider implements IMailProvider {
       port,
       secure,
       auth: {
-        user: this.credentials.email,
+        user: this.credentials.authIdentity || this.credentials.email,
         pass: this.credentials.password,
       },
       tls: {
@@ -16770,7 +19286,9 @@ export class ImapMailProvider implements IMailProvider {
     // IMAP
     this.client = new ImapFlow(this.getImapConfig() as any);
     await this.client.connect();
-    this.logger.log(`IMAP connected for ${this.credentials.email}`);
+    this.logger.log(
+      `IMAP connected for ${this.credentials.email} using ${this.credentials.authIdentity || this.credentials.email}`,
+    );
   }
 
   async downloadAttachment(
@@ -18125,9 +20643,9 @@ import {
   Delete,
   Param,
 } from '@nestjs/common';
-import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { ExchangeAuthService } from '../services/exchange-auth.service';
 import { MailService } from '../services/mail.service';
+import { buildAuthCookieOptions } from '../../auth/auth-cookie.util';
 import {
   ExchangeLoginDto,
   SendMailDto,
@@ -18163,7 +20681,7 @@ export class ExchangeController {
   constructor(
     private readonly authService: ExchangeAuthService,
     private readonly mailService: MailService,
-  ) {}
+  ) { }
 
   @Post('auth/login')
   @AuditAction('Đăng nhập Webmail')
@@ -18204,12 +20722,11 @@ export class ExchangeController {
   ) {
     const tokens = await this.authService.rotateRefreshToken(refreshToken);
 
-    res.cookie('exchange_session', tokens.accessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 3600000,
-    });
+    res.cookie(
+      'exchange_session',
+      tokens.accessToken,
+      buildAuthCookieOptions(3600000),
+    );
 
     return tokens;
   }
@@ -18236,7 +20753,8 @@ export class ExchangeController {
       }
     }
 
-    res.clearCookie('exchange_session');
+    const clearOptions = buildAuthCookieOptions(0);
+    res.clearCookie('exchange_session', clearOptions);
     return { success: true, message: 'Dang xuat thanh cong' };
   }
 
@@ -18326,10 +20844,15 @@ export class ExchangeController {
     @Query('download') download: string = 'true',
     @Res() res: Response,
   ) {
-    const attachment = await this.mailService.downloadAttachment(
+    const attachment = (await this.mailService.downloadAttachment(
       id,
       Number(index),
-    );
+    )) as {
+      filename: string;
+      contentType: string;
+      size: number;
+      content: Buffer | string;
+    };
 
     const disposition =
       download === 'false'
@@ -18907,6 +21430,7 @@ import {
 } from '@nestjs/common';
 import { REQUEST } from '@nestjs/core';
 import { EwsMailProvider } from './ews-mail.provider';
+import { ImapMailProvider } from './imap-mail.provider';
 import { SpamModerationService } from './spam-moderation.service';
 import { MailMessage } from '../interfaces/mail-provider.interface';
 import {
@@ -18936,22 +21460,45 @@ export class MailService {
   private static readonly MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024; // 25MB/file
 
   constructor(
-    private readonly provider: EwsMailProvider,
+    private readonly ewsProvider: EwsMailProvider,
+    private readonly imapProvider: ImapMailProvider,
     private readonly dragonfly: DragonflyService,
     private readonly authService: ExchangeAuthService,
     private readonly moderationService: SpamModerationService,
     @Inject(REQUEST) private readonly request: any,
-  ) {}
+  ) { }
 
-  private async withProvider<T>(operation: () => Promise<T>): Promise<T> {
+  private async resolveMailProvider() {
+    const token = this.request.cookies?.['exchange_session'];
+    if (!token) {
+      return this.ewsProvider as any;
+    }
+
+    const credentials = await this.authService.getCredentials(token);
+    return credentials?.mailProvider === 'imap'
+      ? (this.imapProvider as any)
+      : (this.ewsProvider as any);
+  }
+
+  private ensureProviderMethod(provider: any, methodName: string): void {
+    if (typeof provider?.[methodName] !== 'function') {
+      throw new BadRequestException(
+        'Tính năng này hiện chỉ hỗ trợ với kết nối EWS.',
+      );
+    }
+  }
+
+  private async withProvider<T>(operation: (provider: any) => Promise<T>): Promise<T> {
+    const provider = await this.resolveMailProvider();
+
     try {
-      await this.provider.connect();
-      return await operation();
+      await provider.connect();
+      return await operation(provider);
     } catch (error) {
       this.logger.error(`Mail operation failed: ${error.message}`, error.stack);
       throw error;
     } finally {
-      await this.provider.disconnect();
+      await provider.disconnect();
     }
   }
 
@@ -19003,7 +21550,7 @@ export class MailService {
   async getFolderCounts(mailbox?: string) {
     const email = await this.getEmailFromSession();
     if (!email) {
-      return this.withProvider(() => this.provider.getFolderCounts(mailbox));
+      return this.withProvider((provider) => provider.getFolderCounts(mailbox));
     }
 
     const standardFolders = MAIL_FOLDERS.map((f) => f.id);
@@ -19034,9 +21581,9 @@ export class MailService {
       }
     }
 
-    const counts = await this.withProvider(() =>
-      this.provider.getFolderCounts(mailbox),
-    );
+    const counts = (await this.withProvider((provider) =>
+      provider.getFolderCounts(mailbox),
+    )) as any;
 
     if (this.dragonfly.enabled) {
       const ttl = 300;
@@ -19050,14 +21597,14 @@ export class MailService {
     const mappedCounts: Record<string, { total: number; unread: number }> = {};
     for (const [id, count] of Object.entries(counts)) {
       const type = this.mapIdToFolderType(id);
-      mappedCounts[type] = count;
+      mappedCounts[type] = count as any;
     }
 
     return mappedCounts;
   }
 
   async getFolders() {
-    return this.withProvider(() => this.provider.getFolders());
+    return this.withProvider((provider) => provider.getFolders());
   }
 
   async getMessages(
@@ -19067,13 +21614,13 @@ export class MailService {
     mailbox?: string,
   ) {
     const folderId = this.mapFolderTypeToId(folderType);
-    return this.withProvider(() =>
-      this.provider.getMessages(folderId, page, pageSize, mailbox),
+    return this.withProvider((provider) =>
+      provider.getMessages(folderId, page, pageSize, mailbox),
     );
   }
 
   async getMessage(id: string) {
-    const message = await this.withProvider(() => this.provider.getMessage(id));
+    const message = await this.withProvider((provider) => provider.getMessage(id));
 
     try {
       const email = await this.getEmailFromSession();
@@ -19090,7 +21637,7 @@ export class MailService {
         const current = await this.dragonfly.get<{
           total: number;
           unread: number;
-        }>(key);
+        }>(key) as any;
 
         if (current && current.unread > 0) {
           await this.dragonfly.del(key);
@@ -19104,15 +21651,16 @@ export class MailService {
   }
 
   async downloadAttachment(messageId: string, index: number) {
-    return this.withProvider(() =>
-      this.provider.downloadAttachment(messageId, index),
-    );
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'downloadAttachment');
+      return provider.downloadAttachment(messageId, index);
+    });
   }
 
   async sendMessage(dto: SendMailDto) {
     this.validateAttachmentsSize(dto.attachments);
-    const result = await this.withProvider(() =>
-      this.provider.sendMessage(dto),
+    const result = await this.withProvider((provider) =>
+      provider.sendMessage(dto),
     );
 
     // Xóa cache song song (fire-and-forget) để không block response trả về client
@@ -19130,7 +21678,7 @@ export class MailService {
 
   async saveDraft(dto: SaveDraftDto) {
     this.validateAttachmentsSize(dto.attachments);
-    const result = await this.withProvider(() => this.provider.saveDraft(dto));
+    const result = await this.withProvider((provider) => provider.saveDraft(dto));
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
       const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
@@ -19148,8 +21696,8 @@ export class MailService {
     folder: string = 'inbox',
     mailbox?: string,
   ) {
-    return this.withProvider(() =>
-      this.provider.search(query, page, pageSize, folder, mailbox),
+    return this.withProvider((provider) =>
+      provider.search(query, page, pageSize, folder, mailbox),
     );
   }
 
@@ -19158,18 +21706,18 @@ export class MailService {
       targetFolderType,
       targetFolderType,
     );
-    return this.withProvider(() =>
-      this.provider.moveMessage(messageId, targetFolderId),
+    return this.withProvider((provider) =>
+      provider.moveMessage(messageId, targetFolderId),
     );
   }
 
   async markAsRead(dto: MarkReadDto) {
     const email = await this.getEmailFromSession();
 
-    await this.withProvider(async () => {
+    await this.withProvider(async (provider) => {
       if (dto.all && dto.folder) {
         const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessages(folderId, dto.isRead, dto.mailbox);
+        await provider.markAllMessages(folderId, dto.isRead, dto.mailbox);
 
         if (email && this.dragonfly.enabled) {
           const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
@@ -19177,10 +21725,9 @@ export class MailService {
           await this.dragonfly.del(key);
         }
       } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.markMessages(dto.ids, dto.isRead);
+        await provider.markMessages(dto.ids, dto.isRead);
 
         if (email && this.dragonfly.enabled) {
-          const folders = new Map<string, string | undefined>();
           for (const id of dto.ids) {
             try {
               const decoded = Buffer.from(id, 'base64').toString('utf8');
@@ -19188,14 +21735,11 @@ export class MailService {
               const rawFolder = parts[0];
               const mailbox = parts[2];
               const folder = resolveFolderId(rawFolder, rawFolder);
-              if (folder) folders.set(folder, mailbox);
+              if (folder) {
+                const mailboxPrefix = mailbox ? `:${mailbox}` : '';
+                await this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:${folder}`);
+              }
             } catch (e) {}
-          }
-
-          for (const [folder, mailbox] of folders.entries()) {
-            const mailboxPrefix = mailbox ? `:${mailbox}` : '';
-            const key = `exchange:count:${email}${mailboxPrefix}:${folder}`;
-            await this.dragonfly.del(key);
           }
         }
       }
@@ -19215,10 +21759,10 @@ export class MailService {
       dto.targetFolder,
     );
 
-    await this.withProvider(async () => {
+    await this.withProvider(async (provider) => {
       if (dto.all && dto.sourceFolder) {
         const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder);
-        await this.provider.moveAllMessages(sourceFolderId, targetFolderId, dto.mailbox);
+        await provider.moveAllMessages(sourceFolderId, targetFolderId, dto.mailbox);
 
         if (email && this.dragonfly.enabled) {
           const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
@@ -19226,7 +21770,7 @@ export class MailService {
           await this.dragonfly.del(`exchange:count:${email}${mailboxPrefix}:${targetFolderId}`);
         }
       } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.moveMessagesBatch(dto.ids, targetFolderId);
+        await provider.moveMessagesBatch(dto.ids, targetFolderId);
 
         if (email && this.dragonfly.enabled) {
           const folders = new Map<string, string | undefined>();
@@ -19269,14 +21813,14 @@ export class MailService {
     ).length;
     if (selectedModes !== 1) {
       throw new BadRequestException(
-        'Payload khong hop le. Chon dung 1 mode: messageId, ids, hoac all + sourceFolder',
+        'Payload không hợp lệ. Chọn đúng 1 mode: messageId, ids, hoặc all + sourceFolder',
       );
     }
 
     const email = await this.getEmailFromSession();
     const affectedFolders = new Map<string, string | undefined>();
 
-    const deletedCount = await this.withProvider(async () => {
+    const deletedCount = await this.withProvider(async (provider) => {
       if (hasSingle && dto.messageId) {
         const decoded = Buffer.from(dto.messageId, 'base64').toString('utf8');
         const parts = decoded.split('::');
@@ -19284,7 +21828,7 @@ export class MailService {
         const mailbox = parts[2];
         const folder = resolveFolderId(rawFolder, rawFolder);
         if (folder) affectedFolders.set(folder, mailbox);
-        return this.provider.permanentlyDeleteMessages([dto.messageId]);
+        return provider.permanentlyDeleteMessages([dto.messageId]);
       }
 
       if (hasMany && dto.ids) {
@@ -19314,17 +21858,17 @@ export class MailService {
 
           if (invalidId) {
             throw new BadRequestException(
-              'Danh sach ids co mail khong thuoc sourceFolder',
+              'Danh sách ids có mail không thuộc sourceFolder',
             );
           }
         }
 
-        return this.provider.permanentlyDeleteMessages(dto.ids);
+        return provider.permanentlyDeleteMessages(dto.ids);
       }
 
       const sourceFolderId = this.mapFolderTypeToId(dto.sourceFolder!);
       affectedFolders.set(sourceFolderId, dto.mailbox);
-      return this.provider.permanentlyDeleteAllMessages(sourceFolderId, dto.mailbox);
+      return provider.permanentlyDeleteAllMessages(sourceFolderId, dto.mailbox);
     });
 
     if (email && this.dragonfly.enabled) {
@@ -19344,10 +21888,11 @@ export class MailService {
   async markStar(dto: StarMailDto) {
     const email = await this.getEmailFromSession();
 
-    await this.withProvider(async () => {
+    await this.withProvider(async (provider) => {
       if (dto.all && dto.folder) {
         const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessagesStar(folderId, true, dto.mailbox);
+        this.ensureProviderMethod(provider, 'markAllMessagesStar');
+        await provider.markAllMessagesStar(folderId, true, dto.mailbox);
 
         if (email && this.dragonfly.enabled) {
           const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
@@ -19355,7 +21900,8 @@ export class MailService {
           await this.dragonfly.del(key);
         }
       } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.markMessagesStar(dto.ids, true);
+        this.ensureProviderMethod(provider, 'markMessagesStar');
+        await provider.markMessagesStar(dto.ids, true);
 
         if (email && this.dragonfly.enabled) {
           const folders = new Map<string, string | undefined>();
@@ -19378,7 +21924,7 @@ export class MailService {
         }
       } else {
         throw new BadRequestException(
-          'Payload khong hop le. Can ids hoac all + folder',
+          'Payload không hợp lệ. Cần ids hoặc all + folder',
         );
       }
     });
@@ -19393,10 +21939,11 @@ export class MailService {
   async unmarkStar(dto: StarMailDto) {
     const email = await this.getEmailFromSession();
 
-    await this.withProvider(async () => {
+    await this.withProvider(async (provider) => {
       if (dto.all && dto.folder) {
         const folderId = this.mapFolderTypeToId(dto.folder);
-        await this.provider.markAllMessagesStar(folderId, false, dto.mailbox);
+        this.ensureProviderMethod(provider, 'markAllMessagesStar');
+        await provider.markAllMessagesStar(folderId, false, dto.mailbox);
 
         if (email && this.dragonfly.enabled) {
           const mailboxPrefix = dto.mailbox ? `:${dto.mailbox}` : '';
@@ -19404,7 +21951,8 @@ export class MailService {
           await this.dragonfly.del(key);
         }
       } else if (dto.ids && dto.ids.length > 0) {
-        await this.provider.markMessagesStar(dto.ids, false);
+        this.ensureProviderMethod(provider, 'markMessagesStar');
+        await provider.markMessagesStar(dto.ids, false);
 
         if (email && this.dragonfly.enabled) {
           const folders = new Map<string, string | undefined>();
@@ -19427,7 +21975,7 @@ export class MailService {
         }
       } else {
         throw new BadRequestException(
-          'Payload khong hop le. Can ids hoac all + folder',
+          'Payload không hợp lệ. Cần ids hoặc all + folder',
         );
       }
     });
@@ -19441,8 +21989,9 @@ export class MailService {
 
   async replyMessage(dto: ReplyMailDto) {
     this.validateAttachmentsSize(dto.attachments);
-    const result = await this.withProvider(() =>
-      this.provider.replyMessage({
+    const result = await this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'replyMessage');
+      return provider.replyMessage({
         messageId: dto.messageId,
         html: dto.html,
         text: dto.text,
@@ -19452,8 +22001,8 @@ export class MailService {
           contentType: att.contentType,
           content: att.content,
         })),
-      }),
-    );
+      });
+    });
 
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
@@ -19466,8 +22015,9 @@ export class MailService {
 
   async forwardMessage(dto: ForwardMailDto) {
     this.validateAttachmentsSize(dto.attachments);
-    const result = await this.withProvider(() =>
-      this.provider.forwardMessage({
+    const result = await this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'forwardMessage');
+      return provider.forwardMessage({
         messageId: dto.messageId,
         to: dto.to,
         cc: dto.cc,
@@ -19479,8 +22029,8 @@ export class MailService {
           contentType: att.contentType,
           content: att.content,
         })),
-      }),
-    );
+      });
+    });
 
     const email = await this.getEmailFromSession();
     if (email && this.dragonfly.enabled) {
@@ -19494,16 +22044,16 @@ export class MailService {
   async reportJunk(dto: ReportJunkDto) {
     const email = await this.getEmailFromSession();
 
-    await this.withProvider(async () => {
+    await this.withProvider(async (provider) => {
       // 1. Thực hiện xử lý trên Exchange via Provider
-      await this.provider.markAsJunk(dto.ids, dto.isJunk, true);
+      await provider.markAsJunk(dto.ids, dto.isJunk, true);
 
       // 2. Ghi log báo cáo spam nếu hành động là "đánh dấu thư rác"
       if (dto.isJunk && email && dto.ids && dto.ids.length > 0) {
         for (const messageId of dto.ids) {
           try {
             // Lấy thông tin người gửi để ghi log
-            const msg = await this.provider.getMessage(messageId);
+            const msg = await provider.getMessage(messageId);
             if (msg && msg.from) {
               await this.moderationService.reportSpam(
                 email,
@@ -19539,39 +22089,71 @@ export class MailService {
   }
 
   async getConversationMessages(messageId: string, maxItems: number = 50) {
-    return this.withProvider(() =>
-      this.provider.getConversationMessages(messageId, maxItems),
-    );
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'getConversationMessages');
+      return provider.getConversationMessages(messageId, maxItems);
+    });
   }
 
   // ─── CALENDAR & REMINDERS ────────────────────────────────────────────────────────
 
-  async createEvent(payload: any) {
-    return this.withProvider(() => this.provider.createEvent(payload));
+  async createEvent(payload: {
+    subject: string;
+    body: string;
+    start: string;
+    end: string;
+    location?: string;
+    isAllDayEvent?: boolean;
+    isReminderSet?: boolean;
+    reminderMinutesBeforeStart?: number;
+    mailbox?: string;
+  }) {
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'createEvent');
+      return provider.createEvent(payload);
+    });
   }
 
   async getEvents(startDate: string, endDate: string) {
-    return this.withProvider(() => this.provider.getEvents(startDate, endDate));
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'getEvents');
+      return provider.getEvents(startDate, endDate);
+    });
   }
 
   async getEventDetails(eventId: string) {
-    return this.withProvider(() => this.provider.getEventDetails(eventId));
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'getEventDetails');
+      return provider.getEventDetails(eventId);
+    });
   }
 
   async updateEvent(eventId: string, payload: any) {
-    return this.withProvider(() => this.provider.updateEvent(eventId, payload));
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'updateEvent');
+      return provider.updateEvent(eventId, payload);
+    });
   }
 
   async deleteEvent(eventId: string) {
-    return this.withProvider(() => this.provider.deleteEvent(eventId));
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'deleteEvent');
+      return provider.deleteEvent(eventId);
+    });
   }
 
   async getActiveReminders() {
-    return this.withProvider(() => this.provider.getActiveReminders());
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'getActiveReminders');
+      return provider.getActiveReminders();
+    });
   }
 
   async dismissReminder(eventId: string) {
-    return this.withProvider(() => this.provider.dismissReminder(eventId));
+    return this.withProvider((provider) => {
+      this.ensureProviderMethod(provider, 'dismissReminder');
+      return provider.dismissReminder(eventId);
+    });
   }
 }
 ````

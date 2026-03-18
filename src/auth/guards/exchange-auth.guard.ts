@@ -5,12 +5,16 @@ import {
   ExecutionContext,
   UnauthorizedException,
 } from '@nestjs/common';
-import { Request } from 'express';
+import { EntityManager } from '@mikro-orm/core';
+import { User } from '../../database/entities/user.entity';
 import { ExchangeAuthService } from '../../exchange/services/exchange-auth.service';
 
 @Injectable()
 export class ExchangeAuthGuard implements CanActivate {
-  constructor(private readonly authService: ExchangeAuthService) {}
+  constructor(
+    private readonly authService: ExchangeAuthService,
+    private readonly em: EntityManager,
+  ) { }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<any>();
@@ -32,11 +36,18 @@ export class ExchangeAuthGuard implements CanActivate {
       throw new UnauthorizedException('Invalid or expired session');
     }
 
+    // Lấy thông tin user từ DB để có ID (cần cho RSS)
+    const user = await this.em.findOne(User, { email: credentials.email });
+    if (!user) {
+      throw new UnauthorizedException('User not found in database');
+    }
+
     // Refresh session on each request
     await this.authService.refreshSession(sessionToken);
 
     // Attach user and session token to request
     request.user = {
+      id: user.id,
       email: credentials.email,
     };
     request['exchangeSession'] = sessionToken;

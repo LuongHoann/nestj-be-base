@@ -9,9 +9,9 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiHeader, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { ExchangeAuthGuard } from '../auth/guards/exchange-auth.guard';
 import { SubscribeRssFeedDto } from './dto/subscribe-rss-feed.dto';
 import { RssArticlesQueryDto } from './dto/rss-articles-query.dto';
 import { RssScopeQueryDto } from './dto/rss-scope-query.dto';
@@ -19,8 +19,8 @@ import { RssService } from './rss.service';
 
 @ApiTags('Webmail RSS')
 @Controller(['webmail/rss', 'api/rss', 'rss'])
-@UseGuards(JwtAuthGuard)
-@ApiBearerAuth('jwt')
+@UseGuards(ExchangeAuthGuard)
+@ApiHeader({ name: 'Cookie', description: 'exchange_session cookie' })
 export class RssController {
   constructor(private readonly rssService: RssService) { }
 
