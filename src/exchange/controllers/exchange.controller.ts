@@ -217,6 +217,26 @@ export class ExchangeController {
     res.setHeader('Content-Length', attachment.size.toString());
     res.send(attachment.content);
   }
+
+  @UseGuards(ExchangeAuthGuard)
+  @Get('mail/:id/attachments/:index/pdf-preview')
+  @ApiBearerAuth('exchange_cookie')
+  @ApiOperation({ summary: 'Convert attachment PowerPoint sang PDF de preview' })
+  async previewAttachmentAsPdf(
+    @Param('id') id: string,
+    @Param('index') index: string,
+    @Res() res: Response,
+  ) {
+    const attachment = await this.mailService.previewAttachmentAsPdf(
+      id,
+      Number(index),
+    );
+
+    res.setHeader('Content-Type', attachment.contentType);
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(attachment.filename)}"`);
+    res.setHeader('Content-Length', attachment.size.toString());
+    res.send(attachment.content);
+  }
   @UseGuards(ExchangeAuthGuard)
   @Get('mail/:id')
   @ApiBearerAuth('exchange_cookie')

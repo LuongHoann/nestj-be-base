@@ -9,6 +9,7 @@ import { MailService } from './services/mail.service';
 import { EwsMailProvider } from './services/ews-mail.provider';
 import { SmtpSenderService } from './services/smtp-sender.service';
 import { ContactNoteService } from './services/contact-note.service';
+import { LibreOfficeConverterService } from './services/libreoffice-converter.service';
 
 @Module({
   imports: [CacheModule, CommonModule],
@@ -17,6 +18,7 @@ import { ContactNoteService } from './services/contact-note.service';
     ExchangeAuthService,
     SmtpSenderService,
     EwsMailProvider,
+    LibreOfficeConverterService,
     MailService,
     ContactNoteService,
   ],

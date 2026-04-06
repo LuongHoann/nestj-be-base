@@ -6,6 +6,7 @@ import {
   Scope,
 } from '@nestjs/common';
 import { REQUEST } from '@nestjs/core';
+import { parse } from 'path';
 import { EwsMailProvider } from './ews-mail.provider';
 import { MailMessage } from '../interfaces/mail-provider.interface';
 import {
@@ -21,6 +22,7 @@ import {
 
 import { DragonflyService } from '../../common/cache/dragonfly.service';
 import { ExchangeAuthService } from './exchange-auth.service';
+import { LibreOfficeConverterService } from './libreoffice-converter.service';
 import {
   DEFAULT_FOLDER_ID,
   MAIL_FOLDERS,
@@ -37,6 +39,7 @@ export class MailService {
     private readonly provider: EwsMailProvider,
     private readonly dragonfly: DragonflyService,
     private readonly authService: ExchangeAuthService,
+    private readonly libreOfficeConverter: LibreOfficeConverterService,
     @Inject(REQUEST) private readonly request: any,
   ) {}
 
@@ -45,7 +48,12 @@ export class MailService {
       await this.provider.connect();
       return await operation();
     } catch (error) {
-      this.logger.error(`Mail operation failed: ${error.message}`, error.stack);
+      const normalizedError =
+        error instanceof Error ? error : new Error(String(error));
+      this.logger.error(
+        `Mail operation failed: ${normalizedError.message}`,
+        normalizedError.stack,
+      );
       throw error;
     } finally {
       await this.provider.disconnect();
@@ -197,6 +205,41 @@ export class MailService {
     return this.withProvider(() =>
       this.provider.downloadAttachment(messageId, index),
     );
+  }
+
+  async previewAttachmentAsPdf(messageId: string, index: number) {
+    const attachment = await this.downloadAttachment(messageId, index);
+    const extension = parse(attachment.filename || '').ext.toLowerCase();
+
+    if (!['.ppt', '.pptx'].includes(extension)) {
+      throw new BadRequestException(
+        'Chi ho tro convert PDF preview cho file PowerPoint',
+      );
+    }
+
+    try {
+      const pdfContent = await this.libreOfficeConverter.convertToPdf(
+        attachment.filename || `attachment${extension}`,
+        attachment.content,
+      );
+
+      return {
+        filename: `${parse(attachment.filename || 'preview').name}.pdf`,
+        contentType: 'application/pdf',
+        size: pdfContent.length,
+        content: pdfContent,
+      };
+    } catch (error) {
+      const normalizedError =
+        error instanceof Error ? error : new Error(String(error));
+      this.logger.error(
+        `Attachment PDF preview failed: ${normalizedError.message}`,
+        normalizedError.stack,
+      );
+      throw new BadRequestException(
+        `Khong the convert PowerPoint sang PDF: ${normalizedError.message}`,
+      );
+    }
   }
 
   async sendMessage(dto: SendMailDto) {
